@@ -1,0 +1,42 @@
+diff --git a/build.zig b/build.zig
+index 8ef7701..ecc16b0 100644
+--- a/build.zig
++++ b/build.zig
+@@ -113,21 +113,25 @@ pub fn build(b: *std.Build) !void {
+         check_step.dependOn(dist.install_step);
+     }
+ 
+-    // libghostty-vt
+-    const libghostty_vt_shared = shared: {
+-        if (config.target.result.cpu.arch.isWasm()) {
+-            break :shared try buildpkg.GhosttyLibVt.initWasm(
++    // libghostty-vt (shared). SPIKE patches/0004: freestanding targets
++    // cannot dynamic-link, and the BB10/QNX spike only consumes the static
++    // .a — skip the shared lib there so `zig build` doesn't abort.
++    if (config.target.result.os.tag != .freestanding) {
++        const libghostty_vt_shared = shared: {
++            if (config.target.result.cpu.arch.isWasm()) {
++                break :shared try buildpkg.GhosttyLibVt.initWasm(
++                    b,
++                    &mod,
++                );
++            }
++
++            break :shared try buildpkg.GhosttyLibVt.initShared(
+                 b,
+                 &mod,
+             );
+-        }
+-
+-        break :shared try buildpkg.GhosttyLibVt.initShared(
+-            b,
+-            &mod,
+-        );
+-    };
+-    libghostty_vt_shared.install(b.getInstallStep());
++        };
++        libghostty_vt_shared.install(b.getInstallStep());
++    }
+ 
+     // libghostty-vt static lib
+     const libghostty_vt_static = try buildpkg.GhosttyLibVt.initStatic(

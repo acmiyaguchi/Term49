@@ -1,0 +1,18 @@
+diff --git a/src/terminal/c/sys.zig b/src/terminal/c/sys.zig
+index c4b2b17..42ae63b 100644
+--- a/src/terminal/c/sys.zig
++++ b/src/terminal/c/sys.zig
+@@ -226,7 +226,12 @@ pub fn logStderr(
+     message_ptr: [*]const u8,
+     message_len: usize,
+ ) callconv(lib.calling_conv) void {
+-    if (comptime builtin.target.cpu.arch.isWasm()) return;
++    // SPIKE patches/0006: this fn's own doc says it's a no-op on
++    // freestanding/wasm, but the guard only covered wasm. freestanding
++    // has no stderr either, and std.debug.lockStderrWriter pulls posix
++    // write/pwritev/lseek (absent on freestanding).
++    if (comptime builtin.target.cpu.arch.isWasm() or
++        builtin.target.os.tag == .freestanding) return;
+ 
+     const scope = scope_ptr[0..scope_len];
+     const message = message_ptr[0..message_len];

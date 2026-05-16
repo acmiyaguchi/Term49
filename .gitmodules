@@ -9,3 +9,6 @@
 	path = libconfig
 	url = https://github.com/hyperrealm/libconfig.git
   tag = f9f23d7
+[submodule "spike/libghostty-vt/vendor/ghostty"]
+	path = spike/libghostty-vt/vendor/ghostty
+	url = https://github.com/ghostty-org/ghostty.git
