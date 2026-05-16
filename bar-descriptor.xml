@@ -46,9 +46,10 @@
     <description>The Term49 application</description>
 
     <!--  Must match the developer name of your developer certificate. -->
-    <author>Package-Author</author>
-    <!--  Unique author ID assigned by signing authority. Required if using debug tokens. -->
-    <authorId>Package-Author-Id</authorId>
+    <author>Example Inc.</author>
+    <!--  Unique author ID assigned by signing authority. Required if using debug tokens.
+          Left commented so -devMode self-signing auto-derives a valid dev author-id. -->
+    <!-- <authorId>Package-Author-Id</authorId> -->
 
     <initialWindow>
       <autoOrients>true</autoOrients>
