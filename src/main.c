@@ -139,6 +139,12 @@ static SDL_Color default_bg_color = SDL_BLACK;
 struct font_style default_text_style;
 
 struct screenchar blank_sc;
+
+/* Frame-level dirty gate. render() owes a repaint only when this is set.
+ * Always written under input_mutex (every writer below already holds
+ * lock_input()), so no atomics needed. Start dirty for the first frame. */
+static int screen_dirty = 1;
+
 static SDL_Surface* flash_surface;
 static SDL_Surface* cursor;
 static SDL_Surface* inv_cursor;
@@ -259,17 +265,28 @@ int get_wm_info(SDL_SysWMinfo* info){
 	return SDL_GetWMInfo(info);
 }
 
+/* These local-UI mutators are the funnel for keyboard/touch-driven
+ * screen changes that never round-trip the pty (metamode cursor,
+ * symmenu overlay, modifier indicators, font reflow). They are reached
+ * both from handle_mousedown (SDL main loop) and from handleKeyboardEvent
+ * (called directly by the vendored libSDL12 on a screen key event, which
+ * the main loop only sees as an inert "Unhandled SYSWMEVENT"). Marking
+ * dirty here, at the mutation, is what makes the render gate correct
+ * regardless of which SDL event delivered the input. */
 void metamode_toggle(){
 	metamode = metamode ? 0 : 1;
+	screen_dirty = 1;
 }
 
 void altsym_toggle() {
 	altsym_lock = altsym_lock ? 0 : 1;
+	screen_dirty = 1;
 }
 
 void symmenu_stick(){
 	PRINT(stderr, "Sticking Sym key\n");
 	symmenu_lock = 1;
+	screen_dirty = 1;
 }
 
 void symmenu_toggle(symmenu_t *target){
@@ -290,6 +307,7 @@ void symmenu_toggle(symmenu_t *target){
 		}
 		symmenu_lock = 0;
 	}
+	screen_dirty = 1;
 }
 
 static const char* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
@@ -520,6 +538,7 @@ void rescreen(int w, int h){
 		vkb_h = get_virtualkeyboard_height();
 		setup_screen_size(width, height - vkb_h);
 	}
+	screen_dirty = 1;
 }
 
 void toggle_vkeymod(int mod){
@@ -530,6 +549,7 @@ void toggle_vkeymod(int mod){
 	else {
 		vmodifiers |= mod;
 	}
+	screen_dirty = 1;
 }
 
 static symmenu_t *get_keyhold_actions(int keycode) {
@@ -771,6 +791,13 @@ void handleKeyboardEvent(screen_event_t screen_event)
 
 		/* if we have virtual keymods, then put them in, then turn them off */
 		modifiers |= vmodifiers;
+		if (vmodifiers != 0) {
+			/* the on-screen ctrl/alt/shift indicators reflect vmodifiers
+			 * (see render()); clearing them changes the frame, so the
+			 * dirty gate must repaint even if this key emits nothing
+			 * visible itself -- otherwise a stale indicator lingers. */
+			screen_dirty = 1;
+		}
 		vmodifiers = 0;
 
 		/* now process the keypress */
@@ -930,6 +957,7 @@ void set_screen_cols(int ncols){
 			/* and force the number of columns */
 			cols = ncols;
 			set_tty_window_size();
+			screen_dirty = 1;
 		}
 	}
 }
@@ -1240,6 +1268,9 @@ void render() {
 	if(flash){
 		/* turn it off */
 		flash = 0;
+		/* force the repaint that clears the flash (we hold the render
+		 * lock here, so this write to screen_dirty is safe) */
+		screen_dirty = 1;
 		/* write to the input pipe so we run again */
 		indicate_event_input();
 	}
@@ -1415,6 +1446,8 @@ int run_render(void* data){
 				while ((num_chars = io_read_master(lbuf, READ_BUFFER_SIZE)) > 0){
 					ecma48_filter_text(lbuf, num_chars);
 				}
+				/* child produced output -> screen changed */
+				screen_dirty = 1;
 				unlock_input();
 			}
 			if(FD_ISSET(event_pipe[0], &fds)){
@@ -1422,10 +1455,22 @@ int run_render(void* data){
 				read(event_pipe[0], (void*)ev_buf, 99);
 			}
 		}
-		PRINT(stderr, "Render Loop\n");
+		/* Only repaint when something visible actually changed. The pipe
+		 * poke wakes us for every SDL event, but inert system events
+		 * (SYSWMEVENT/ACTIVEEVENT/unknown) leave screen_dirty clear, so
+		 * we skip the full-screen FillRect + page-flip that was causing
+		 * the white-flash storm. */
 		lock_input();
-		render();
+		int do_render = screen_dirty;
+		screen_dirty = 0;
 		unlock_input();
+
+		if(do_render){
+			PRINT(stderr, "Render Loop\n");
+			lock_input();
+			render();
+			unlock_input();
+		}
 	}
 	/* never reached */
 	return 0;
@@ -1520,6 +1565,7 @@ int main(int argc, char **argv) {
 			break;
 		case SDL_VIDEORESIZE:
 			rescreen(event.resize.w, event.resize.h);
+			screen_dirty = 1;
 			break;
 		case SDL_KEYDOWN:
 			{
@@ -1529,6 +1575,7 @@ int main(int argc, char **argv) {
 				uc = (UChar)sdlkey;
 				io_write_master(&uc, 1);
 			}
+			screen_dirty = 1;
 			break;
 		case SDL_SYSWMEVENT:
 			{
@@ -1540,6 +1587,7 @@ int main(int argc, char **argv) {
 			break;
 		case SDL_MOUSEBUTTONDOWN:
 			handle_mousedown(event.button.x, event.button.y);
+			screen_dirty = 1;
 			break;
 		case SDL_ACTIVEEVENT:
 			handle_activeevent(event.active.gain, event.active.state);
