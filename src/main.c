@@ -19,8 +19,12 @@
 #include <termios.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <errno.h>
 #include <time.h>
 #include <sys/select.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include <bps/screen.h>
 #include <bps/virtualkeyboard.h>
@@ -41,6 +45,65 @@
 #include "colors.h"
 
 static int exit_application = 0;
+
+/* The launcher hands us HOME = /accounts/<id>/appdata/<appid>/data,
+ * which is wiped on every app reinstall and is invisible to the File
+ * Manager / bb-scp. Repoint HOME at the persistent, cross-app shared
+ * Documents dir (the OS creates it once access_shared is granted) so
+ * dotfiles, mksh history and .term49rc survive redeploys and can be
+ * seeded from the dev box. Also export TERMINFO with an absolute path
+ * to the bundled terminfo, since the shared filesystem is FUSE-backed
+ * and rejects the ~/.terminfo symlink we used to rely on. Falls back
+ * to the sandbox HOME untouched if anything is unexpected. */
+static void set_persistent_home(void) {
+	const char* sandbox_home = getenv("HOME");
+	const char* p;
+	const char* appid_end;
+	char buf[1024];
+
+	if (sandbox_home == NULL) { return; }
+
+	p = strstr(sandbox_home, "/appdata/");
+	if (p == NULL) { return; }
+	appid_end = strchr(p + strlen("/appdata/"), '/');
+	if (appid_end == NULL) { return; }
+
+	/* TERMINFO = <...>/appdata/<appid>/app/native/terminfo */
+	{
+		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/terminfo",
+		                 (int)(appid_end - sandbox_home), sandbox_home);
+		if (n > 0 && n < (int)sizeof(buf)) {
+			setenv("TERMINFO", buf, 1);
+		}
+	}
+
+	/* HOME = <...>/shared/documents (sibling of /appdata) */
+	{
+		int n = snprintf(buf, sizeof(buf), "%.*s/shared/documents",
+		                 (int)(p - sandbox_home), sandbox_home);
+		if (n <= 0 || n >= (int)sizeof(buf)) {
+			return;
+		}
+	}
+	/* Only repoint HOME if the target really is a usable directory:
+	 * created just now, or already existing AND a readable / writable /
+	 * searchable directory. Accepting a bare EEXIST would repoint HOME at
+	 * an existing-but-unusable path, and the later chdir(home) would then
+	 * silently fail, leaving the shell in the sandbox dir with a HOME it
+	 * cannot use. Verify before committing; otherwise keep sandbox HOME. */
+	{
+		struct stat st;
+		if ((mkdir(buf, 0700) == 0 ||
+		     (errno == EEXIST && stat(buf, &st) == 0 && S_ISDIR(st.st_mode)))
+		    && access(buf, R_OK | W_OK | X_OK) == 0) {
+			setenv("HOME", buf, 1);
+		} else {
+			fprintf(stderr,
+			        "Could not use persistent HOME %s: %s - keeping sandbox HOME\n",
+			        buf, strerror(errno));
+		}
+	}
+}
 
 static char slave_ptyname[L_ctermid];
 
@@ -1284,6 +1347,14 @@ static int pty_init() {
 		/* Set LC_CTYPE=en_US.UTF-8
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
+		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
+		 * absolute path: CWD is now the shared HOME, so the old
+		 * "../app/native/..." relative path no longer resolves. */
+		char mksh[1024];
+		if(home != NULL &&
+		   snprintf(mksh, sizeof(mksh), "%s/%s/mksh", home, root) < (int)sizeof(mksh)){
+			execl(mksh, "mksh", "-l", (char*)0);
+		}
 		if(execl("../app/native/root/bin/mksh", "mksh", "-l", (char*)0) == -1){
 			execl("/bin/sh", "sh", "-l", (char*)0);
 		}
@@ -1362,6 +1433,11 @@ int run_render(void* data){
 
 int main(int argc, char **argv) {
 	int rc;
+
+	/* Redirect HOME to a persistent, externally-visible dir before
+	 * anything reads it (this function, the chdir below, the shell
+	 * we later fork, and preferences.c all inherit the new value). */
+	set_persistent_home();
 
 	/* Switch to our home directory */
 	char* home = getenv("HOME");

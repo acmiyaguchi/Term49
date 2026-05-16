@@ -198,14 +198,10 @@ void ecma48_uninit(){
 }
 
 void ecma48_setenv(){
-  /* link in the .terminfo lib if it isn't there */
-  struct stat terminfo_f;
-  if(stat(".terminfo", &terminfo_f) == -1){
-    /* assume it doesn't exist yet */
-    if(symlink(ECMA48_TERMINFO, ".terminfo") == -1){
-      fprintf(stderr, "Error linking terminfo database - terminal may be non-functional\n");
-    }
-  }
+  /* terminfo is located via $TERMINFO (an absolute path to the bundled
+   * database, exported in main() before fork). We no longer create a
+   * ~/.terminfo symlink: HOME now lives on the shared FUSE filesystem,
+   * which rejects symlinks. */
   setenv("TERM", "xterm-256color", 1);
 
   //if(system("/base/bin/stty +sane term=xterm-color erase=^H") == -1){
