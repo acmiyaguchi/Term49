@@ -718,10 +718,23 @@ following line in the data component.
 */
 void ecma48_LF_INTER(){
   ecma48_PRINT_CONTROL_SEQUENCE("LF");
-  if(buf->col < cols){
-    // emulate xenl/xn newline glitch at the right margin
-    buf_increment_line();
-  }
+  /* Cooked-newline semantics: advance one line AND carriage-return,
+   * unconditionally. This terminal was written assuming the pty maps
+   * \n -> \r\n (ONLCR), but openpty() here gets a NULL termios and QNX's
+   * pty discipline is raw, so bare LFs arrive with no CR and output
+   * "staircases" (prompt indents, ls columns march rightward).
+   *
+   * The old `if(buf->col < cols)` guard skipped the line advance at the
+   * right margin, leaning on the deferred wrap in ecma48_add_char (when
+   * col==cols the *next* printable char wraps). Resetting col to 0 here
+   * cancels that pending wrap, so a line exactly `cols` wide followed by
+   * \n + text would overwrite the line instead of starting a new one.
+   * Advancing the line unconditionally is the correct cooked behaviour
+   * and matches add_char's own wrap idiom (buf_increment_line(); col=0).
+   * Idempotent under a cooked pty / tmux / mksh, which emit their own
+   * CR (an extra col=0 on a fresh line is a no-op). */
+  buf_increment_line();
+  buf->col = 0;
 }
 void ecma48_LF(){
   ecma48_LF_INTER();
