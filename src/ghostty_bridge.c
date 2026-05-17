@@ -346,6 +346,47 @@ done:
   return rc;
 }
 
+int ghostty_bridge_visit_row(uint16_t target_y, ghostty_bridge_cell_visitor_t visitor, void *userdata) {
+  GhosttyRenderStateRowIterator row_iter = NULL;
+  GhosttyRenderStateRowCells cells = NULL;
+  uint16_t y = 0;
+  int rc = -1;
+
+  if (!gb.initialized || visitor == NULL) { return -1; }
+  if (ghostty_render_state_row_iterator_new(&GB_ALLOC, &row_iter) != GHOSTTY_SUCCESS) { return -1; }
+  if (ghostty_render_state_row_cells_new(&GB_ALLOC, &cells) != GHOSTTY_SUCCESS) { goto done; }
+  if (ghostty_render_state_get(gb.render_state,
+        GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+        &row_iter) != GHOSTTY_SUCCESS) { goto done; }
+
+  while (ghostty_render_state_row_iterator_next(row_iter)) {
+    if (y == target_y) {
+      uint16_t x = 0;
+      if (ghostty_render_state_row_get(row_iter,
+            GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+            &cells) != GHOSTTY_SUCCESS) { goto done; }
+
+      while (ghostty_render_state_row_cells_next(cells)) {
+        ghostty_bridge_cell_t cell;
+        gb_read_render_cell(cells, &cell);
+        visitor(x, y, &cell, userdata);
+        ++x;
+      }
+
+      rc = 0;
+      goto done;
+    }
+    ++y;
+  }
+
+  rc = 0;
+
+done:
+  ghostty_render_state_row_cells_free(cells);
+  ghostty_render_state_row_iterator_free(row_iter);
+  return rc;
+}
+
 int ghostty_bridge_finish_frame(void) {
   GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
   if (!gb.initialized) { return -1; }

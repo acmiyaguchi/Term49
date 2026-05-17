@@ -53,5 +53,6 @@ int ghostty_bridge_resize(uint16_t cols, uint16_t rows,
 int ghostty_bridge_update_render_state(void);
 int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame);
 int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t visitor, void *userdata);
+int ghostty_bridge_visit_row(uint16_t target_y, ghostty_bridge_cell_visitor_t visitor, void *userdata);
 int ghostty_bridge_finish_frame(void);
 #endif /* GHOSTTY_BRIDGE_H_ */

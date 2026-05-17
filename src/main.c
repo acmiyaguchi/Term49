@@ -1299,8 +1299,14 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
 }
 
 static int render_ghostty(int force_full_repaint) {
+	static int prev_cursor_valid = 0;
+	static int prev_cursor_visible = 0;
+	static uint16_t prev_cursor_x = 0;
+	static uint16_t prev_cursor_y = 0;
 	struct ghostty_render_context ctx;
 	SDL_Color bg;
+	int cursor_visible;
+	int cursor_changed;
 
 	if (ghostty_bridge_begin_frame(&ctx.frame) != 0) {
 		fprintf(stderr, "ghostty render: begin_frame failed\n");
@@ -1310,6 +1316,11 @@ static int render_ghostty(int force_full_repaint) {
 		ctx.frame.cursor_x -= 1;
 	}
 	ctx.failed = 0;
+	cursor_visible = draw_cursor && ctx.frame.cursor_visible;
+	cursor_changed = prev_cursor_valid &&
+		(prev_cursor_visible != cursor_visible ||
+		 prev_cursor_x != ctx.frame.cursor_x ||
+		 prev_cursor_y != ctx.frame.cursor_y);
 
 	force_full_repaint = force_full_repaint || flash ||
 		ctx.frame.dirty == GHOSTTY_BRIDGE_DIRTY_FULL;
@@ -1324,6 +1335,23 @@ static int render_ghostty(int force_full_repaint) {
 			return 0;
 		}
 	}
+	if (!force_full_repaint && cursor_changed) {
+		if (prev_cursor_visible && prev_cursor_y < rows &&
+		    ghostty_bridge_visit_row(prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
+			fprintf(stderr, "ghostty render: visit old cursor row failed\n");
+			return 0;
+		}
+		if (cursor_visible && ctx.frame.cursor_y < rows &&
+		    (!prev_cursor_visible || prev_cursor_y != ctx.frame.cursor_y) &&
+		    ghostty_bridge_visit_row(ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
+			fprintf(stderr, "ghostty render: visit new cursor row failed\n");
+			return 0;
+		}
+	}
+	prev_cursor_valid = 1;
+	prev_cursor_visible = cursor_visible;
+	prev_cursor_x = ctx.frame.cursor_x;
+	prev_cursor_y = ctx.frame.cursor_y;
 
 	TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
 
