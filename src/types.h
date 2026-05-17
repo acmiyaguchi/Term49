@@ -1,32 +1,32 @@
-#ifndef _TYPES_H
-#define _TYPES_H
+#ifndef TYPES_H_
+#define TYPES_H_
 
-#include "SDL.h"
+#include <unicode/utf.h>
 
-typedef struct _keymap_t {
+#include "t49_types.h"
+
+typedef struct t49_keymap {
 	char from;
 	char *to;
 } keymap_t;
 
-typedef struct _hitbox_t {
-	int x, y, w, h;
-} hitbox_t;
+typedef t49_rect_t hitbox_t;
 
-typedef struct _symkey_t {
+typedef struct t49_symkey {
 	char flash;
 	keymap_t *map; /* pointer to corresponding map */
 	hitbox_t hitbox; /* used for mousedown */
 	UChar *uc;
 } symkey_t;
 
-typedef struct _symmenu_t {
+typedef struct t49_symmenu {
 	/* row terminated by NULL pointer, col by NULL symkey_t->map */
 	symkey_t **keys; 
 	keymap_t *entries; /* terminated by NULL keymap_t.to */
-	SDL_Surface *surface;
+	struct SDL_Surface *surface;
 } symmenu_t;
 
-typedef struct _pref_t {
+typedef struct t49_pref {
 	char *font_path;
 	int font_size, *text_color, *background_color, screen_idle_awake,
 		auto_show_vkb, metamode_doubletap_key, metamode_doubletap_delay,
@@ -46,4 +46,4 @@ typedef struct _pref_t {
 	int rescreen_for_symmenu, keyhold_accents, prefs_version;
 } pref_t;
 
-#endif
+#endif /* TYPES_H_ */

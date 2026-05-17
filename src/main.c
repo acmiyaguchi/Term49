@@ -25,6 +25,7 @@
 #include <time.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/keycodes.h>
 #include <unistd.h>
 
 #include <bps/screen.h>
@@ -39,7 +40,8 @@
 
 #include "types.h"
 #include "terminal.h"
-#include "preferences.h"
+#include "prefs.h"
+#include "symmenu.h"
 #include "io.h"
 #include "ghostty_bridge.h"
 
@@ -478,9 +480,9 @@ int font_init(int font_size){
 	if ( font == NULL ) {
 		/* try opening the default stuff */
 		fprintf(stderr, "Couldn't load %d pt font from %s: %s\n", font_size, prefs->font_path, SDL_GetError());
-		font = TTF_OpenFont(DEFAULT_FONT_PATH, DEFAULT_FONT_SIZE);
+		font = TTF_OpenFont(T49_DEFAULT_FONT_PATH, T49_DEFAULT_FONT_SIZE);
 		if(font == NULL){
-			fprintf(stderr, "Could not open default font %s: %s\n", DEFAULT_FONT_PATH, SDL_GetError());
+			fprintf(stderr, "Could not open default font %s: %s\n", T49_DEFAULT_FONT_PATH, SDL_GetError());
 			return TERM_FAILURE;
 		}
 	}

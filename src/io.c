@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <unicode/utf.h>
@@ -23,7 +24,7 @@
 
 
 #include "terminal.h"
-#include "preferences.h"
+#include "prefs.h"
 
 #include "io.h"
 

@@ -18,7 +18,7 @@
 #include "SDL_thread.h"
 
 #include "terminal.h"
-#include "preferences.h"
+#include "prefs.h"
 #include "io.h"
 
 void destroy_symmenu(symmenu_t *menu) {
