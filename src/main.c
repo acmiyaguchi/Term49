@@ -41,6 +41,7 @@
 #include "types.h"
 #include "terminal.h"
 #include "action.h"
+#include "app.h"
 #include "prefs.h"
 #include "symmenu.h"
 #include "renderer_sdl.h"
@@ -135,6 +136,8 @@ static int text_width;
 static int text_height;
 static int text_height_padding;
 static int advance;
+
+static int dispatch_action_string(const char *value);
 
 /* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
@@ -590,7 +593,7 @@ void handle_mousedown(Uint16 x, Uint16 y){
 
 	/* check for symmenu touches */
 	if(current_symmenu != NULL){
-		send_metamode_keystrokes(symkey_for_mousedown(current_symmenu, x, y));
+		dispatch_action_string(symkey_for_mousedown(current_symmenu, x, y));
 	}
 }
 
@@ -653,7 +656,8 @@ void toggle_vkeymod(int mod){
 	mark_screen_dirty(1);
 }
 
-static int dispatch_action(const t49_action_t *action) {
+int app_dispatch_action(t49_app_t *app, const t49_action_t *action) {
+	(void)app;
 	if (action == NULL) {
 		return 0;
 	}
@@ -690,7 +694,7 @@ static int dispatch_action_string(const char *value) {
 	if (!action_parse(value, &action)) {
 		return 0;
 	}
-	return dispatch_action(&action);
+	return app_dispatch_action(NULL, &action);
 }
 
 static symmenu_t *get_keyhold_actions(int keycode) {
@@ -1684,6 +1688,44 @@ int run_render(void* data){
 	return 0;
 }
 
+int app_handle_event(t49_app_t *app, const t49_event_t *event) {
+	(void)app;
+	if (event == NULL) {
+		return 0;
+	}
+
+	switch (event->type) {
+	case T49_EVENT_QUIT:
+		exit_application = 1;
+		return 1;
+	case T49_EVENT_RESIZE:
+		rescreen(event->as.resize.w, event->as.resize.h);
+		mark_screen_dirty(1);
+		return 1;
+	case T49_EVENT_KEY:
+		{
+			PRINT(stderr, "SDL_KEYDOWN\n");
+			UChar uc = (UChar)event->as.key.unicode;
+			io_write_master(&uc, 1);
+		}
+		mark_screen_dirty(0);
+		return 1;
+	case T49_EVENT_TOUCH_DOWN:
+		handle_mousedown(event->as.touch.x, event->as.touch.y);
+		mark_screen_dirty(1);
+		return 1;
+	case T49_EVENT_ACTIVATE:
+		handle_activeevent(event->as.activate.active, event->as.activate.state);
+		return 1;
+	case T49_EVENT_NONE:
+	case T49_EVENT_TOUCH_MOVE:
+	case T49_EVENT_TOUCH_UP:
+	case T49_EVENT_VKB:
+	default:
+		return 0;
+	}
+}
+
 int main(int argc, char **argv) {
 	int rc;
 
@@ -1763,32 +1805,7 @@ int main(int argc, char **argv) {
 		SDL_WaitEvent(&raw_event);
 		lock_input();
 		if (platform_sdl_translate_event(&raw_event, &event)) {
-			switch (event.type) {
-			case T49_EVENT_QUIT:
-				exit_application = 1;
-				break;
-			case T49_EVENT_RESIZE:
-				rescreen(event.as.resize.w, event.as.resize.h);
-				mark_screen_dirty(1);
-				break;
-			case T49_EVENT_KEY:
-				{
-					PRINT(stderr, "SDL_KEYDOWN\n");
-					UChar uc = (UChar)event.as.key.unicode;
-					io_write_master(&uc, 1);
-				}
-				mark_screen_dirty(0);
-				break;
-			case T49_EVENT_TOUCH_DOWN:
-				handle_mousedown(event.as.touch.x, event.as.touch.y);
-				mark_screen_dirty(1);
-				break;
-			case T49_EVENT_ACTIVATE:
-				handle_activeevent(event.as.activate.active, event.as.activate.state);
-				break;
-			default:
-				break;
-			}
+			app_handle_event(NULL, &event);
 		}
 		indicate_event_input();
 		unlock_input();
