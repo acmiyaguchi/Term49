@@ -1,0 +1,24 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 17eea73..245db5f 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -323,6 +323,19 @@ inline fn pageAllocator() Allocator {
+     // In tests we use our testing allocator so we can detect leaks.
+     if (builtin.is_test) return std.testing.allocator;
+ 
++    // Freestanding targets have no OS page allocator
++    // (std.heap.page_allocator -> posix mmap, absent on freestanding).
++    // Back terminal pages with a fixed static arena. Embedders that need
++    // larger scrollback should thread their allocator through PageList
++    // instead.
++    if (builtin.target.os.tag == .freestanding) {
++        const S = struct {
++            var buf: [8 * 1024 * 1024]u8 = undefined;
++            var fba = std.heap.FixedBufferAllocator.init(&buf);
++        };
++        return S.fba.allocator();
++    }
++
+     // On non-macOS we use our standard Zig page allocator.
+     if (!builtin.target.os.tag.isDarwin()) return std.heap.page_allocator;
+ 

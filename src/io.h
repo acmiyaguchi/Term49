@@ -24,7 +24,7 @@ int  io_get_master();
 int32_t io_upcase_last_write(UChar **buf, int32_t nUChar);
 ssize_t io_write_master(const UChar *buf, size_t nUChar);
 ssize_t io_write_master_char(const char *buf, size_t n);
-ssize_t io_read_master(UChar *buf, size_t nUChar);
+ssize_t io_read_master_raw(char *buf, size_t nbytes);
 /* output is stored in the UChar buf, which must be of size utf8len */
 ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf);
 void io_paste_from_clipboard();

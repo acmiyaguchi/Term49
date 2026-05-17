@@ -1,0 +1,25 @@
+diff --git a/src/lib/allocator.zig b/src/lib/allocator.zig
+index fc56033..2bfa672 100644
+--- a/src/lib/allocator.zig
++++ b/src/lib/allocator.zig
+@@ -34,6 +34,20 @@ pub fn default(c_alloc_: ?*const Allocator) std.mem.Allocator {
+     // Wasm
+     if (comptime builtin.target.cpu.arch.isWasm()) return std.heap.wasm_allocator;
+ 
++    // Freestanding targets: std.heap.smp_allocator's page allocator needs
++    // posix mmap (posix.MAP/mmap), absent here. On freestanding
++    // the embedder MUST pass a GhosttyAllocator (Term49 always does), so
++    // this fallback is dead code at runtime and only has to compile
++    // posix-free. An empty FixedBufferAllocator does that; if ever reached
++    // allocations fail cleanly via the Result-returning C API.
++    if (comptime builtin.target.os.tag == .freestanding) {
++        const S = struct {
++            var buf: [0]u8 = .{};
++            var fba = std.heap.FixedBufferAllocator.init(&buf);
++        };
++        return S.fba.allocator();
++    }
++
+     // No libc, use the preferred allocator for releases which is the
+     // Zig SMP allocator.
+     return std.heap.smp_allocator;
