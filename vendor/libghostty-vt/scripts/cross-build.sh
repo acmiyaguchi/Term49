@@ -72,7 +72,7 @@ harness() {
     -lm -lgcc -o "$ROOT/build/smoke-terminal-q10"
   file "$ROOT/build/smoke-terminal-q10"
   file "$ROOT/build/smoke-terminal-q10" | grep -qiE 'ARM' || { echo "error: not an ARM binary" >&2; exit 1; }
-  echo ">> built: build/smoke-terminal-q10 — run 'make smoke'"
+  echo ">> built: build/smoke-terminal-q10"
 }
 
 case "${1:?usage: cross-build.sh lib|harness}" in

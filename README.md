@@ -41,7 +41,6 @@ building Ghostty's VT C API for BB10/QNX:
 make -C vendor/libghostty-vt deps
 make -C vendor/libghostty-vt lib
 make -C vendor/libghostty-vt harness
-make -C vendor/libghostty-vt smoke
 ```
 
 Term49 itself is the primary application example. The small standalone checks

@@ -19,8 +19,7 @@ if missing.
 ## Standalone examples/checks
 
 ```sh
-make -C vendor/libghostty-vt harness     # tests/smoke_terminal.c
-make -C vendor/libghostty-vt smoke       # run smoke-terminal-q10 on the Q10
+make -C vendor/libghostty-vt harness     # compile tests/smoke_terminal.c
 ```
 
 `tests/smoke_terminal.c` is the minimal terminal API example: create a Ghostty
@@ -32,5 +31,4 @@ text/color.
 * `vendor/ghostty/` — pinned Ghostty submodule.
 * `patches/` — freestanding/BB10 patch set applied before building.
 * `scripts/cross-build.sh` — qcc/Zig build driver.
-* `scripts/smoke-device.sh` — rooted Q10 smoke runner.
-* `tests/` — standalone smoke-test sources.
+* `tests/` — standalone compile/link smoke-test sources.

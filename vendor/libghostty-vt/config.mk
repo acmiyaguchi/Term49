@@ -27,6 +27,3 @@ ZIG_OPT    ?= ReleaseSmall
 # NOT fen-blackberry's bare `-Vgcc_ntoarmv7le`. ABI must match Term49's.
 CC := qcc -V4.6.3,gcc_ntoarmv7le
 
-# Device deploy (overridable via env / parent .env). USB-net dev-mode default.
-BB_DEVICE  ?= 169.254.0.1
-DEPLOY_DIR ?= /accounts/1000/shared/documents

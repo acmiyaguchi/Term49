@@ -6,8 +6,8 @@ index 136e0f1..69493ca 100644
          // require the ability to get timestamps and there is no way to
          // do that with freestanding targets.
          const target = m.resolved_target.?.result;
-+        // BB10 freestanding: the rationale above ("freestanding can't get
-+        // timestamps") applies to ALL freestanding targets, not just
++        // The rationale above ("freestanding can't get timestamps")
++        // applies to all freestanding targets, not just
 +        // wasm32 — arm-freestanding hits std.time.Instant -> posix.timespec
 +        // (absent on freestanding) via kitty Image.transmit_time. Broaden
 +        // the carve-out to any freestanding target.
