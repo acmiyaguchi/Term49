@@ -8,21 +8,21 @@
 #ifndef EVENT_H_
 #define EVENT_H_
 
-#include "t49_types.h"
+#include "term_types.h"
 
-typedef enum t49_event_type {
-	T49_EVENT_NONE,
-	T49_EVENT_QUIT,
-	T49_EVENT_KEY,
-	T49_EVENT_TOUCH_DOWN,
-	T49_EVENT_TOUCH_MOVE,
-	T49_EVENT_TOUCH_UP,
-	T49_EVENT_RESIZE,
-	T49_EVENT_ACTIVATE,
-	T49_EVENT_VKB,
-} t49_event_type_t;
+typedef enum event_type {
+	TERM_EVENT_NONE,
+	TERM_EVENT_QUIT,
+	TERM_EVENT_KEY,
+	TERM_EVENT_TOUCH_DOWN,
+	TERM_EVENT_TOUCH_MOVE,
+	TERM_EVENT_TOUCH_UP,
+	TERM_EVENT_RESIZE,
+	TERM_EVENT_ACTIVATE,
+	TERM_EVENT_VKB,
+} event_type_t;
 
-typedef struct t49_key_event {
+typedef struct key_event {
 	int keycode;
 	int unicode;
 	int modifiers;
@@ -34,19 +34,19 @@ typedef struct t49_key_event {
 	int sym;
 	int alternate_sym;
 	int flags;
-} t49_key_event_t;
+} key_event_t;
 
-typedef struct t49_event {
-	t49_event_type_t type;
+typedef struct event {
+	event_type_t type;
 	union {
-		t49_key_event_t key;
-		t49_rect_t touch;
+		key_event_t key;
+		rect_t touch;
 		struct { int w, h; } resize;
 		struct { int active; int state; } activate;
 		/* visible: 1 show, 0 hide, -1 height-only update (keep current
 		 * visibility). height: reported keyboard height for the -1 case. */
 		struct { int visible; int height; } vkb;
 	} as;
-} t49_event_t;
+} event_t;
 
 #endif /* EVENT_H_ */

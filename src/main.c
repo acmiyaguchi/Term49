@@ -119,10 +119,10 @@ static char flash = 0;
 
 static pref_t *prefs = NULL;
 static symmenu_t *current_symmenu = NULL;
-static t49_renderer_t *renderer = NULL;
-static t49_app_t *g_app = NULL;
-static t49_platform_t *g_platform = NULL;
-static const t49_prefs_loader_t *g_prefs_loader = NULL;
+static renderer_t *renderer = NULL;
+static app_t *g_app = NULL;
+static platform_t *g_platform = NULL;
+static const prefs_loader_t *g_prefs_loader = NULL;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
@@ -130,8 +130,8 @@ static char altsym_lock = 0;
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
 static struct timespec metamode_last;
-static SDL_Color metamode_cursor_fg = T49_COLOR_BLACK;
-static SDL_Color metamode_cursor_bg = T49_COLOR_GREEN;
+static SDL_Color metamode_cursor_fg = TERM_COLOR_BLACK;
+static SDL_Color metamode_cursor_bg = TERM_COLOR_GREEN;
 static SDL_Surface* metamode_cursor;
 static int vmodifiers = 0;
 
@@ -493,9 +493,9 @@ int font_init(int font_size){
 	if ( font == NULL ) {
 		/* try opening the default stuff */
 		fprintf(stderr, "Couldn't load %d pt font from %s: %s\n", font_size, prefs->font_path, SDL_GetError());
-		font = TTF_OpenFont(T49_DEFAULT_FONT_PATH, T49_DEFAULT_FONT_SIZE);
+		font = TTF_OpenFont(TERM_DEFAULT_FONT_PATH, TERM_DEFAULT_FONT_SIZE);
 		if(font == NULL){
-			fprintf(stderr, "Could not open default font %s: %s\n", T49_DEFAULT_FONT_PATH, SDL_GetError());
+			fprintf(stderr, "Could not open default font %s: %s\n", TERM_DEFAULT_FONT_PATH, SDL_GetError());
 			return TERM_FAILURE;
 		}
 	}
@@ -604,16 +604,16 @@ void handle_mousedown(Uint16 x, Uint16 y){
 
 /* SDL->app ABI: the prebuilt libSDL12.so calls this directly with the raw
  * BPS virtual-keyboard event. It is now a thin platform adapter: decode the
- * BPS event into a backend-agnostic t49_event_t and route it through the app
- * boundary. The reflow itself lives in app_handle_event()'s T49_EVENT_VKB
+ * BPS event into a backend-agnostic event_t and route it through the app
+ * boundary. The reflow itself lives in app_handle_event()'s TERM_EVENT_VKB
  * case, which the native Screen/BPS event source (#6) will feed the same way.
  * Agnostic VKB encoding (see event.h): visible 1/0 = explicit show/hide;
  * visible == -1 = height-only INFO update (keep current visibility). */
 void handle_virtualkeyboard_event(bps_event_t *event){
-	t49_event_t ev;
+	event_t ev;
 	int event_code = bps_event_get_code(event);
 
-	ev.type = T49_EVENT_VKB;
+	ev.type = TERM_EVENT_VKB;
 	switch (event_code){
 	case VIRTUALKEYBOARD_EVENT_VISIBLE:
 		ev.as.vkb.visible = 1;
@@ -666,8 +666,8 @@ void toggle_vkeymod(int mod){
 	mark_screen_dirty(1);
 }
 
-int app_dispatch_action(t49_app_t *app, const t49_action_t *action) {
-	t49_session_t *session;
+int app_dispatch_action(app_t *app, const action_t *action) {
+	session_t *session;
 
 	if (action == NULL) {
 		return 0;
@@ -680,21 +680,21 @@ int app_dispatch_action(t49_app_t *app, const t49_action_t *action) {
 	session = app_session_by_id(app, action->target.session);
 
 	switch (action->kind) {
-	case T49_ACTION_SEND_BYTES:
-	case T49_ACTION_SEND_TERMINFO:
+	case TERM_ACTION_SEND_BYTES:
+	case TERM_ACTION_SEND_TERMINFO:
 		return session_dispatch_action(session, action);
-	case T49_ACTION_BUILTIN:
+	case TERM_ACTION_BUILTIN:
 		switch (action->as.builtin.id) {
-		case T49_BUILTIN_ALT_DOWN:
+		case TERM_BUILTIN_ALT_DOWN:
 			toggle_vkeymod(KEYMOD_ALT);
 			return 1;
-		case T49_BUILTIN_CTRL_DOWN:
+		case TERM_BUILTIN_CTRL_DOWN:
 			toggle_vkeymod(KEYMOD_CTRL);
 			return 1;
-		case T49_BUILTIN_RESCREEN:
+		case TERM_BUILTIN_RESCREEN:
 			rescreen(-1, -1);
 			return 1;
-		case T49_BUILTIN_PASTE_CLIPBOARD:
+		case TERM_BUILTIN_PASTE_CLIPBOARD:
 			return session_dispatch_action(session, action);
 		default:
 			return 0;
@@ -776,10 +776,10 @@ static symmenu_t *get_keyhold_actions(int keycode) {
  * body (screen_val -> k->sym, screen_flags -> k->flags, the KEY_DOWN gate ->
  * k->pressed, tty writes -> session_write_text) so device behavior is
  * unchanged. It now runs behind the typed event model: any platform key
- * source builds a T49_EVENT_KEY and the app routes it here. */
-static void app_handle_key(t49_app_t *app, const t49_key_event_t *k)
+ * source builds a TERM_EVENT_KEY and the app routes it here. */
+static void app_handle_key(app_t *app, const key_event_t *k)
 {
-	t49_session_t *session = app_active_session(app);
+	session_t *session = app_active_session(app);
 	int modifiers = k->modifiers;
 	int num_chars;
 	int vkbd_h;
@@ -1010,13 +1010,13 @@ static void app_handle_key(t49_app_t *app, const t49_key_event_t *k)
 /* SDL->app ABI: the prebuilt libSDL12.so calls this directly on a BB10
  * screen key event (the SDL run loop only sees an inert SYSWMEVENT for the
  * same key -- see the metamode_toggle comment). Thin platform adapter:
- * decode the screen_event_t into a backend-agnostic rich t49_event_t and
+ * decode the screen_event_t into a backend-agnostic rich event_t and
  * route it through the app boundary. The native Screen/BPS event source
- * (#6) feeds the same T49_EVENT_KEY. */
+ * (#6) feeds the same TERM_EVENT_KEY. */
 void handleKeyboardEvent(screen_event_t screen_event)
 {
 	int screen_val, screen_flags, screen_alt_val, modifiers;
-	t49_event_t ev;
+	event_t ev;
 
 	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_FLAGS, &screen_flags);
 	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_SYM, &screen_val);
@@ -1025,7 +1025,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 	//screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_CAP, &cap);
 
 	memset(&ev, 0, sizeof(ev));
-	ev.type = T49_EVENT_KEY;
+	ev.type = TERM_EVENT_KEY;
 	ev.as.key.sym = screen_val;
 	ev.as.key.keycode = screen_val;
 	ev.as.key.unicode = screen_val;
@@ -1738,30 +1738,30 @@ int run_render(void* data){
 	return 0;
 }
 
-int app_handle_event(t49_app_t *app, const t49_event_t *event) {
+int app_handle_event(app_t *app, const event_t *event) {
 	if (event == NULL) {
 		return 0;
 	}
 
 	switch (event->type) {
-	case T49_EVENT_QUIT:
+	case TERM_EVENT_QUIT:
 		exit_application = 1;
 		return 1;
-	case T49_EVENT_RESIZE:
+	case TERM_EVENT_RESIZE:
 		rescreen(event->as.resize.w, event->as.resize.h);
 		mark_screen_dirty(1);
 		return 1;
-	case T49_EVENT_KEY:
+	case TERM_EVENT_KEY:
 		app_handle_key(app, &event->as.key);
 		return 1;
-	case T49_EVENT_TOUCH_DOWN:
+	case TERM_EVENT_TOUCH_DOWN:
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
 		return 1;
-	case T49_EVENT_ACTIVATE:
+	case TERM_EVENT_ACTIVATE:
 		handle_activeevent(event->as.activate.active, event->as.activate.state);
 		return 1;
-	case T49_EVENT_VKB:
+	case TERM_EVENT_VKB:
 		{
 			int vis = event->as.vkb.visible;
 			int vkb_h;
@@ -1776,9 +1776,9 @@ int app_handle_event(t49_app_t *app, const t49_event_t *event) {
 			setup_screen_size(screen->w, screen->h - vkb_h);
 		}
 		return 1;
-	case T49_EVENT_NONE:
-	case T49_EVENT_TOUCH_MOVE:
-	case T49_EVENT_TOUCH_UP:
+	case TERM_EVENT_NONE:
+	case TERM_EVENT_TOUCH_MOVE:
+	case TERM_EVENT_TOUCH_UP:
 	default:
 		return 0;
 	}
@@ -1843,7 +1843,7 @@ int main(int argc, char **argv) {
 	}
 
 	/* initialize renderer-owned caches */
-	renderer = renderer_sdl_create_t49();
+	renderer = renderer_sdl_new();
 	if (renderer == NULL || renderer_init_symmenus(renderer, screen, prefs) != 0) {
 		PRINT(stderr, "Unable to initialize SDL renderer caches\n");
 		app_shutdown();
@@ -1873,7 +1873,7 @@ int main(int argc, char **argv) {
 
 		//Request and process all available events
 		SDL_Event raw_event;
-		t49_event_t event;
+		event_t event;
 
 		SDL_WaitEvent(&raw_event);
 		lock_input();

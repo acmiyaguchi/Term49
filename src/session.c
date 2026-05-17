@@ -11,12 +11,12 @@
 #include "io.h"
 #include "terminal.h"
 
-struct t49_session {
-	t49_session_id_t id;
+struct session {
+	session_id_t id;
 };
 
-int session_create(t49_session_t **out, t49_session_id_t id) {
-	t49_session_t *s;
+int session_create(session_t **out, session_id_t id) {
+	session_t *s;
 	if (out == NULL) {
 		return -1;
 	}
@@ -29,33 +29,33 @@ int session_create(t49_session_t **out, t49_session_id_t id) {
 	return 0;
 }
 
-void session_destroy(t49_session_t *s) {
+void session_destroy(session_t *s) {
 	/* This stage owns nothing: the io master fd and ghostty bridge are torn
 	 * down by app_shutdown() after this returns. #4 moves per-session
 	 * pty/bridge teardown here. */
 	free(s);
 }
 
-t49_session_id_t session_id(const t49_session_t *s) {
+session_id_t session_id(const session_t *s) {
 	return s ? s->id : 0;
 }
 
-int session_master_fd(const t49_session_t *s) {
+int session_master_fd(const session_t *s) {
 	(void)s;
 	return io_get_master();
 }
 
-ssize_t session_write_text(t49_session_t *s, const UChar *buf, size_t n) {
+ssize_t session_write_text(session_t *s, const UChar *buf, size_t n) {
 	(void)s;
 	return io_write_master(buf, n);
 }
 
-ssize_t session_write_bytes(t49_session_t *s, const char *buf, size_t n) {
+ssize_t session_write_bytes(session_t *s, const char *buf, size_t n) {
 	(void)s;
 	return io_write_master_char(buf, n);
 }
 
-int session_resize(t49_session_t *s, int cols, int rows) {
+int session_resize(session_t *s, int cols, int rows) {
 	/* Window-driven resize still flows through rescreen()/setup_screen_size()
 	 * in this stage; this forwarder exists so #4 can move the pty/bridge
 	 * resize here without changing callers. */
@@ -65,18 +65,18 @@ int session_resize(t49_session_t *s, int cols, int rows) {
 	return 0;
 }
 
-int session_dispatch_action(t49_session_t *s, const t49_action_t *a) {
+int session_dispatch_action(session_t *s, const action_t *a) {
 	if (s == NULL || a == NULL) {
 		return 0;
 	}
 
 	switch (a->kind) {
-	case T49_ACTION_SEND_BYTES:
+	case TERM_ACTION_SEND_BYTES:
 		return send_metamode_keystrokes(a->as.bytes.data);
-	case T49_ACTION_SEND_TERMINFO:
+	case TERM_ACTION_SEND_TERMINFO:
 		return send_metamode_keystrokes(a->as.terminfo_name);
-	case T49_ACTION_BUILTIN:
-		if (a->as.builtin.id == T49_BUILTIN_PASTE_CLIPBOARD) {
+	case TERM_ACTION_BUILTIN:
+		if (a->as.builtin.id == TERM_BUILTIN_PASTE_CLIPBOARD) {
 			io_paste_from_clipboard();
 			return 1;
 		}

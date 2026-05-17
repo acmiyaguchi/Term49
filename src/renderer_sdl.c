@@ -4,16 +4,16 @@
 #include "renderer_sdl.h"
 #include "symmenu_sdl.h"
 
-struct t49_renderer_sdl {
+struct renderer_sdl {
 	symmenu_sdl_render_t *main_symmenu;
 	symmenu_sdl_render_t *accent_menus[26][2];
 };
 
-t49_renderer_sdl_t *renderer_sdl_create(void) {
-	return calloc(1, sizeof(t49_renderer_sdl_t));
+renderer_sdl_t *renderer_sdl_create(void) {
+	return calloc(1, sizeof(renderer_sdl_t));
 }
 
-static void renderer_sdl_destroy_symmenus(t49_renderer_sdl_t *renderer) {
+static void renderer_sdl_destroy_symmenus(renderer_sdl_t *renderer) {
 	if (renderer == NULL) {
 		return;
 	}
@@ -29,7 +29,7 @@ static void renderer_sdl_destroy_symmenus(t49_renderer_sdl_t *renderer) {
 	}
 }
 
-void renderer_sdl_destroy(t49_renderer_sdl_t *renderer) {
+void renderer_sdl_destroy(renderer_sdl_t *renderer) {
 	if (renderer == NULL) {
 		return;
 	}
@@ -37,7 +37,7 @@ void renderer_sdl_destroy(t49_renderer_sdl_t *renderer) {
 	free(renderer);
 }
 
-int renderer_sdl_init_symmenus(t49_renderer_sdl_t *renderer, SDL_Surface *screen, pref_t *prefs) {
+int renderer_sdl_init_symmenus(renderer_sdl_t *renderer, SDL_Surface *screen, pref_t *prefs) {
 	if (renderer == NULL || screen == NULL || prefs == NULL) {
 		return -1;
 	}
@@ -74,7 +74,7 @@ int renderer_sdl_init_symmenus(t49_renderer_sdl_t *renderer, SDL_Surface *screen
 	return 0;
 }
 
-static symmenu_sdl_render_t *renderer_sdl_render_for_symmenu(t49_renderer_sdl_t *renderer, symmenu_t *menu) {
+static symmenu_sdl_render_t *renderer_sdl_render_for_symmenu(renderer_sdl_t *renderer, symmenu_t *menu) {
 	if (renderer == NULL || menu == NULL) {
 		return NULL;
 	}
@@ -93,48 +93,48 @@ static symmenu_sdl_render_t *renderer_sdl_render_for_symmenu(t49_renderer_sdl_t 
 	return NULL;
 }
 
-SDL_Surface *renderer_sdl_symmenu_surface_for(t49_renderer_sdl_t *renderer, symmenu_t *menu) {
+SDL_Surface *renderer_sdl_symmenu_surface_for(renderer_sdl_t *renderer, symmenu_t *menu) {
 	symmenu_sdl_render_t *render = renderer_sdl_render_for_symmenu(renderer, menu);
 	return render != NULL ? render->surface : NULL;
 }
 
-int renderer_sdl_symmenu_height(t49_renderer_sdl_t *renderer, symmenu_t *menu) {
+int renderer_sdl_symmenu_height(renderer_sdl_t *renderer, symmenu_t *menu) {
 	SDL_Surface *surface = renderer_sdl_symmenu_surface_for(renderer, menu);
 	return surface != NULL ? surface->h : 0;
 }
 
-/* --- t49_renderer vtable adapter (the seam #6 swaps) --- */
+/* --- renderer vtable adapter (the seam #6 swaps) --- */
 
-static int sdl_ops_init_symmenus(t49_renderer_t *r, void *screen, pref_t *prefs) {
+static int sdl_ops_init_symmenus(renderer_t *r, void *screen, pref_t *prefs) {
 	return renderer_sdl_init_symmenus(renderer_impl(r), (SDL_Surface *)screen, prefs);
 }
 
-static void *sdl_ops_symmenu_surface_for(t49_renderer_t *r, symmenu_t *menu) {
+static void *sdl_ops_symmenu_surface_for(renderer_t *r, symmenu_t *menu) {
 	return renderer_sdl_symmenu_surface_for(renderer_impl(r), menu);
 }
 
-static int sdl_ops_symmenu_height(t49_renderer_t *r, symmenu_t *menu) {
+static int sdl_ops_symmenu_height(renderer_t *r, symmenu_t *menu) {
 	return renderer_sdl_symmenu_height(renderer_impl(r), menu);
 }
 
-static void sdl_ops_destroy(t49_renderer_t *r) {
+static void sdl_ops_destroy(renderer_t *r) {
 	renderer_sdl_destroy(renderer_impl(r));
 }
 
-static const t49_renderer_ops_t SDL_RENDERER_OPS = {
+static const renderer_ops_t SDL_RENDERER_OPS = {
 	sdl_ops_init_symmenus,
 	sdl_ops_symmenu_surface_for,
 	sdl_ops_symmenu_height,
 	sdl_ops_destroy,
 };
 
-const t49_renderer_ops_t *renderer_sdl_ops(void) {
+const renderer_ops_t *renderer_sdl_ops(void) {
 	return &SDL_RENDERER_OPS;
 }
 
-t49_renderer_t *renderer_sdl_create_t49(void) {
-	t49_renderer_t *r;
-	t49_renderer_sdl_t *impl;
+renderer_t *renderer_sdl_new(void) {
+	renderer_t *r;
+	renderer_sdl_t *impl;
 
 	r = renderer_create(renderer_sdl_ops());
 	if (r == NULL) {

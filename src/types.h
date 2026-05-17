@@ -4,30 +4,30 @@
 #include <unicode/utf.h>
 
 #include "action.h"
-#include "t49_types.h"
+#include "term_types.h"
 
-typedef struct t49_keymap {
+typedef struct keymap {
 	char from;
 	char *to;
-	t49_action_t action;
+	action_t action;
 } keymap_t;
 
-typedef t49_rect_t hitbox_t;
+typedef rect_t hitbox_t;
 
-typedef struct t49_symkey {
+typedef struct symkey {
 	char flash;
 	keymap_t *map; /* pointer to corresponding map */
 	hitbox_t hitbox; /* used for mousedown */
 	UChar *uc;
 } symkey_t;
 
-typedef struct t49_symmenu {
+typedef struct symmenu {
 	/* row terminated by NULL pointer, col by NULL symkey_t->map */
 	symkey_t **keys; 
 	keymap_t *entries; /* terminated by NULL keymap_t.to */
 } symmenu_t;
 
-typedef struct t49_pref {
+typedef struct pref {
 	char *font_path;
 	int font_size, *text_color, *background_color, screen_idle_awake,
 		auto_show_vkb, metamode_doubletap_key, metamode_doubletap_delay,

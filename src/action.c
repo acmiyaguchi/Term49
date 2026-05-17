@@ -27,28 +27,28 @@ static int is_terminfo_name(const char *value) {
 	       strcmp(value, "kf12") == 0;
 }
 
-static int parse_builtin(const char *value, t49_builtin_action_t *out) {
+static int parse_builtin(const char *value, builtin_action_t *out) {
 	if (strcmp(value, "alt_down") == 0) {
-		*out = T49_BUILTIN_ALT_DOWN;
+		*out = TERM_BUILTIN_ALT_DOWN;
 		return 1;
 	}
 	if (strcmp(value, "ctrl_down") == 0) {
-		*out = T49_BUILTIN_CTRL_DOWN;
+		*out = TERM_BUILTIN_CTRL_DOWN;
 		return 1;
 	}
 	if (strcmp(value, "rescreen") == 0) {
-		*out = T49_BUILTIN_RESCREEN;
+		*out = TERM_BUILTIN_RESCREEN;
 		return 1;
 	}
 	if (strcmp(value, "paste_clipboard") == 0) {
-		*out = T49_BUILTIN_PASTE_CLIPBOARD;
+		*out = TERM_BUILTIN_PASTE_CLIPBOARD;
 		return 1;
 	}
 	return 0;
 }
 
-int action_parse(const char *value, t49_action_t *out) {
-	t49_builtin_action_t builtin;
+int action_parse(const char *value, action_t *out) {
+	builtin_action_t builtin;
 
 	if (value == NULL || out == NULL) {
 		return 0;
@@ -59,7 +59,7 @@ int action_parse(const char *value, t49_action_t *out) {
 	out->target.session = 0;
 
 	if (parse_builtin(value, &builtin)) {
-		out->kind = T49_ACTION_BUILTIN;
+		out->kind = TERM_ACTION_BUILTIN;
 		out->as.builtin.id = builtin;
 		out->as.builtin.arg = NULL;
 		out->as.builtin.arg_len = 0;
@@ -67,19 +67,19 @@ int action_parse(const char *value, t49_action_t *out) {
 	}
 
 	if (is_terminfo_name(value)) {
-		out->kind = T49_ACTION_SEND_TERMINFO;
+		out->kind = TERM_ACTION_SEND_TERMINFO;
 		out->as.terminfo_name = value;
 		return 1;
 	}
 
-	out->kind = T49_ACTION_SEND_BYTES;
+	out->kind = TERM_ACTION_SEND_BYTES;
 	out->as.bytes.data = value;
 	out->as.bytes.len = strlen(value);
 	return 1;
 }
 
-int action_is_builtin(const t49_action_t *action, t49_builtin_action_t id) {
+int action_is_builtin(const action_t *action, builtin_action_t id) {
 	return action != NULL &&
-	       action->kind == T49_ACTION_BUILTIN &&
+	       action->kind == TERM_ACTION_BUILTIN &&
 	       action->as.builtin.id == id;
 }

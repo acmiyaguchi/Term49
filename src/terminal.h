@@ -48,29 +48,29 @@ int send_metamode_keystrokes(const char* keystrokes);
 int get_virtualkeyboard_height(void);
 int is_passport(void);
 
-#define T49_COLOR_BLACK      {.r = 0,   .g = 0,   .b = 0}
-#define T49_COLOR_RED        {.r = 205, .g = 0,   .b = 0}
-#define T49_COLOR_GREEN      {.r = 0,   .g = 205, .b = 0}
-#define T49_COLOR_YELLOW     {.r = 205, .g = 205, .b = 0}
-#define T49_COLOR_BLUE       {.r = 0,   .g = 0,   .b = 238}
-#define T49_COLOR_MAGENTA    {.r = 205, .g = 0,   .b = 205}
-#define T49_COLOR_CYAN       {.r = 0,   .g = 205, .b = 205}
-#define T49_COLOR_GRAY       {.r = 229, .g = 229, .b = 229}
-#define T49_COLOR_BT_GRAY    {.r = 127, .g = 127, .b = 127}
-#define T49_COLOR_BT_RED     {.r = 255, .g = 0,   .b = 0}
-#define T49_COLOR_BT_GREEN   {.r = 0,   .g = 255, .b = 0}
-#define T49_COLOR_BT_YELLOW  {.r = 255, .g = 255, .b = 0}
-#define T49_COLOR_BT_BLUE    {.r = 92,  .g = 92,  .b = 255}
-#define T49_COLOR_BT_MAGENTA {.r = 255, .g = 0,   .b = 255}
-#define T49_COLOR_BT_CYAN    {.r = 0,   .g = 255, .b = 255}
-#define T49_COLOR_WHITE      {.r = 255, .g = 255, .b = 255}
+#define TERM_COLOR_BLACK      {.r = 0,   .g = 0,   .b = 0}
+#define TERM_COLOR_RED        {.r = 205, .g = 0,   .b = 0}
+#define TERM_COLOR_GREEN      {.r = 0,   .g = 205, .b = 0}
+#define TERM_COLOR_YELLOW     {.r = 205, .g = 205, .b = 0}
+#define TERM_COLOR_BLUE       {.r = 0,   .g = 0,   .b = 238}
+#define TERM_COLOR_MAGENTA    {.r = 205, .g = 0,   .b = 205}
+#define TERM_COLOR_CYAN       {.r = 0,   .g = 205, .b = 205}
+#define TERM_COLOR_GRAY       {.r = 229, .g = 229, .b = 229}
+#define TERM_COLOR_BT_GRAY    {.r = 127, .g = 127, .b = 127}
+#define TERM_COLOR_BT_RED     {.r = 255, .g = 0,   .b = 0}
+#define TERM_COLOR_BT_GREEN   {.r = 0,   .g = 255, .b = 0}
+#define TERM_COLOR_BT_YELLOW  {.r = 255, .g = 255, .b = 0}
+#define TERM_COLOR_BT_BLUE    {.r = 92,  .g = 92,  .b = 255}
+#define TERM_COLOR_BT_MAGENTA {.r = 255, .g = 0,   .b = 255}
+#define TERM_COLOR_BT_CYAN    {.r = 0,   .g = 255, .b = 255}
+#define TERM_COLOR_WHITE      {.r = 255, .g = 255, .b = 255}
 
-#define T49_SYMKEY_BORDER_SIZE 4
-#define T49_SYMMENU_FRET_SIZE 8
-#define T49_SYMMENU_COLOR_FRET       {.r = 130, .g = 130, .b = 130}
-#define T49_SYMMENU_COLOR_BORDER     {.r = 90,  .g = 90,  .b = 90}
-#define T49_SYMMENU_COLOR_BACKGROUND {.r = 38,  .g = 38,  .b = 38}
-#define T49_SYMMENU_COLOR_CORNER     {.r = 153, .g = 153, .b = 153}
-#define T49_SYMMENU_COLOR_FONT       {.r = 255, .g = 255, .b = 255}
+#define TERM_SYMKEY_BORDER_SIZE 4
+#define TERM_SYMMENU_FRET_SIZE 8
+#define TERM_SYMMENU_COLOR_FRET       {.r = 130, .g = 130, .b = 130}
+#define TERM_SYMMENU_COLOR_BORDER     {.r = 90,  .g = 90,  .b = 90}
+#define TERM_SYMMENU_COLOR_BACKGROUND {.r = 38,  .g = 38,  .b = 38}
+#define TERM_SYMMENU_COLOR_CORNER     {.r = 153, .g = 153, .b = 153}
+#define TERM_SYMMENU_COLOR_FONT       {.r = 255, .g = 255, .b = 255}
 
 #endif /* TERMINAL_H_ */

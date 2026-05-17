@@ -1,5 +1,5 @@
 /*
- * Real t49_app: lifecycle + session registry. The app owns exactly one
+ * Real app: lifecycle + session registry. The app owns exactly one
  * session in this stage. app_handle_event() / app_dispatch_action() remain
  * defined in main.c (they touch window/render globals); this file only owns
  * app construction/teardown and session lookup.
@@ -14,16 +14,16 @@
 
 #include "app.h"
 
-struct t49_app {
-	const t49_prefs_t *prefs;   /* borrowed; freed by the caller */
-	t49_session_t *sessions[1];
+struct app {
+	const pref_t *prefs;   /* borrowed; freed by the caller */
+	session_t *sessions[1];
 	unsigned count;
-	t49_session_id_t active;    /* id of the active session */
+	session_id_t active;    /* id of the active session */
 };
 
-int app_init(t49_app_t **out, const t49_prefs_t *prefs) {
-	t49_app_t *app;
-	t49_session_t *s = NULL;
+int app_init(app_t **out, const pref_t *prefs) {
+	app_t *app;
+	session_t *s = NULL;
 
 	if (out == NULL) {
 		return -1;
@@ -49,7 +49,7 @@ int app_init(t49_app_t **out, const t49_prefs_t *prefs) {
 	return 0;
 }
 
-void app_shutdown_state(t49_app_t *app) {
+void app_shutdown_state(app_t *app) {
 	if (app == NULL) {
 		return;
 	}
@@ -59,14 +59,14 @@ void app_shutdown_state(t49_app_t *app) {
 	free(app);
 }
 
-t49_session_t *app_active_session(t49_app_t *app) {
+session_t *app_active_session(app_t *app) {
 	if (app == NULL) {
 		return NULL;
 	}
 	return app->sessions[0];
 }
 
-t49_session_t *app_session_by_id(t49_app_t *app, t49_session_id_t id) {
+session_t *app_session_by_id(app_t *app, session_id_t id) {
 	if (app == NULL) {
 		return NULL;
 	}
@@ -76,6 +76,6 @@ t49_session_t *app_session_by_id(t49_app_t *app, t49_session_id_t id) {
 	return NULL;
 }
 
-unsigned app_session_count(const t49_app_t *app) {
+unsigned app_session_count(const app_t *app) {
 	return app ? app->count : 0;
 }

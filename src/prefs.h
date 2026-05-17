@@ -23,10 +23,8 @@
 #include "types.h"
 
 #define PREFS_FILE_PATH ".term49rc"
-#define T49_DEFAULT_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
-#define T49_DEFAULT_FONT_SIZE 24
-
-typedef pref_t t49_prefs_t;
+#define TERM_DEFAULT_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
+#define TERM_DEFAULT_FONT_SIZE 24
 
 int preferences_guess_best_font_size(pref_t *prefs, int target_cols);
 
@@ -39,13 +37,13 @@ void destroy_preferences(pref_t *pref);
  * loader .c file -- no other translation unit includes <libconfig.h> or any
  * future lua headers. #7 adds prefs_lua_loader() populating the SAME pref_t
  * and selects it here, with no consumer changes. */
-typedef struct t49_prefs_loader {
+typedef struct prefs_loader {
 	pref_t *(*load)(const char *path);
 	void    (*save)(const pref_t *prefs, const char *path);
 	void    (*destroy)(pref_t *prefs);
-} t49_prefs_loader_t;
+} prefs_loader_t;
 
-const t49_prefs_loader_t *prefs_libconfig_loader(void);
+const prefs_loader_t *prefs_libconfig_loader(void);
 
 keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);

@@ -39,8 +39,8 @@
 
 static const int PREFS_VERSION = 9;
 
-#define DEFAULT_FONT_PATH T49_DEFAULT_FONT_PATH
-#define DEFAULT_FONT_SIZE T49_DEFAULT_FONT_SIZE
+#define DEFAULT_FONT_PATH TERM_DEFAULT_FONT_PATH
+#define DEFAULT_FONT_SIZE TERM_DEFAULT_FONT_SIZE
 #define DEFAULT_TEXT_COLOR (int[]){255, 255, 255}
 #define DEFAULT_BACKGROUND_COLOR (int[]){0, 0, 0}
 #define DEFAULT_SCREEN_IDLE_AWAKE 0
@@ -301,7 +301,7 @@ static int* create_int_array(config_t const *config, char const *path, size_t de
 static void keymap_set_to(keymap_t *entry, const char *to) {
 	entry->to = strdup(to);
 	if (!action_parse(entry->to, &entry->action)) {
-		entry->action = (t49_action_t){0};
+		entry->action = (action_t){0};
 	}
 }
 
@@ -676,15 +676,15 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 	return entry != NULL ? entry->to : NULL;
 }
 
-/* The .term49rc/libconfig loader behind the t49_prefs_loader_t seam.
+/* The .term49rc/libconfig loader behind the prefs_loader_t seam.
  * libconfig is included only in this file; #7 adds a sibling
  * prefs_lua_loader() populating the same pref_t. */
-static const t49_prefs_loader_t LIBCONFIG_LOADER = {
+static const prefs_loader_t LIBCONFIG_LOADER = {
 	read_preferences,
 	save_preferences,
 	destroy_preferences,
 };
 
-const t49_prefs_loader_t *prefs_libconfig_loader(void) {
+const prefs_loader_t *prefs_libconfig_loader(void) {
 	return &LIBCONFIG_LOADER;
 }
