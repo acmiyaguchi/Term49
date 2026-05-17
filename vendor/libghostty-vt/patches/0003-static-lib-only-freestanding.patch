@@ -10,7 +10,7 @@ index 8ef7701..ecc16b0 100644
 -    const libghostty_vt_shared = shared: {
 -        if (config.target.result.cpu.arch.isWasm()) {
 -            break :shared try buildpkg.GhosttyLibVt.initWasm(
-+    // libghostty-vt (shared). BB10 patches/0004: freestanding targets
++    // libghostty-vt (shared). BB10 freestanding: freestanding targets
 +    // cannot dynamic-link, and the BB10/QNX integration consumes the static
 +    // .a — skip the shared lib there so `zig build` doesn't abort.
 +    if (config.target.result.os.tag != .freestanding) {

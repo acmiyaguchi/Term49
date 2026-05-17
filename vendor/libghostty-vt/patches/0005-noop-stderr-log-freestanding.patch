@@ -7,7 +7,7 @@ index c4b2b17..42ae63b 100644
      message_len: usize,
  ) callconv(lib.calling_conv) void {
 -    if (comptime builtin.target.cpu.arch.isWasm()) return;
-+    // BB10 patches/0006: this fn's own doc says it's a no-op on
++    // BB10 freestanding: this fn's own doc says it's a no-op on
 +    // freestanding/wasm, but the guard only covered wasm. freestanding
 +    // has no stderr either, and std.debug.lockStderrWriter pulls posix
 +    // write/pwritev/lseek (absent on freestanding).

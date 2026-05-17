@@ -6,7 +6,7 @@ index ae0c87b..071caf4 100644
      // embedder-provided callback (or silently discards when none is set).
      if (terminal.options.c_abi) break :options .{
          .logFn = @import("terminal/c/sys.zig").logFn,
-+        // BB10 patches/0002: freestanding has no known page size; QNX
++        // BB10 freestanding: freestanding has no known page size; QNX
 +        // Neutrino on ARMv7 (BB10) uses 4 KiB pages.
 +        .page_size_min = 4 * 1024,
 +        .page_size_max = 4 * 1024,

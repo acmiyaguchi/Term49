@@ -11,12 +11,11 @@ Run from the Term49 top-level BBNDK shell:
 ```sh
 make -C vendor/libghostty-vt deps       # materialize pinned Zig + deps
 make -C vendor/libghostty-vt abi-probe  # choose Zig ARM ABI from qcc output
-make -C vendor/libghostty-vt abi-zig    # prove Zig/qcc ABI boundary
 make -C vendor/libghostty-vt lib        # build build/ghostty/lib/libghostty-vt.a
 ```
 
-The top-level Term49 `make Term49` depends on this library and will build it on
-demand if missing.
+The top-level Term49 `make` depends on this library and will build it on demand
+if missing.
 
 ## Standalone examples/checks
 

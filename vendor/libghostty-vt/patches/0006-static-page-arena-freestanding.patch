@@ -6,7 +6,7 @@ index 17eea73..245db5f 100644
      // In tests we use our testing allocator so we can detect leaks.
      if (builtin.is_test) return std.testing.allocator;
  
-+    // BB10 patches/0007: freestanding has no OS page allocator
++    // BB10 freestanding: freestanding has no OS page allocator
 +    // (std.heap.page_allocator -> posix mmap, absent on freestanding).
 +    // Back terminal pages with a static arena to prove the BB10/QNX
 +    // end-to-end path. PRODUCTION TODO: thread the embedder/QNX

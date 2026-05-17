@@ -1132,7 +1132,7 @@ static int sdl_init() {
 	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
 
 	if(ghostty_bridge_init((uint16_t)cols, (uint16_t)rows, 1000) != 0){
-		fprintf(stderr, "Unable to initialize libghostty-vt shadow terminal\n");
+		fprintf(stderr, "Unable to initialize libghostty-vt terminal\n");
 		return TERM_FAILURE;
 	}
 	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
@@ -1435,9 +1435,6 @@ static int pty_init() {
 		/* Set LC_CTYPE=en_US.UTF-8
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
-		/* Let the interactive shell report that this Term49 binary is using
-		 * libghostty-vt for terminal-state parsing and rendering. */
-		setenv("TERM49_GHOSTTY_RENDERER", "1", 1);
 		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
 		 * absolute path: CWD is now the shared HOME, so the old
 		 * "../app/native/..." relative path no longer resolves. */

@@ -15,7 +15,7 @@
 #include <ghostty/vt.h>
 
 /* Embedder allocator over QNX libc malloc/free. libghostty-vt's freestanding
- * default allocator is a 0-byte FBA (patches/0005: the NULL path is
+ * default allocator is a 0-byte FBA (the NULL path is
  * unsupported on freestanding by design) — Term49 must pass a real one, so
  * this harness does too. Manual over-align (alignment is <=16 per the C
  * contract); only malloc/free are needed (no feature macros, no posix). */

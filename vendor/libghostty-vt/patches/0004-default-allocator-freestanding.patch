@@ -6,7 +6,7 @@ index fc56033..2bfa672 100644
      // Wasm
      if (comptime builtin.target.cpu.arch.isWasm()) return std.heap.wasm_allocator;
  
-+    // BB10 patches/0005: std.heap.smp_allocator's page allocator needs
++    // BB10 freestanding: std.heap.smp_allocator's page allocator needs
 +    // posix mmap (posix.MAP/mmap), absent on freestanding. On freestanding
 +    // the embedder MUST pass a GhosttyAllocator (Term49 always does), so
 +    // this fallback is dead code at runtime and only has to compile
