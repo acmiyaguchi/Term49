@@ -18,12 +18,105 @@
 #include <unistd.h>
 #include <string.h>
 #include <unicode/utf.h>
+#include <errno.h>
+#include <stdio.h>
+#include <sys/keycodes.h>
+
+#include <libconfig.h>
 
 #include "terminal.h"
+#include "accent_menus.h"
+#include "action.h"
 #include "symmenu.h"
-#include "preferences.h"
+#include "prefs.h"
 
-pref_t *prefs = NULL;
+#define PREFS_FILE_BACKUP ".term49rc-old"
+#define README_FILE_PATH "../app/native/README"
+#define README45_FILE_PATH "../app/native/README45"
+
+#define PREFS_COLOR_NUM_ELEMENTS 3
+#define PREFS_SYMKEYS_DEFAULT_NUM_ROWS 2
+
+static const int PREFS_VERSION = 9;
+
+#define DEFAULT_FONT_PATH TERM_DEFAULT_FONT_PATH
+#define DEFAULT_FONT_SIZE TERM_DEFAULT_FONT_SIZE
+#define DEFAULT_TEXT_COLOR (int[]){255, 255, 255}
+#define DEFAULT_BACKGROUND_COLOR (int[]){0, 0, 0}
+#define DEFAULT_SCREEN_IDLE_AWAKE 0
+#define DEFAULT_AUTO_SHOW_VKB 1
+#define DEFAULT_METAMODE_DOUBLETAP_KEY KEYCODE_RIGHT_SHIFT
+#define DEFAULT_METAMODE_DOUBLETAP_DELAY 500000000
+#define DEFAULT_KEYHOLD_ACTIONS 1
+#define DEFAULT_METAMODE_HOLD_KEY KEYCODE_SPACE
+#define DEFAULT_ALLOW_RESIZE_COLUMNS 0
+#define DEFAULT_METAMODE_HITBOX (hitbox_t){0, 0, 100, 100}
+#define DEFAULT_TTY_ENCODING "UTF-8"
+#define DEFAULT_METAMODE_KEYS_LEN 2
+#define DEFAULT_METAMODE_KEYS (keymap_t[]){{'e', "\x1b"}, {'t', "\x09"}}
+#define DEFAULT_METAMODE_STICKY_KEYS_LEN 4
+#define DEFAULT_METAMODE_STICKY_KEYS (keymap_t[]){{'k', "kcuu1"}, \
+                                                  {'j', "kcud1"}, \
+                                                  {'l', "kcuf1"}, \
+                                                  {'h', "kcub1"}}
+#define DEFAULT_METAMODE_FUNC_KEYS_LEN 4
+#define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
+                                                {'c', "ctrl_down"}, \
+                                                {'s', "rescreen"}, \
+                                                {'v', "paste_clipboard"}}
+#define DEFAULT_SYMMENU_NUM_ROWS 2
+#define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
+#define DEFAULT_SYMMENU_ENTRIES (keymap_t[]) {  \
+    {'q', "~"}, {'w', "`"}, {'e', "{"}, {'r', "}"}, {'t', "["}, {'y', "]"}, {'u', "<"}, {'i', ">"}, {'o', "^"}, {'p', "%"}, \
+    {'a', "="}, {'s', "-"}, {'d', "*"}, {'f', "/"}, {'g', "\\"},{'h', "|"}, {'j', "&"}, {'k', "'"}, {'l', "\""} \
+}
+#define DEFAULT_STICKY_SYM_KEY 0
+#define DEFAULT_STICKY_SHIFT_KEY 1
+#define DEFAULT_STICKY_ALT_KEY 1
+#define DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN 2
+#define DEFAULT_KEYHOLD_ACTIONS_EXEMPT (int[]){KEYCODE_BACKSPACE, KEYCODE_RETURN}
+#define DEFAULT_RESCREEN_FOR_SYMMENU 1
+#define DEFAULT_KEYHOLD_ACCENTS 1
+
+#define DEFAULT_ALTSYM_ENTRIES_LEN 27
+#define DEFAULT_ALTSYM_ENTRIES (keymap_t[]) {  \
+    {'q', "#"}, {'w', "1"}, {'e', "2"}, {'r', "3"}, {'t', "("}, {'y', ")"}, {'u', "_"}, {'i', "-"}, {'o', "+"}, {'p', "@"}, \
+                {'a', "*"}, {'s', "4"}, {'d', "5"}, {'f', "6"}, {'g', "/"}, {'h', ":"}, {'j', ";"}, {'k', "'"}, {'l', "\""}, \
+                {'z', "7"}, {'x', "8"}, {'c', "9"}, {'v', "?"}, {'b', "!"}, {'n', ","}, {'m', "."}, \
+                            {'0', "0"} \
+}
+
+#define NUM_SIZES 251
+static const int font_widths[NUM_SIZES] = {0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6,
+                                           7, 7, 8, 8, 9, 10, 10, 11, 11, 12,
+                                           13, 13, 14, 14, 15, 16, 16, 17, 17,
+                                           18, 19, 19, 20, 20, 21, 22, 22, 23,
+                                           23, 24, 25, 25, 26, 26, 27, 28, 28,
+                                           29, 29, 30, 31, 31, 32, 32, 33, 34,
+                                           34, 35, 35, 36, 37, 37, 38, 38, 39,
+                                           40, 40, 41, 41, 42, 43, 43, 44, 44,
+                                           45, 46, 46, 47, 47, 48, 49, 49, 50,
+                                           50, 51, 52, 52, 53, 53, 54, 55, 55,
+                                           56, 56, 57, 58, 58, 59, 59, 60, 61,
+                                           61, 62, 62, 63, 64, 64, 65, 65, 66,
+                                           67, 67, 68, 68, 69, 70, 70, 71, 71,
+                                           72, 73, 73, 74, 74, 75, 76, 76, 77,
+                                           77, 78, 79, 79, 80, 80, 81, 82, 82,
+                                           83, 83, 84, 85, 85, 86, 86, 87, 88,
+                                           88, 89, 89, 90, 91, 91, 92, 92, 93,
+                                           94, 94, 95, 95, 96, 97, 97, 98, 98,
+                                           99, 100, 100, 101, 101, 102, 103, 103,
+                                           104, 104, 105, 106, 106, 107, 107, 108,
+                                           109, 109, 110, 110, 111, 112, 112, 113,
+                                           113, 114, 115, 115, 116, 116, 117, 118,
+                                           118, 119, 119, 120, 121, 121, 122, 122,
+                                           123, 124, 124, 125, 125, 126, 127, 127,
+                                           128, 128, 129, 130, 130, 131, 131, 132,
+                                           133, 133, 134, 134, 135, 136, 136, 137,
+                                           137, 138, 139, 139, 140, 140, 141, 142,
+                                           142, 143, 143, 144, 145, 145, 146, 146,
+                                           147, 148, 148, 149, 149};
+
 
 static void first_run(pref_t *prefs) {
 	char* home = getenv("HOME");
@@ -205,6 +298,13 @@ static int* create_int_array(config_t const *config, char const *path, size_t de
 	return result;
 }
 
+static void keymap_set_to(keymap_t *entry, const char *to) {
+	entry->to = strdup(to);
+	if (!action_parse(entry->to, &entry->action)) {
+		entry->action = (action_t){0};
+	}
+}
+
 static keymap_t* create_keymap_array(config_t const *config, char const *path, size_t def_len, keymap_t const *def) {
 	config_setting_t *setting = config_lookup(config, path);
 	int use_default = 0;
@@ -224,14 +324,14 @@ static keymap_t* create_keymap_array(config_t const *config, char const *path, s
 	if (use_default) {
 		for (int i = 0; i < source_len; i++) {
 			result[i].from = def[i].from;
-			result[i].to = strdup(def[i].to);
+			keymap_set_to(&result[i], def[i].to);
 		}
 	} else {
 		for (int i = 0; i < source_len; i++) {
 			config_setting_t *m = config_setting_get_elem(setting, i);
 			char const *from_str = config_setting_get_string_elem(m, 0);
 			result[i].from = from_str[0];
-			result[i].to = strdup(config_setting_get_string_elem(m, 1));
+			keymap_set_to(&result[i], config_setting_get_string_elem(m, 1));
 		}
 	}
 
@@ -271,7 +371,7 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 			/* fill in the symkey row (rest done during render) */
 			for (int col = 0; col < def_row_lens[row]; ++col) {
 				menu->entries[entry_idx].from = def_entries[entry_idx].from;
-				menu->entries[entry_idx].to = strdup(def_entries[entry_idx].to);
+				keymap_set_to(&menu->entries[entry_idx], def_entries[entry_idx].to);
 				
 				menu->keys[row][col].flash = '\0';
 				menu->keys[row][col].map = &menu->entries[entry_idx];
@@ -310,7 +410,7 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 				config_setting_t *m = config_setting_get_elem(col_s, col);
 				char const *from_str = config_setting_get_string_elem(m, 0);
 				menu->entries[entry_idx].from = from_str[0];
-				menu->entries[entry_idx].to = strdup(config_setting_get_string_elem(m, 1));
+				keymap_set_to(&menu->entries[entry_idx], config_setting_get_string_elem(m, 1));
 			
 				menu->keys[row][col].flash = '\0';
 				menu->keys[row][col].map = &menu->entries[entry_idx];
@@ -319,9 +419,6 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 			}
 		}
 	}
-
-	/* call the rendering function later after SDL init*/
-	menu->surface = NULL;
 
 	return menu;
 }
@@ -564,12 +661,30 @@ int is_int_member(int const* list, int target) {
 	return 0;
 }
 
-const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
+keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head) {
 	while (keymap_head->to != NULL) {
 		if (keymap_head->from == keystroke) {
-			return keymap_head->to;
+			return keymap_head;
 		}
 		++keymap_head;
 	}
 	return NULL;
+}
+
+const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
+	keymap_t *entry = keymap_lookup(keystroke, keymap_head);
+	return entry != NULL ? entry->to : NULL;
+}
+
+/* The .term49rc/libconfig loader behind the prefs_loader_t seam.
+ * libconfig is included only in this file; #7 adds a sibling
+ * prefs_lua_loader() populating the same pref_t. */
+static const prefs_loader_t LIBCONFIG_LOADER = {
+	read_preferences,
+	save_preferences,
+	destroy_preferences,
+};
+
+const prefs_loader_t *prefs_libconfig_loader(void) {
+	return &LIBCONFIG_LOADER;
 }

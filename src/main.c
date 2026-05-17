@@ -25,6 +25,7 @@
 #include <time.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/keycodes.h>
 #include <unistd.h>
 
 #include <bps/screen.h>
@@ -39,9 +40,14 @@
 
 #include "types.h"
 #include "terminal.h"
-#include "preferences.h"
+#include "action.h"
+#include "app.h"
+#include "prefs.h"
+#include "symmenu.h"
+#include "renderer.h"
+#include "platform.h"
+#include "platform_sdl.h"
 #include "io.h"
-#include "colors.h"
 #include "ghostty_bridge.h"
 
 static int exit_application = 0;
@@ -113,6 +119,10 @@ static char flash = 0;
 
 static pref_t *prefs = NULL;
 static symmenu_t *current_symmenu = NULL;
+static renderer_t *renderer = NULL;
+static app_t *g_app = NULL;
+static platform_t *g_platform = NULL;
+static const prefs_loader_t *g_prefs_loader = NULL;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
@@ -120,8 +130,8 @@ static char altsym_lock = 0;
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
 static struct timespec metamode_last;
-static SDL_Color metamode_cursor_fg = SDL_BLACK;
-static SDL_Color metamode_cursor_bg = SDL_GREEN;
+static SDL_Color metamode_cursor_fg = TERM_COLOR_BLACK;
+static SDL_Color metamode_cursor_bg = TERM_COLOR_GREEN;
 static SDL_Surface* metamode_cursor;
 static int vmodifiers = 0;
 
@@ -426,10 +436,14 @@ void symmenu_stick(){
 
 void symmenu_toggle(symmenu_t *target){
 	if (current_symmenu == NULL){
+		int symmenu_height = renderer_symmenu_height(renderer, target);
+		if (target == NULL || symmenu_height <= 0) {
+			return;
+		}
 		current_symmenu = target;
 		// resize to show menu
 		if (prefs->rescreen_for_symmenu) {
-			setup_screen_size(screen->w, screen->h - current_symmenu->surface->h);
+			setup_screen_size(screen->w, screen->h - symmenu_height);
 		}
 		if (prefs->sticky_sym_key) {
 			symmenu_stick();
@@ -445,7 +459,7 @@ void symmenu_toggle(symmenu_t *target){
 	mark_screen_dirty(1);
 }
 
-static const char* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
+static keymap_t* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
 	for (int row = 0; menu->keys[row] != NULL; ++row) {
 		for (int col = 0; menu->keys[row][col].map != NULL; ++col) {
 			symkey_t *key = &menu->keys[row][col];
@@ -459,7 +473,7 @@ static const char* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
 				} else {
 					key->flash = 1;
 				}
-				return key->map->to;
+				return key->map;
 			}
 		}
 	}
@@ -479,9 +493,9 @@ int font_init(int font_size){
 	if ( font == NULL ) {
 		/* try opening the default stuff */
 		fprintf(stderr, "Couldn't load %d pt font from %s: %s\n", font_size, prefs->font_path, SDL_GetError());
-		font = TTF_OpenFont(DEFAULT_FONT_PATH, DEFAULT_FONT_SIZE);
+		font = TTF_OpenFont(TERM_DEFAULT_FONT_PATH, TERM_DEFAULT_FONT_SIZE);
 		if(font == NULL){
-			fprintf(stderr, "Could not open default font %s: %s\n", DEFAULT_FONT_PATH, SDL_GetError());
+			fprintf(stderr, "Could not open default font %s: %s\n", TERM_DEFAULT_FONT_PATH, SDL_GetError());
 			return TERM_FAILURE;
 		}
 	}
@@ -560,7 +574,7 @@ void font_uninit(){
 void handle_activeevent(int gain, int state){
 	if (gain && prefs->auto_show_vkb){
 		PRINT(stderr, "Got ActiveEvent - initializing keyboard\n");
-		virtualkeyboard_show();
+		platform_vkb_show(g_platform);
 	}
 }
 
@@ -576,40 +590,48 @@ void handle_mousedown(Uint16 x, Uint16 y){
 	/* touching the screen will reveal the keyboard on a Passport,
 	 * since the system wide gesture doesn't work to reveal. */
 	if (prefs->auto_show_vkb){
-		virtualkeyboard_show();
+		platform_vkb_show(g_platform);
 	}
 
 	/* check for symmenu touches */
 	if(current_symmenu != NULL){
-		send_metamode_keystrokes(symkey_for_mousedown(current_symmenu, x, y));
+		keymap_t *entry = symkey_for_mousedown(current_symmenu, x, y);
+		if (entry != NULL) {
+			app_dispatch_action(g_app, &entry->action);
+		}
 	}
 }
 
+/* SDL->app ABI: the prebuilt libSDL12.so calls this directly with the raw
+ * BPS virtual-keyboard event. It is now a thin platform adapter: decode the
+ * BPS event into a backend-agnostic event_t and route it through the app
+ * boundary. The reflow itself lives in app_handle_event()'s TERM_EVENT_VKB
+ * case, which the native Screen/BPS event source (#6) will feed the same way.
+ * Agnostic VKB encoding (see event.h): visible 1/0 = explicit show/hide;
+ * visible == -1 = height-only INFO update (keep current visibility). */
 void handle_virtualkeyboard_event(bps_event_t *event){
-	PRINT(stderr, "Virtual Keyboard event\n");
+	event_t ev;
 	int event_code = bps_event_get_code(event);
-	int vkb_h;
-	int resolution[2] = {screen->w, screen->h};
 
-	vkb_h = get_virtualkeyboard_height();
-
+	ev.type = TERM_EVENT_VKB;
 	switch (event_code){
 	case VIRTUALKEYBOARD_EVENT_VISIBLE:
-		setup_screen_size(resolution[0], resolution[1] - vkb_h);
-		virtualkeyboard_visible = 1;
+		ev.as.vkb.visible = 1;
+		ev.as.vkb.height = 0;
 		break;
 	case VIRTUALKEYBOARD_EVENT_HIDDEN:
-		setup_screen_size(resolution[0], resolution[1]);
-		virtualkeyboard_visible = 0;
+		ev.as.vkb.visible = 0;
+		ev.as.vkb.height = 0;
 		break;
 	case VIRTUALKEYBOARD_EVENT_INFO:
-		vkb_h = virtualkeyboard_visible ? virtualkeyboard_event_get_height(event) : 0;
-		setup_screen_size(resolution[0], resolution[1] - vkb_h);
+		ev.as.vkb.visible = -1;
+		ev.as.vkb.height = (int)virtualkeyboard_event_get_height(event);
 		break;
 	default:
 		fprintf(stderr, "Unknown keyboard event code %d\n", event_code);
-		break;
+		return;
 	}
+	app_handle_event(g_app, &ev);
 }
 
 void rescreen(int w, int h){
@@ -627,7 +649,7 @@ void rescreen(int w, int h){
 
 	setup_screen_size(width, height);
 	if(virtualkeyboard_visible){
-		vkb_h = get_virtualkeyboard_height();
+		vkb_h = platform_vkb_height(g_platform);
 		setup_screen_size(width, height - vkb_h);
 	}
 	mark_screen_dirty(1);
@@ -642,6 +664,44 @@ void toggle_vkeymod(int mod){
 		vmodifiers |= mod;
 	}
 	mark_screen_dirty(1);
+}
+
+int app_dispatch_action(app_t *app, const action_t *action) {
+	session_t *session;
+
+	if (action == NULL) {
+		return 0;
+	}
+
+	/* Session-scoped actions go to their target session (0 => active).
+	 * Every parsed keybinding resolves to the active session today;
+	 * control/scripting (#5) and TAB_* (#4) set a real id. App/window
+	 * -scoped builtins stay here. */
+	session = app_session_by_id(app, action->target.session);
+
+	switch (action->kind) {
+	case TERM_ACTION_SEND_BYTES:
+	case TERM_ACTION_SEND_TERMINFO:
+		return session_dispatch_action(session, action);
+	case TERM_ACTION_BUILTIN:
+		switch (action->as.builtin.id) {
+		case TERM_BUILTIN_ALT_DOWN:
+			toggle_vkeymod(KEYMOD_ALT);
+			return 1;
+		case TERM_BUILTIN_CTRL_DOWN:
+			toggle_vkeymod(KEYMOD_CTRL);
+			return 1;
+		case TERM_BUILTIN_RESCREEN:
+			rescreen(-1, -1);
+			return 1;
+		case TERM_BUILTIN_PASTE_CLIPBOARD:
+			return session_dispatch_action(session, action);
+		default:
+			return 0;
+		}
+	}
+
+	return 0;
 }
 
 static symmenu_t *get_keyhold_actions(int keycode) {
@@ -712,10 +772,16 @@ static symmenu_t *get_keyhold_actions(int keycode) {
 	return NULL;
 }
 
-void handleKeyboardEvent(screen_event_t screen_event)
+/* App-layer keyboard handler. Moved verbatim from the old handleKeyboardEvent
+ * body (screen_val -> k->sym, the screen_flags KEY_DOWN/KEY_REPEAT bits decoded
+ * to k->pressed/k->repeat at the platform boundary, tty writes ->
+ * session_write_text) so device behavior is unchanged. It now runs behind the
+ * typed event model: any platform key source builds a TERM_EVENT_KEY and the
+ * app routes it here. */
+static void app_handle_key(app_t *app, const key_event_t *k)
 {
-	int screen_val, screen_flags, screen_alt_val;
-	int modifiers;
+	session_t *session = app_active_session(app);
+	int modifiers = k->modifiers;
 	int num_chars;
 	int vkbd_h;
 	int metamode_just_set = 0;
@@ -723,24 +789,18 @@ void handleKeyboardEvent(screen_event_t screen_event)
 	UChar *target = c;
 	struct timespec now;
 	uint64_t now_t, diff_t, metamode_last_t;
-	const char* keys = NULL;
+	keymap_t *keymap = NULL;
 	int32_t last_len = 0;
 	int32_t bs_i = 0;
 	size_t upcase_len = 0;
 	UChar backspace = 0x8;
 
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_FLAGS, &screen_flags);
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_SYM, &screen_val);
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_ALTERNATE_SYM, &screen_alt_val);
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_MODIFIERS, &modifiers);
-	//screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_CAP, &cap);
-
-	if (screen_flags & KEY_DOWN) {
-		PRINT(stderr, "The '%d' key was pressed (modifiers: %d) (char %c) (alt %d)\n", (int)screen_val, modifiers, (char)screen_val, (int)screen_alt_val);
+	if (k->pressed) {
+		PRINT(stderr, "The '%d' key was pressed (modifiers: %d) (char %c) (alt %d)\n", (int)k->sym, modifiers, (char)k->sym, (int)k->alternate_sym);
 		fflush(stdout);
 
 		/* if we're toggling metamode on or off with doubletap */
-		if((screen_val == metamode_doubletap_key) && !(screen_flags & KEY_REPEAT)){
+		if((k->sym == metamode_doubletap_key) && !k->repeat){
 			clock_gettime(CLOCK_MONOTONIC, &now);
 			now_t = timespec2nsec(&now);
 			metamode_last_t = timespec2nsec(&metamode_last);
@@ -753,8 +813,8 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		}
 
 		/* handle sticky keys */
-		if(screen_val == KEYCODE_BB_SYM_KEY){
-			if(!(screen_flags & KEY_REPEAT)){
+		if(k->sym == KEYCODE_BB_SYM_KEY){
+			if(!k->repeat){
 				symmenu_toggle(prefs->main_symmenu);
 			} else{
 				/* they are holding it down */
@@ -763,9 +823,9 @@ void handleKeyboardEvent(screen_event_t screen_event)
 			return;
 		}
 
-		if(screen_val == KEYCODE_BB_ALT_KEY){
+		if(k->sym == KEYCODE_BB_ALT_KEY){
 			if (prefs->sticky_alt_key) {
-				if(screen_flags & KEY_REPEAT){
+				if(k->repeat){
 					return;
 				} else {
 					altsym_toggle();
@@ -773,11 +833,11 @@ void handleKeyboardEvent(screen_event_t screen_event)
 				}
 			}
 		}
-		
+
 		if(!virtualkeyboard_visible
-		   && ((screen_val == KEYCODE_LEFT_SHIFT) || (screen_val == KEYCODE_RIGHT_SHIFT))){
+		   && ((k->sym == KEYCODE_LEFT_SHIFT) || (k->sym == KEYCODE_RIGHT_SHIFT))){
 			if (prefs->sticky_shift_key) {
-				if(screen_flags & KEY_REPEAT){
+				if(k->repeat){
 					return;
 				} else {
 					toggle_vkeymod(KEYMOD_SHIFT);
@@ -788,35 +848,35 @@ void handleKeyboardEvent(screen_event_t screen_event)
 
 		/* metamode sticky keys don't trigger repreat */
 		if (metamode && !metamode_just_set) {
-			keys = keystroke_lookup((char)screen_val, prefs->metamode_sticky_keys);
-			if (keys != NULL){
-				send_metamode_keystrokes(keys);
+			keymap = keymap_lookup((char)k->sym, prefs->metamode_sticky_keys);
+			if (keymap != NULL){
+				app_dispatch_action(app, &keymap->action);
 				return;
 			}
 		}
 
 		/* handle key repeat to upcase / metamode */
-		if ((screen_flags & KEY_REPEAT) &&
+		if (k->repeat &&
 		    prefs->keyhold_actions &&
-		    !is_int_member(prefs->keyhold_actions_exempt, screen_val)) {
+		    !is_int_member(prefs->keyhold_actions_exempt, k->sym)) {
 			if (!key_repeat_done) {
 				/* Check for a metamode toggle key first */
-				if (screen_val == prefs->metamode_hold_key) {
-					io_write_master(&backspace, 1);
+				if (k->sym == prefs->metamode_hold_key) {
+					session_write_text(session, &backspace, 1);
 					metamode_toggle();
 					key_repeat_done = 1;
 					return;
 				}
-				
-				symmenu_t *menu = get_keyhold_actions(screen_val);
+
+				symmenu_t *menu = get_keyhold_actions(k->sym);
 				if (menu == NULL) {
 					return;
 				}
-				
+
 				last_len = io_upcase_last_write(&target, CHARACTER_BUFFER);
 				/* write backspace */
 				for(bs_i = 1; bs_i <= last_len; ++bs_i) {
-					io_write_master(&backspace, 1);
+					session_write_text(session, &backspace, 1);
 				}
 
 				/* select the mapping */
@@ -827,7 +887,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 					 * Note that this really only works if the program on the other
 					 * end of the line understands unicode, and can marry up backspaces
 					 * with codepoints, instead of just blindly deleting one byte at a time. */
-					send_metamode_keystrokes(menu->entries[0].to);
+					app_dispatch_action(app, &menu->entries[0].action);
 				} else {
 					symmenu_toggle(menu);
 				}
@@ -842,20 +902,16 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		}
 
 		if(metamode && !metamode_just_set){
-			keys = keystroke_lookup((char)screen_val, prefs->metamode_keys);
-			if(keys != NULL){
-				send_metamode_keystrokes(keys);
+			keymap = keymap_lookup((char)k->sym, prefs->metamode_keys);
+			if(keymap != NULL){
+				app_dispatch_action(app, &keymap->action);
 				metamode_toggle();
 				return;
 			}
 			// else
-			keys = keystroke_lookup((char)screen_val, prefs->metamode_func_keys);
-			if(keys != NULL){
-				int f = 0; /* check custom func commands */
-				if(!f && (0 == strncmp(keys, "alt_down", 8)))          { toggle_vkeymod(KEYMOD_ALT);f=1;}
-				if(!f && (0 == strncmp(keys, "ctrl_down", 9)))         { toggle_vkeymod(KEYMOD_CTRL);f=1;}
-				if(!f && (0 == strncmp(keys, "rescreen", 8)))          { rescreen(-1, -1);f=1;}
-				if(!f && (0 == strncmp(keys, "paste_clipboard", 15)))  { io_paste_from_clipboard();f=1;}
+			keymap = keymap_lookup((char)k->sym, prefs->metamode_func_keys);
+			if(keymap != NULL){
+				app_dispatch_action(app, &keymap->action);
 			}
 			metamode_toggle();
 			return;
@@ -863,19 +919,19 @@ void handleKeyboardEvent(screen_event_t screen_event)
 
 		/* handle alt keys */
 		if (altsym_lock) {
-			keys = keystroke_lookup((char)screen_val, prefs->altsym_entries);
+			keymap = keymap_lookup((char)k->sym, prefs->altsym_entries);
 			altsym_toggle();
-			if (keys != NULL){
-				send_metamode_keystrokes(keys);
+			if (keymap != NULL){
+				app_dispatch_action(app, &keymap->action);
 				return;
 			}
 		}
 
 		/* handle sym keys */
 		if (current_symmenu != NULL) {
-			keys = keystroke_lookup((char)screen_val, current_symmenu->entries);
-			if (keys != NULL){
-				send_metamode_keystrokes(keys);
+			keymap = keymap_lookup((char)k->sym, current_symmenu->entries);
+			if (keymap != NULL){
+				app_dispatch_action(app, &keymap->action);
 				symmenu_toggle(NULL);
 				return;
 			}
@@ -893,7 +949,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		vmodifiers = 0;
 
 		/* now process the keypress */
-		switch (screen_val) {
+		switch (k->sym) {
 		case KEYCODE_PAUSE      :
 		case KEYCODE_SCROLL_LOCK:
 		case KEYCODE_PRINT      :
@@ -927,7 +983,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 			//case KEYCODE_F10        :
 			//case KEYCODE_F11        :
 			//case KEYCODE_F12        :
-			PRINT(stderr, "Modifier %d\n", screen_val);
+			PRINT(stderr, "Modifier %d\n", k->sym);
 			break;
 		case KEYCODE_LEFT_CTRL  :
 		case KEYCODE_RIGHT_CTRL :
@@ -941,15 +997,45 @@ void handleKeyboardEvent(screen_event_t screen_event)
 			toggle_vkeymod(KEYMOD_CTRL);
 			break;
 		default:
-			num_chars = terminal_key_sequence(screen_val, modifiers, c);
+			num_chars = terminal_key_sequence(k->sym, modifiers, c);
 			int nc;
 			for(nc = 0; nc < num_chars; ++nc){
 				PRINT(stderr, "Writing 0x%x\n", (int)c[nc]);
 			}
-			io_write_master((const UChar*)&c, num_chars);
+			session_write_text(session, (const UChar*)&c, num_chars);
 			break;
 		}
 	}
+}
+
+/* SDL->app ABI: the prebuilt libSDL12.so calls this directly on a BB10
+ * screen key event (the SDL run loop only sees an inert SYSWMEVENT for the
+ * same key -- see the metamode_toggle comment). Thin platform adapter:
+ * decode the screen_event_t into a backend-agnostic rich event_t and
+ * route it through the app boundary. The native Screen/BPS event source
+ * (#6) feeds the same TERM_EVENT_KEY. */
+void handleKeyboardEvent(screen_event_t screen_event)
+{
+	int screen_val, screen_flags, screen_alt_val, modifiers;
+	event_t ev;
+
+	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_FLAGS, &screen_flags);
+	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_SYM, &screen_val);
+	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_ALTERNATE_SYM, &screen_alt_val);
+	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_MODIFIERS, &modifiers);
+	//screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_CAP, &cap);
+
+	memset(&ev, 0, sizeof(ev));
+	ev.type = TERM_EVENT_KEY;
+	ev.as.key.sym = screen_val;
+	ev.as.key.keycode = screen_val;
+	ev.as.key.unicode = screen_val;
+	ev.as.key.alternate_sym = screen_alt_val;
+	ev.as.key.modifiers = modifiers;
+	ev.as.key.pressed = (screen_flags & KEY_DOWN) ? 1 : 0;
+	ev.as.key.repeat = (screen_flags & KEY_REPEAT) ? 1 : 0;
+
+	app_handle_event(g_app, &ev);
 }
 
 void set_tty_window_size(){
@@ -1152,9 +1238,21 @@ static int sdl_init() {
 	return TERM_SUCCESS;
 }
 
-void uninit(){
+void app_shutdown(void){
 
 	SDL_DestroyMutex(input_mutex);
+
+	/* Tear down session state before ghostty_bridge_uninit()/io_uninit()
+	 * below, since the single session borrows both. NULL-safe on the
+	 * pre-renderer early-exit paths where g_app was never created. */
+	app_shutdown_state(g_app);
+	g_app = NULL;
+
+	platform_destroy(g_platform);
+	g_platform = NULL;
+
+	renderer_destroy(renderer);
+	renderer = NULL;
 
 	font_uninit();
 	SDL_FreeSurface(screen);
@@ -1164,7 +1262,11 @@ void uninit(){
 	TTF_Quit();
 	SDL_Quit();
 
-	destroy_preferences(prefs);
+	if (g_prefs_loader != NULL) {
+		g_prefs_loader->destroy(prefs);
+	} else {
+		destroy_preferences(prefs);
+	}
 
 	io_uninit();
 }
@@ -1400,13 +1502,14 @@ static int render_ghostty(int force_full_repaint) {
 		SDL_BlitSurface(altsym_indicator, NULL, screen, &destrect);
 	}
 
-	if ((current_symmenu != NULL) && (current_symmenu->surface != NULL)) {
+	SDL_Surface *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
+	if (symmenu_surface != NULL) {
 		SDL_Rect destrect;
-		destrect.w = current_symmenu->surface->w;
-		destrect.h = current_symmenu->surface->h;
+		destrect.w = symmenu_surface->w;
+		destrect.h = symmenu_surface->h;
 		destrect.x = 0;
-		destrect.y = screen->h - current_symmenu->surface->h;;
-		if (SDL_BlitSurface(current_symmenu->surface, NULL, screen, &destrect) != 0) {
+		destrect.y = screen->h - symmenu_surface->h;;
+		if (SDL_BlitSurface(symmenu_surface, NULL, screen, &destrect) != 0) {
 			PRINT(stderr, "Symmenu blit failed: %s\n", SDL_GetError());
 			return 1;
 		}
@@ -1635,6 +1738,52 @@ int run_render(void* data){
 	return 0;
 }
 
+int app_handle_event(app_t *app, const event_t *event) {
+	if (event == NULL) {
+		return 0;
+	}
+
+	switch (event->type) {
+	case TERM_EVENT_QUIT:
+		exit_application = 1;
+		return 1;
+	case TERM_EVENT_RESIZE:
+		rescreen(event->as.resize.w, event->as.resize.h);
+		mark_screen_dirty(1);
+		return 1;
+	case TERM_EVENT_KEY:
+		app_handle_key(app, &event->as.key);
+		return 1;
+	case TERM_EVENT_TOUCH_DOWN:
+		handle_mousedown(event->as.touch.x, event->as.touch.y);
+		mark_screen_dirty(1);
+		return 1;
+	case TERM_EVENT_ACTIVATE:
+		handle_activeevent(event->as.activate.active, event->as.activate.state);
+		return 1;
+	case TERM_EVENT_VKB:
+		{
+			int vis = event->as.vkb.visible;
+			int vkb_h;
+			if (vis >= 0) {
+				/* explicit show/hide */
+				virtualkeyboard_visible = (char)vis;
+				vkb_h = vis ? platform_vkb_height(g_platform) : 0;
+			} else {
+				/* height-only INFO update: keep current visibility */
+				vkb_h = virtualkeyboard_visible ? event->as.vkb.height : 0;
+			}
+			setup_screen_size(screen->w, screen->h - vkb_h);
+		}
+		return 1;
+	case TERM_EVENT_NONE:
+	case TERM_EVENT_TOUCH_MOVE:
+	case TERM_EVENT_TOUCH_UP:
+	default:
+		return 0;
+	}
+}
+
 int main(int argc, char **argv) {
 	int rc;
 
@@ -1647,8 +1796,14 @@ int main(int argc, char **argv) {
 	char* home = getenv("HOME");
 	if(home != NULL){ chdir(home); }
 	
-	prefs = read_preferences(PREFS_FILE_PATH);
-	if (is_passport()) {
+	/* Stateless SDL/BPS platform services. The seam is frozen now; #6
+	 * replaces platform_sdl_create() with the native Screen/BPS backend. */
+	g_platform = platform_sdl_create();
+
+	/* libconfig stays behind this seam; #7 selects prefs_lua_loader() here. */
+	g_prefs_loader = prefs_libconfig_loader();
+	prefs = g_prefs_loader->load(PREFS_FILE_PATH);
+	if (platform_is_passport(g_platform)) {
 		prefs->auto_show_vkb = 1;
 	}
 
@@ -1658,14 +1813,14 @@ int main(int argc, char **argv) {
 	/* Initialize IO */
 	if (TERM_SUCCESS != io_init(prefs)) {
 		PRINT(stderr, "Unable to initialize IO\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 	
 	/* Initialize pty */
 	if (TERM_SUCCESS != pty_init()) {
 		PRINT(stderr, "Unable to initialize pty/tty\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 
@@ -1676,37 +1831,36 @@ int main(int argc, char **argv) {
 	act.sa_flags = SA_NOCLDSTOP;
 	if (sigaction(SIGCHLD, &act, NULL) < 0) {
 		PRINT(stderr, "sigaction failed\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 
 	/* initialize SDL video etc */
 	if (TERM_SUCCESS != sdl_init()) {
 		PRINT(stderr, "Unable to initialize SDL\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 
-	/* render the symmenus */
-	prefs->main_symmenu->surface = render_symmenu(screen, prefs, prefs->main_symmenu);
-	for (char c = 'a'; c <= 'z'; ++c) {
-		size_t idx = (size_t)(c - 'a');
+	/* initialize renderer-owned caches */
+	renderer = renderer_sdl_new();
+	if (renderer == NULL || renderer_init_symmenus(renderer, screen, prefs) != 0) {
+		PRINT(stderr, "Unable to initialize SDL renderer caches\n");
+		app_shutdown();
+		return TERM_FAILURE;
+	}
 
-		// lowercase
-		symmenu_t *m = prefs->accent_menus[idx][0];
-		if (m->entries[1].to != NULL) {
-			m->surface = render_symmenu(screen, prefs, m);
-		}
-
-		// uppercase
-		m = prefs->accent_menus[idx][1];
-		if (m->entries[1].to != NULL) {
-			m->surface = render_symmenu(screen, prefs, m);
-		}
+	/* App state owns the (single) session. Created after pty_init() and
+	 * ghostty_bridge_init() (inside sdl_init) so the session can adopt the
+	 * io master fd + ghostty singleton. */
+	if (app_init(&g_app, prefs) != 0) {
+		PRINT(stderr, "Unable to initialize app state\n");
+		app_shutdown();
+		return TERM_FAILURE;
 	}
 
 	if (prefs->auto_show_vkb) {
-		virtualkeyboard_show();
+		platform_vkb_show(g_platform);
 	}
 
 	/* start up main event loop */
@@ -1717,47 +1871,15 @@ int main(int argc, char **argv) {
 	indicate_event_input();
 	while (!exit_application) {
 
-		//Request and process all available events
-		SDL_Event event;
+		//Request and process the next event. platform_next_event blocks
+		//(SDL_WaitEvent) outside the lock; only dispatch is locked. The
+		//render-thread poke stays unconditional, as before.
+		event_t event;
+		int have = platform_next_event(g_platform, &event);
 
-		SDL_WaitEvent(&event);
 		lock_input();
-		switch (event.type) {
-		case SDL_QUIT:
-			exit_application = 1;
-			break;
-		case SDL_VIDEORESIZE:
-			rescreen(event.resize.w, event.resize.h);
-			mark_screen_dirty(1);
-			break;
-		case SDL_KEYDOWN:
-			{
-				PRINT(stderr, "SDL_KEYDOWN\n");
-				UChar uc;
-				char sdlkey = event.key.keysym.sym;
-				uc = (UChar)sdlkey;
-				io_write_master(&uc, 1);
-			}
-			mark_screen_dirty(0);
-			break;
-		case SDL_SYSWMEVENT:
-			{
-				bps_event_t* bps_event = event.syswm.msg->event;
-				int screene_type;
-				int domain = bps_event_get_domain(bps_event);
-				PRINT(stderr, "Unhandled SYSWMEVENT: %d\n", domain);
-			}
-			break;
-		case SDL_MOUSEBUTTONDOWN:
-			handle_mousedown(event.button.x, event.button.y);
-			mark_screen_dirty(1);
-			break;
-		case SDL_ACTIVEEVENT:
-			handle_activeevent(event.active.gain, event.active.state);
-			break;
-		default:
-			PRINT(stderr, "Unknown Event: %d\n", event.type);
-			break;
+		if (have) {
+			app_handle_event(g_app, &event);
 		}
 		indicate_event_input();
 		unlock_input();
@@ -1765,8 +1887,8 @@ int main(int argc, char **argv) {
 
 	PRINT(stderr, "Exiting run loop\n");
 	SDL_KillThread(render_thread);
-	virtualkeyboard_hide();
-	uninit();
+	platform_vkb_hide(g_platform);
+	app_shutdown();
 
 	return 0;
 }

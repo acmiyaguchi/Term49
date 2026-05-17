@@ -1,32 +1,33 @@
-#ifndef _TYPES_H
-#define _TYPES_H
+#ifndef TYPES_H_
+#define TYPES_H_
 
-#include "SDL.h"
+#include <unicode/utf.h>
 
-typedef struct _keymap_t {
+#include "action.h"
+#include "term_types.h"
+
+typedef struct keymap {
 	char from;
 	char *to;
+	action_t action;
 } keymap_t;
 
-typedef struct _hitbox_t {
-	int x, y, w, h;
-} hitbox_t;
+typedef rect_t hitbox_t;
 
-typedef struct _symkey_t {
+typedef struct symkey {
 	char flash;
 	keymap_t *map; /* pointer to corresponding map */
 	hitbox_t hitbox; /* used for mousedown */
 	UChar *uc;
 } symkey_t;
 
-typedef struct _symmenu_t {
+typedef struct symmenu {
 	/* row terminated by NULL pointer, col by NULL symkey_t->map */
 	symkey_t **keys; 
 	keymap_t *entries; /* terminated by NULL keymap_t.to */
-	SDL_Surface *surface;
 } symmenu_t;
 
-typedef struct _pref_t {
+typedef struct pref {
 	char *font_path;
 	int font_size, *text_color, *background_color, screen_idle_awake,
 		auto_show_vkb, metamode_doubletap_key, metamode_doubletap_delay,
@@ -39,11 +40,11 @@ typedef struct _pref_t {
 	
 	symmenu_t *main_symmenu;
 	symmenu_t *accent_menus[26][2];
-	symmenu_t *altsym_entries;
+	keymap_t *altsym_entries;
 	
 	int sticky_sym_key, sticky_shift_key, sticky_alt_key;
 	int *keyhold_actions_exempt; /* terminated by -1 */
 	int rescreen_for_symmenu, keyhold_accents, prefs_version;
 } pref_t;
 
-#endif
+#endif /* TYPES_H_ */

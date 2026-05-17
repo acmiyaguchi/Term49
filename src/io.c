@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <unicode/utf.h>
@@ -23,7 +24,7 @@
 
 
 #include "terminal.h"
-#include "preferences.h"
+#include "prefs.h"
 
 #include "io.h"
 
@@ -45,7 +46,7 @@ int io_init(pref_t *prefs){
 	return TERM_SUCCESS;
 }
 
-void io_uninit(){
+void io_uninit(void){
 
 	// free converts
 	ucnv_close(tty_conv);
@@ -57,7 +58,7 @@ void io_set_master(int fd){
 	master_fd = fd;
 }
 
-int io_get_master(){
+int io_get_master(void){
 	return master_fd;
 }
 
@@ -155,7 +156,7 @@ ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf){
   return (ssize_t)(target - buf);
 }
 
-void io_paste_from_clipboard(){
+void io_paste_from_clipboard(void){
   char* buffer = NULL;
   int ret;
   if(is_clipboard_format_present("text/plain") == 0){
