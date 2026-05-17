@@ -470,6 +470,14 @@ void destroy_preferences(pref_t *pref) {
 	free(pref->metamode_func_keys);
 
 	destroy_symmenu(pref->main_symmenu);
+	for (int i = 0; i < 26; ++i) {
+		destroy_symmenu(pref->accent_menus[i][0]);
+		destroy_symmenu(pref->accent_menus[i][1]);
+	}
+
+	m = pref->altsym_entries;
+	while (m->to != NULL) { free(m->to); ++m; }
+	free(pref->altsym_entries);
 	
 	free(pref->keyhold_actions_exempt);
 
