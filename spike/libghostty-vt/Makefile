@@ -10,7 +10,7 @@
 
 include config.mk
 
-.PHONY: help deps abi-probe abi-zig smoke-abi lib harness smoke spike clean
+.PHONY: help deps abi-probe abi-zig smoke-abi lib harness probe smoke smoke-probe spike clean
 
 help:
 	@echo 'libghostty-vt spike targets:'
@@ -20,7 +20,9 @@ help:
 	@echo '  smoke-abi  — Gate E: push+run abi probe on Q10 (ABI_OK)'
 	@echo '  lib        — Gate F: zig build libghostty-vt.a + header   [BBNDK FHS]'
 	@echo '  harness    — Gate G: qcc-link spike_main vs the .a        [BBNDK FHS]'
+	@echo '  probe      — diagnostic: qcc-link stepwise non-formatter probe [BBNDK FHS]'
 	@echo '  smoke      — Gate G: push+run spike on Q10 (SPIKE_OK)'
+	@echo '  smoke-probe— push+run probe on Q10 (PROBE_OK before known exit trap)'
 	@echo '  spike      — full chain: deps->D->E->F->G'
 	@echo '  clean      — rm -rf build/'
 
@@ -30,7 +32,7 @@ help:
 deps:
 	nix build "path:$(CURDIR)#deps" --out-link build/deps
 
-abi-probe abi-zig lib harness:
+abi-probe abi-zig lib harness probe:
 	$(BB_SHELL) bash scripts/cross-build.sh $@
 
 smoke-abi:
@@ -38,6 +40,9 @@ smoke-abi:
 
 smoke:
 	bash scripts/smoke-device.sh spike
+
+smoke-probe:
+	bash scripts/smoke-device.sh probe
 
 spike: deps abi-probe abi-zig smoke-abi lib harness smoke
 	@echo "SPIKE COMPLETE — see Q10 stdout above for SPIKE_OK"

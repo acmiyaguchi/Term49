@@ -19,6 +19,19 @@ LIBPATHS += -L$(QNX_TARGET)/armle-v7/usr/lib
 LIBPATHS += -L./external/lib
 LIBS     += -lconfig -lSDL12 -lTouchControlOverlay
 
+# Optional libghostty-vt integration. The default build remains the stock
+# Term49 path; pass USE_GHOSTTY=1 after running `make libghostty-vt` to compile
+# the bridge and link the freestanding static library.
+USE_GHOSTTY ?= 0
+GHOSTTY_SPIKE := spike/libghostty-vt
+GHOSTTY_BUILD := $(GHOSTTY_SPIKE)/build/ghostty
+GHOSTTY_A     := $(GHOSTTY_BUILD)/lib/libghostty-vt.a
+ifeq ($(USE_GHOSTTY),1)
+INCLUDE += -I$(GHOSTTY_BUILD)/include
+DEFINES += -DTERM49_USE_GHOSTTY=1
+LIBS += $(GHOSTTY_A) -lm -lgcc
+endif
+
 # change these as needed (debug right now)
 #DEBUGFLAGS	:= -O2
 DEBUGFLAGS	:= -O0 -g -DDEBUGMSGS
@@ -30,18 +43,24 @@ ASSET      	:= Device-Debug
 BINARY     	:= Term49
 BINARY_PATH	:= $(ASSET)/$(BINARY)
 
-SRCS := $(wildcard src/*.c)
+SRCS := $(filter-out src/ghostty_bridge.c,$(wildcard src/*.c))
+ifeq ($(USE_GHOSTTY),1)
+SRCS += src/ghostty_bridge.c
+endif
 OBJS := $(SRCS:.c=.o )
 
 include ./signing/bbpass
 
-.PHONY: all clean package-debug deploy launch-debug
+.PHONY: all clean libghostty-vt package-debug deploy launch-debug
 
 all: package-debug
 
+libghostty-vt:
+	$(MAKE) -C $(GHOSTTY_SPIKE) deps abi-probe lib
+
 $(BINARY): $(OBJS)
 	mkdir -p $(ASSET)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(LDOPTS) $(OBJS) -o $(BINARY_PATH)
+	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(LIBS) -o $(BINARY_PATH)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $(DEFINES) $< -o $@

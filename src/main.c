@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
 #include <errno.h>
 #include <time.h>
 #include <sys/select.h>
@@ -43,6 +44,9 @@
 #include "buffer.h"
 #include "io.h"
 #include "colors.h"
+#ifdef TERM49_USE_GHOSTTY
+#include "ghostty_bridge.h"
+#endif
 
 static int exit_application = 0;
 
@@ -916,6 +920,10 @@ void setup_screen_size(int s_w, int s_h){
 
 	// set the tty size
 	set_tty_window_size();
+#ifdef TERM49_USE_GHOSTTY
+	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
+	                      (uint32_t)advance, (uint32_t)text_height);
+#endif
 }
 
 void lock_input(){
@@ -957,6 +965,10 @@ void set_screen_cols(int ncols){
 			/* and force the number of columns */
 			cols = ncols;
 			set_tty_window_size();
+#ifdef TERM49_USE_GHOSTTY
+			ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
+			                      (uint32_t)advance, (uint32_t)text_height);
+#endif
 			screen_dirty = 1;
 		}
 	}
@@ -1068,6 +1080,14 @@ static int sdl_init() {
 	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
 
 	ecma48_init();
+#ifdef TERM49_USE_GHOSTTY
+	if(ghostty_bridge_init((uint16_t)cols, (uint16_t)rows, 1000) != 0){
+		fprintf(stderr, "Unable to initialize libghostty-vt shadow terminal\n");
+		return TERM_FAILURE;
+	}
+	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
+	                      (uint32_t)advance, (uint32_t)text_height);
+#endif
 
 	return TERM_SUCCESS;
 }
@@ -1081,6 +1101,9 @@ void uninit(){
 	font_uninit();
 	SDL_FreeSurface(screen);
 
+#ifdef TERM49_USE_GHOSTTY
+	ghostty_bridge_uninit();
+#endif
 	ecma48_uninit();
 
 	TTF_Quit();
@@ -1378,6 +1401,11 @@ static int pty_init() {
 		/* Set LC_CTYPE=en_US.UTF-8
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
+#ifdef TERM49_USE_GHOSTTY
+		/* Let the interactive shell report whether this Term49 binary was
+		 * built with the libghostty-vt shadow terminal enabled. */
+		setenv("TERM49_GHOSTTY_SHADOW", "1", 1);
+#endif
 		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
 		 * absolute path: CWD is now the shared HOME, so the old
 		 * "../app/native/..." relative path no longer resolves. */
@@ -1429,7 +1457,9 @@ int run_render(void* data){
 	fd_set fds;
 	char ev_buf[100];
 	int n = 0;
+	char rawbuf[READ_BUFFER_SIZE];
 	UChar lbuf[READ_BUFFER_SIZE];
+	ssize_t num_bytes = 0;
 	ssize_t num_chars = 0;
 	int master = io_get_master();
 	while(!exit_application){
@@ -1442,9 +1472,17 @@ int run_render(void* data){
 		} else {
 			if(FD_ISSET(master, &fds)){
 				lock_input();
-				// Read anything from the child
-				while ((num_chars = io_read_master(lbuf, READ_BUFFER_SIZE)) > 0){
-					ecma48_filter_text(lbuf, num_chars);
+				// Read anything from the child. Feed raw UTF-8/VT bytes to the
+				// libghostty-vt shadow terminal, then decode the same bytes through
+				// the legacy ICU path so the existing renderer remains authoritative.
+				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
+#ifdef TERM49_USE_GHOSTTY
+					ghostty_bridge_write((const uint8_t*)rawbuf, (size_t)num_bytes);
+#endif
+					num_chars = io_decode_tty_bytes(rawbuf, (size_t)num_bytes, lbuf, READ_BUFFER_SIZE);
+					if(num_chars > 0){
+						ecma48_filter_text(lbuf, num_chars);
+					}
 				}
 				/* child produced output -> screen changed */
 				screen_dirty = 1;
