@@ -20,6 +20,7 @@
 #include <unicode/utf.h>
 #include <errno.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <sys/keycodes.h>
 
 #include <libconfig.h>
@@ -245,24 +246,46 @@ static void upgrade_config_v8(config_t *dst, config_t *src) {
 	}
 }
 
+typedef void (*prefs_upgrade_fn)(config_t *dst, config_t *src);
+
+/* Explicit, table-driven version dispatch. Each row upgrades a config AT
+ * from_version TO to_version; adding a future migration is one row plus
+ * one function. NOTE: this applies a single step (the on-disk file is
+ * the only input). True multi-step chaining (e.g. v7 -> v8 -> v9) needs
+ * an intermediate-config deep copy libconfig does not provide; deferred
+ * until a second step actually exists, which is why the table is kept
+ * simple rather than abstracted now. */
+static const struct {
+	int from_version;
+	int to_version;
+	prefs_upgrade_fn apply;
+} PREFS_UPGRADES[] = {
+	{ 8, 9, upgrade_config_v8 },
+};
+
 static config_t *upgrade_config(char const *path, int old_version) {
 	config_t src_data;
 	config_t *src = &src_data;
 	config_t *dst = (config_t*)malloc(sizeof(config_t));
-	
+
 	config_init(src);
 	config_init(dst);
 	config_read_file(src, path);
 	config_read_file(dst, path);
-	
-	switch (old_version) {
-	case 8:
-		fprintf(stderr, "Upgrading from prefs. v8. Old prefs in %s\n", PREFS_FILE_BACKUP);
-		upgrade_config_v8(dst, src);
-		break;
-	default:
-		fprintf(stderr, "Preferences version not supported!\n");
-		break;
+
+	int handled = 0;
+	for (size_t i = 0; i < sizeof(PREFS_UPGRADES) / sizeof(PREFS_UPGRADES[0]); ++i) {
+		if (PREFS_UPGRADES[i].from_version == old_version) {
+			fprintf(stderr, "Upgrading prefs v%d -> v%d. Old prefs in %s\n",
+			        PREFS_UPGRADES[i].from_version, PREFS_UPGRADES[i].to_version,
+			        PREFS_FILE_BACKUP);
+			PREFS_UPGRADES[i].apply(dst, src);
+			handled = 1;
+			break;
+		}
+	}
+	if (!handled) {
+		fprintf(stderr, "Preferences version %d not supported!\n", old_version);
 	}
 
 	config_destroy(src);
@@ -538,8 +561,92 @@ void destroy_preferences(pref_t *pref) {
 	free(pref);
 }
 
-#define DEFAULT_LOOKUP(type, conf, path, target, defval)	  \
-	do { if (CONFIG_TRUE != config_lookup_##type(conf, path, &(target))) { target = defval; } } while(0)
+/* --- scalar/string preference schema ---------------------------------
+ * Single source of truth for every plain int/bool/string preference:
+ * key name, type, the pref_t field (by offset), and default. read and
+ * save are both driven from this table, so a preference cannot drift
+ * between the two sides (which previously caused metamode_hold_key to be
+ * saved as a bool while read as an int keycode, and keyhold_accents to
+ * be read but never written). Structured prefs (colour/hitbox/keymap/
+ * symmenu arrays) keep their dedicated create_ / set_ helpers. */
+typedef enum { PS_INT, PS_BOOL, PS_STRING } prefs_scalar_type;
+
+typedef struct {
+	const char *key;
+	prefs_scalar_type type;
+	size_t offset;            /* offsetof(pref_t, field) */
+	int int_default;          /* PS_INT / PS_BOOL */
+	const char *str_default;  /* PS_STRING */
+} prefs_scalar_desc;
+
+static const prefs_scalar_desc PREFS_SCALARS[] = {
+	{ "font_path",                PS_STRING, offsetof(pref_t, font_path),                0,                              DEFAULT_FONT_PATH },
+	{ "font_size",                PS_INT,    offsetof(pref_t, font_size),                DEFAULT_FONT_SIZE,              NULL },
+	{ "screen_idle_awake",        PS_BOOL,   offsetof(pref_t, screen_idle_awake),        DEFAULT_SCREEN_IDLE_AWAKE,      NULL },
+	{ "auto_show_vkb",            PS_BOOL,   offsetof(pref_t, auto_show_vkb),            DEFAULT_AUTO_SHOW_VKB,          NULL },
+	{ "metamode_doubletap_key",   PS_INT,    offsetof(pref_t, metamode_doubletap_key),   DEFAULT_METAMODE_DOUBLETAP_KEY, NULL },
+	{ "metamode_doubletap_delay", PS_INT,    offsetof(pref_t, metamode_doubletap_delay), DEFAULT_METAMODE_DOUBLETAP_DELAY, NULL },
+	{ "keyhold_actions",          PS_BOOL,   offsetof(pref_t, keyhold_actions),          DEFAULT_KEYHOLD_ACTIONS,        NULL },
+	/* keycode, not a flag: previously saved as bool (a drift bug) -> INT */
+	{ "metamode_hold_key",        PS_INT,    offsetof(pref_t, metamode_hold_key),        DEFAULT_METAMODE_HOLD_KEY,      NULL },
+	{ "allow_resize_columns",     PS_BOOL,   offsetof(pref_t, allow_resize_columns),     DEFAULT_ALLOW_RESIZE_COLUMNS,   NULL },
+	{ "tty_encoding",             PS_STRING, offsetof(pref_t, tty_encoding),             0,                              DEFAULT_TTY_ENCODING },
+	{ "sticky_sym_key",           PS_BOOL,   offsetof(pref_t, sticky_sym_key),           DEFAULT_STICKY_SYM_KEY,         NULL },
+	{ "sticky_shift_key",         PS_BOOL,   offsetof(pref_t, sticky_shift_key),         DEFAULT_STICKY_SHIFT_KEY,       NULL },
+	{ "sticky_alt_key",           PS_BOOL,   offsetof(pref_t, sticky_alt_key),           DEFAULT_STICKY_ALT_KEY,         NULL },
+	{ "rescreen_for_symmenu",     PS_BOOL,   offsetof(pref_t, rescreen_for_symmenu),     DEFAULT_RESCREEN_FOR_SYMMENU,   NULL },
+	{ "keyhold_accents",          PS_BOOL,   offsetof(pref_t, keyhold_accents),          DEFAULT_KEYHOLD_ACCENTS,        NULL },
+};
+
+static void prefs_read_scalars(config_t const *config, pref_t *prefs) {
+	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
+		const prefs_scalar_desc *d = &PREFS_SCALARS[i];
+		void *field = (char *)prefs + d->offset;
+		switch (d->type) {
+		case PS_INT:
+			if (config_lookup_int(config, d->key, (int *)field) != CONFIG_TRUE) {
+				*(int *)field = d->int_default;
+			}
+			break;
+		case PS_BOOL:
+			if (config_lookup_bool(config, d->key, (int *)field) != CONFIG_TRUE) {
+				*(int *)field = d->int_default;
+			}
+			break;
+		case PS_STRING: {
+			const char *s = NULL;
+			if (config_lookup_string(config, d->key, &s) != CONFIG_TRUE) {
+				s = d->str_default;
+			}
+			*(char **)field = strdup(s);  /* prefs owns its strings */
+			break;
+		}
+		}
+	}
+}
+
+static void prefs_save_scalars(config_setting_t *root, pref_t const *prefs) {
+	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
+		const prefs_scalar_desc *d = &PREFS_SCALARS[i];
+		const void *field = (const char *)prefs + d->offset;
+		config_setting_t *s;
+		switch (d->type) {
+		case PS_INT:
+			s = config_setting_add(root, d->key, CONFIG_TYPE_INT);
+			config_setting_set_int(s, *(const int *)field);
+			break;
+		case PS_BOOL:
+			s = config_setting_add(root, d->key, CONFIG_TYPE_BOOL);
+			config_setting_set_bool(s, *(const int *)field);
+			break;
+		case PS_STRING:
+			s = config_setting_add(root, d->key, CONFIG_TYPE_STRING);
+			config_setting_set_string(s, *(char *const *)field);
+			break;
+		}
+	}
+}
+
 pref_t *read_preferences(const char* filename) {
 	pref_t *prefs = calloc(1, sizeof(pref_t)); // our internal data structure
 	if (prefs == NULL) {
@@ -563,7 +670,9 @@ pref_t *read_preferences(const char* filename) {
 		}
 	}
 
-	DEFAULT_LOOKUP(int, config, "prefs_version", prefs->prefs_version, PREFS_VERSION);
+	if (config_lookup_int(config, "prefs_version", &prefs->prefs_version) != CONFIG_TRUE) {
+		prefs->prefs_version = PREFS_VERSION;
+	}
 	if(prefs->prefs_version != PREFS_VERSION) {
 		config = upgrade_config(filename, prefs->prefs_version);
 		upgraded = 1;
@@ -571,30 +680,15 @@ pref_t *read_preferences(const char* filename) {
 	
 	int default_font_columns = (atoi(getenv("WIDTH")) <= 720) ? 45 : 60;
 
-	DEFAULT_LOOKUP(string, config, "font_path", prefs->font_path, DEFAULT_FONT_PATH);
-	prefs->font_path = strdup(prefs->font_path);
-	DEFAULT_LOOKUP(int, config, "font_size", prefs->font_size, DEFAULT_FONT_SIZE);
+	prefs_read_scalars(config, prefs);
+
 	prefs->text_color = create_int_array(config, "text_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_TEXT_COLOR, 0);
 	prefs->background_color = create_int_array(config, "background_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_BACKGROUND_COLOR, 0);
-	DEFAULT_LOOKUP(bool, config, "screen_idle_awake", prefs->screen_idle_awake, DEFAULT_SCREEN_IDLE_AWAKE);
-	DEFAULT_LOOKUP(bool, config, "auto_show_vkb", prefs->auto_show_vkb, DEFAULT_AUTO_SHOW_VKB);
-	DEFAULT_LOOKUP(int, config, "metamode_doubletap_key", prefs->metamode_doubletap_key, DEFAULT_METAMODE_DOUBLETAP_KEY);
-	DEFAULT_LOOKUP(int, config, "metamode_doubletap_delay", prefs->metamode_doubletap_delay, DEFAULT_METAMODE_DOUBLETAP_DELAY);
-	DEFAULT_LOOKUP(bool, config, "keyhold_actions", prefs->keyhold_actions, DEFAULT_KEYHOLD_ACTIONS);
-	DEFAULT_LOOKUP(int, config, "metamode_hold_key", prefs->metamode_hold_key, DEFAULT_METAMODE_HOLD_KEY);
-	DEFAULT_LOOKUP(bool, config, "allow_resize_columns", prefs->allow_resize_columns, DEFAULT_ALLOW_RESIZE_COLUMNS);
 	prefs->metamode_hitbox = create_hitbox(config, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
-	DEFAULT_LOOKUP(string, config, "tty_encoding", prefs->tty_encoding, DEFAULT_TTY_ENCODING);
-	prefs->tty_encoding = strdup(prefs->tty_encoding);
 	prefs->metamode_keys = create_keymap_array(config, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
 	prefs->metamode_sticky_keys = create_keymap_array(config, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
 	prefs->metamode_func_keys = create_keymap_array(config, "metamode_func_keys", DEFAULT_METAMODE_FUNC_KEYS_LEN, DEFAULT_METAMODE_FUNC_KEYS);
-	DEFAULT_LOOKUP(bool, config, "sticky_sym_key", prefs->sticky_sym_key, DEFAULT_STICKY_SYM_KEY);
-	DEFAULT_LOOKUP(bool, config, "sticky_shift_key", prefs->sticky_shift_key, DEFAULT_STICKY_SHIFT_KEY);
-	DEFAULT_LOOKUP(bool, config, "sticky_alt_key", prefs->sticky_alt_key, DEFAULT_STICKY_ALT_KEY);
 	prefs->keyhold_actions_exempt = create_int_array(config, "keyhold_actions_exempt", DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN, DEFAULT_KEYHOLD_ACTIONS_EXEMPT, 1);
-	DEFAULT_LOOKUP(bool, config, "rescreen_for_symmenu", prefs->rescreen_for_symmenu, DEFAULT_RESCREEN_FOR_SYMMENU);
-	DEFAULT_LOOKUP(bool, config, "keyhold_accents", prefs->keyhold_accents, DEFAULT_KEYHOLD_ACCENTS);
 
 	prefs->main_symmenu = create_symmenu(config, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
 	prefs->altsym_entries = create_keymap_array(config, "altsym_entries", DEFAULT_ALTSYM_ENTRIES_LEN, DEFAULT_ALTSYM_ENTRIES);
@@ -674,43 +768,33 @@ void set_symmenu(config_setting_t *root, char const *key, symmenu_t const *sourc
 	}
 }
 
-#define PREF_SET(root, setptr, key, type, configtype, source)	  \
-	do { setptr = config_setting_add(root, key, CONFIG_TYPE_##configtype); \
-		config_setting_set_##type(setptr, source); } while(0)
 void save_preferences(pref_t const* prefs, char const* filename) {
 	config_t config;
 	config_init(&config);
 	config_setting_t *root = config_root_setting(&config);
-	config_setting_t *setting = NULL;
 
-	PREF_SET(root, setting, "font_path", string, STRING, prefs->font_path);
-	PREF_SET(root, setting, "font_size", int, INT, prefs->font_size);
+	/* Stamp the file with the schema version being written so a later
+	 * Term49 can detect and upgrade it. Previously omitted -- upgrade
+	 * detection only worked because the read-side default happened to be
+	 * the current version. */
+	config_setting_t *ver_s = config_setting_add(root, "prefs_version", CONFIG_TYPE_INT);
+	config_setting_set_int(ver_s, PREFS_VERSION);
+
+	prefs_save_scalars(root, prefs);
+
 	set_int_array(root, "text_color", PREFS_COLOR_NUM_ELEMENTS, prefs->text_color);
 	set_int_array(root, "background_color", PREFS_COLOR_NUM_ELEMENTS, prefs->background_color);
-	PREF_SET(root, setting, "screen_idle_awake", bool, BOOL, prefs->screen_idle_awake);
-	PREF_SET(root, setting, "auto_show_vkb", bool, BOOL, prefs->auto_show_vkb);
-	PREF_SET(root, setting, "metamode_doubletap_key", int, INT, prefs->metamode_doubletap_key);
-	PREF_SET(root, setting, "metamode_doubletap_delay", int, INT, prefs->metamode_doubletap_delay);
-	PREF_SET(root, setting, "keyhold_actions", bool, BOOL, prefs->keyhold_actions);
-	PREF_SET(root, setting, "metamode_hold_key", bool, BOOL, prefs->metamode_hold_key);
-	PREF_SET(root, setting, "allow_resize_columns", bool, BOOL, prefs->allow_resize_columns);
 	set_int_array(root, "metamode_hitbox", 4, prefs->metamode_hitbox);
-	PREF_SET(root, setting, "tty_encoding", string, STRING, prefs->tty_encoding);
 	set_keymap_array(root, "metamode_keys", prefs->metamode_keys);
 	set_keymap_array(root, "metamode_sticky_keys", prefs->metamode_sticky_keys);
 	set_keymap_array(root, "metamode_func_keys", prefs->metamode_func_keys);
 	set_symmenu(root, "main_symmenu", prefs->main_symmenu);
-	PREF_SET(root, setting, "sticky_sym_key", bool, BOOL, prefs->sticky_sym_key);
-	PREF_SET(root, setting, "sticky_shift_key", bool, BOOL, prefs->sticky_shift_key);
-	PREF_SET(root, setting, "sticky_alt_key", bool, BOOL, prefs->sticky_alt_key);
-	PREF_SET(root, setting, "rescreen_for_symmenu", bool, BOOL, prefs->rescreen_for_symmenu);
-	
+
 	int num_exempt = 0;
 	for (; prefs->keyhold_actions_exempt[num_exempt] > 0; ++num_exempt) { }
 	set_int_array(root, "keyhold_actions_exempt", num_exempt, prefs->keyhold_actions_exempt);
-	
+
 	config_write_file(&config, filename);
-	return;
 }
 
 int is_int_member(int const* list, int target) {
@@ -739,8 +823,19 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 }
 
 /* The .term49rc/libconfig loader behind the prefs_loader_t seam.
- * libconfig is included only in this file; #7 adds a sibling
- * prefs_lua_loader() populating the same pref_t. */
+ *
+ * #7 Phase 3 decision -- KEEP libconfig, fully encapsulated. libconfig
+ * stays as the legacy .term49rc reader/writer; it is already private to
+ * this translation unit, so a future parser swap or a Lua loader is a
+ * sibling behind prefs_loader_t, NOT a rewrite. We deliberately do NOT
+ * replace it with a custom format: that risks the ".term49rc still
+ * loads" guarantee for no near-term gain. Per #9 staging, an alternate
+ * Lua loader populating the SAME pref_t is post-#6 follow-up work.
+ *
+ * #7 Phase 2 note -- no separate parser-neutral IR is introduced
+ * because pref_t (plain data) + prefs_loader_t (this vtable) already ARE
+ * that representation. The scalar schema table above is the single
+ * source of truth a Lua loader would target. */
 static const prefs_loader_t LIBCONFIG_LOADER = {
 	read_preferences,
 	save_preferences,
