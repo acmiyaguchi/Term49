@@ -43,7 +43,7 @@
 #include "action.h"
 #include "prefs.h"
 #include "symmenu.h"
-#include "symmenu_sdl.h"
+#include "renderer_sdl.h"
 #include "io.h"
 #include "ghostty_bridge.h"
 
@@ -116,8 +116,7 @@ static char flash = 0;
 
 static pref_t *prefs = NULL;
 static symmenu_t *current_symmenu = NULL;
-static symmenu_sdl_render_t *main_symmenu_render = NULL;
-static symmenu_sdl_render_t *accent_menu_renders[26][2];
+static t49_renderer_sdl_t *renderer = NULL;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
@@ -429,35 +428,16 @@ void symmenu_stick(){
 	mark_screen_dirty(1);
 }
 
-static symmenu_sdl_render_t *render_for_symmenu(symmenu_t *menu) {
-	if (menu == NULL) {
-		return NULL;
-	}
-	if (main_symmenu_render != NULL && main_symmenu_render->menu == menu) {
-		return main_symmenu_render;
-	}
-	for (char c = 'a'; c <= 'z'; ++c) {
-		size_t idx = (size_t)(c - 'a');
-		for (int uppercase = 0; uppercase < 2; ++uppercase) {
-			symmenu_sdl_render_t *render = accent_menu_renders[idx][uppercase];
-			if (render != NULL && render->menu == menu) {
-				return render;
-			}
-		}
-	}
-	return NULL;
-}
-
 void symmenu_toggle(symmenu_t *target){
 	if (current_symmenu == NULL){
-		symmenu_sdl_render_t *render = render_for_symmenu(target);
-		if (target == NULL || render == NULL || render->surface == NULL) {
+		int symmenu_height = renderer_sdl_symmenu_height(renderer, target);
+		if (target == NULL || symmenu_height <= 0) {
 			return;
 		}
 		current_symmenu = target;
 		// resize to show menu
 		if (prefs->rescreen_for_symmenu) {
-			setup_screen_size(screen->w, screen->h - render->surface->h);
+			setup_screen_size(screen->w, screen->h - symmenu_height);
 		}
 		if (prefs->sticky_sym_key) {
 			symmenu_stick();
@@ -1220,15 +1200,8 @@ void app_shutdown(void){
 
 	SDL_DestroyMutex(input_mutex);
 
-	symmenu_sdl_destroy_render(main_symmenu_render);
-	main_symmenu_render = NULL;
-	for (char c = 'a'; c <= 'z'; ++c) {
-		size_t idx = (size_t)(c - 'a');
-		for (int uppercase = 0; uppercase < 2; ++uppercase) {
-			symmenu_sdl_destroy_render(accent_menu_renders[idx][uppercase]);
-			accent_menu_renders[idx][uppercase] = NULL;
-		}
-	}
+	renderer_sdl_destroy(renderer);
+	renderer = NULL;
 
 	font_uninit();
 	SDL_FreeSurface(screen);
@@ -1474,14 +1447,14 @@ static int render_ghostty(int force_full_repaint) {
 		SDL_BlitSurface(altsym_indicator, NULL, screen, &destrect);
 	}
 
-	symmenu_sdl_render_t *symmenu_render = render_for_symmenu(current_symmenu);
-	if ((symmenu_render != NULL) && (symmenu_render->surface != NULL)) {
+	SDL_Surface *symmenu_surface = renderer_sdl_symmenu_surface_for(renderer, current_symmenu);
+	if (symmenu_surface != NULL) {
 		SDL_Rect destrect;
-		destrect.w = symmenu_render->surface->w;
-		destrect.h = symmenu_render->surface->h;
+		destrect.w = symmenu_surface->w;
+		destrect.h = symmenu_surface->h;
 		destrect.x = 0;
-		destrect.y = screen->h - symmenu_render->surface->h;;
-		if (SDL_BlitSurface(symmenu_render->surface, NULL, screen, &destrect) != 0) {
+		destrect.y = screen->h - symmenu_surface->h;;
+		if (SDL_BlitSurface(symmenu_surface, NULL, screen, &destrect) != 0) {
 			PRINT(stderr, "Symmenu blit failed: %s\n", SDL_GetError());
 			return 1;
 		}
@@ -1762,22 +1735,12 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	/* render the symmenus */
-	main_symmenu_render = symmenu_sdl_render(screen, prefs, prefs->main_symmenu);
-	for (char c = 'a'; c <= 'z'; ++c) {
-		size_t idx = (size_t)(c - 'a');
-
-		// lowercase
-		symmenu_t *m = prefs->accent_menus[idx][0];
-		if (m->entries[1].to != NULL) {
-			accent_menu_renders[idx][0] = symmenu_sdl_render(screen, prefs, m);
-		}
-
-		// uppercase
-		m = prefs->accent_menus[idx][1];
-		if (m->entries[1].to != NULL) {
-			accent_menu_renders[idx][1] = symmenu_sdl_render(screen, prefs, m);
-		}
+	/* initialize renderer-owned caches */
+	renderer = renderer_sdl_create();
+	if (renderer == NULL || renderer_sdl_init_symmenus(renderer, screen, prefs) != 0) {
+		PRINT(stderr, "Unable to initialize SDL renderer caches\n");
+		app_shutdown();
+		return TERM_FAILURE;
 	}
 
 	if (prefs->auto_show_vkb) {
