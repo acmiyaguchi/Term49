@@ -1,8 +1,7 @@
-/* Gate E — the qcc side of the decisive mixed-ABI probe. Built with
+/* qcc side of the mixed ABI check. Built with
  * qcc -V4.6.3,gcc_ntoarmv7le (Term49's exact compiler), linked against the
- * zig-compiled abi_zig.o, run on the rooted Q10. Bit-exact results ⇒ the
- * Zig<->qcc C-boundary ABI is sound and the whole route is feasible.
- * Corruption here is KILL K3 (soft/hard float-passing mismatch). */
+ * zig-compiled abi_zig.o, and run on the Q10. Exact results confirm that
+ * Zig and qcc agree on the C ABI at this boundary. */
 #include <stdio.h>
 
 typedef struct { float x, y, z; } Vec3;

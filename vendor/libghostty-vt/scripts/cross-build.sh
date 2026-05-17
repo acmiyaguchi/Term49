@@ -62,7 +62,7 @@ unpatch_ghostty() {
   echo ">> vendor/ghostty reset to pinned $(git -C "$GSRC" rev-parse --short HEAD)"
 }
 
-# Resolve the Zig triple Gate D selected, else the config.mk default.
+# Resolve the probed Zig triple, else use the config.mk default.
 zig_target() { [ -s "$ABI/zig_target" ] && cat "$ABI/zig_target" || echo "${ZIG_TARGET:-arm-freestanding-eabi}"; }
 
 discover() { # Read-only. No artifacts, just facts to fill GHOSTTY_LIB_*.
@@ -135,7 +135,7 @@ harness() { # qcc-link the terminal smoke example vs ONLY the .a.
   local A="$GH/lib/libghostty-vt.a"
   [ -f "$A" ] || { echo "error: $A missing — run 'make lib' first" >&2; exit 1; }
   echo ">> linking against: $A  (headers: $GH/include) + tests/shims.c"
-  # shims.c: bounded glue for getauxval/__tls_get_addr (Gate F finding).
+  # shims.c: QNX compatibility glue for getauxval/__tls_get_addr.
   # -lgcc: __aeabi_*/__extend*tf2/__aeabi_unwind_cpp_pr*; -lm: ceil/fmax/round.
   $CC -O2 -std=gnu99 -I"$GH/include" \
     "$ROOT/tests/smoke_terminal.c" "$ROOT/tests/shims.c" "$A" \

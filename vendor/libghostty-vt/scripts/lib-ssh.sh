@@ -8,7 +8,19 @@
 # toggle). blackberry-connect remains the fallback when 22 is closed.
 set -euo pipefail
 
-PARENT_FLAKE="${PARENT_FLAKE:-/mnt/data/fun/blackberry}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+find_parent_flake() {
+  local d="$SCRIPT_DIR"
+  while [ "$d" != / ]; do
+    if [ -f "$d/flake.nix" ] && { [ -d "$d/bbndk-linux" ] || [ -d "$d/bbndk-win32" ]; }; then
+      printf '%s\n' "$d"
+      return 0
+    fi
+    d="$(dirname "$d")"
+  done
+  return 1
+}
+PARENT_FLAKE="${PARENT_FLAKE:-$(find_parent_flake)}"
 BB_DEVICE="${BB_DEVICE:-169.254.0.1}"
 KEY="${KEY:-$HOME/.rim/bbt_id_rsa}"
 [ -f "$PARENT_FLAKE/.env" ] && . "$PARENT_FLAKE/.env" || true

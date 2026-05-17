@@ -1,8 +1,7 @@
-// Gate E — the Zig side of the decisive mixed-ABI probe. Mirrors
-// abi_probe.c's signatures so abi_main.c (qcc-compiled) calls THIS code
-// (zig-compiled, freestanding) across the C ABI boundary. If the float /
-// struct passing convention differs between the Zig target triple and
-// qcc's, the returned values corrupt and the on-device run fails ABI_OK.
+// Zig side of the mixed ABI check. Mirrors abi_probe.c's signatures so
+// abi_main.c (qcc-compiled) calls this freestanding Zig object across the
+// C ABI boundary. If the float / struct passing convention differs between
+// the Zig target triple and qcc's, the on-device run fails ABI_OK.
 //
 // Build: zig build-obj -target <triple> -mcpu cortex_a9 -OReleaseSmall
 // Zig 0.16. ReleaseSmall + trivial math + build-obj ⇒ no safety checks,

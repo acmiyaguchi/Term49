@@ -1,17 +1,12 @@
-/* Gate G shims — the bounded glue for the two Linux-isms the
- * arm-linux-musleabi build of libghostty-vt leaves undefined and QNX libc
- * does not provide (Gate F finding). Both come from Zig std internals, NOT
- * libghostty-vt's own code (no `threadlocal` anywhere in src/terminal).
- * This is the plan's anticipated "stub + one bounded patch" (K4).
+/* QNX compatibility shims for Linux-specific symbols that may be left
+ * undefined by Zig-built libghostty-vt objects. These come from Zig std
+ * internals, not libghostty-vt's terminal code.
  *
  *  getauxval      : Linux ELF auxv reader. Returning 0 makes Zig std take
  *                   its safe fallback paths (no AT_HWCAP/AT_RANDOM/etc.).
- *  __tls_get_addr : ELF general-dynamic TLS accessor (emitted because the
- *                   lib is built -fPIC). Single-threaded, single-module
- *                   synchronous use ⇒ a per-offset slice of one static
- *                   arena is sufficient. If a device run faults in TLS,
- *                   escalate to forcing local-exec TLS via a ghostty
- *                   build patch (patches/). */
+ *  __tls_get_addr : ELF general-dynamic TLS accessor. Single-threaded,
+ *                   single-module synchronous use only needs a per-offset
+ *                   slice of one static arena. */
 
 #include <stddef.h>
 
@@ -34,11 +29,9 @@ void *__tls_get_addr(void *arg) {
     return &ghostty_tls_arena[off];
 }
 
-/* musl/Zig-CRT-isms baked into the arm-linux-musleabi .a that QNX's libc
- * and CRT do not provide (Gate G device-load finding: ldqnx FATAL on these
- * 4 non-weak UNDs). libghostty-vt has no global ctors we depend on for the
- * parse path, so no-op CRT init is the bounded resolution. The frame-info /
- * _Jv_ refs are weak and resolve to 0 (non-fatal) so are left alone. */
+/* musl/Zig CRT symbols that QNX's libc and CRT do not provide. The
+ * libghostty-vt parse/render path does not depend on global constructors,
+ * so no-op init/fini hooks are sufficient here. */
 void _init_libc(void)     {}
 void _init_array(void)    {}
 void _fini_array(void)    {}
