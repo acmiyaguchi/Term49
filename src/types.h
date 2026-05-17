@@ -3,11 +3,13 @@
 
 #include <unicode/utf.h>
 
+#include "action.h"
 #include "t49_types.h"
 
 typedef struct t49_keymap {
 	char from;
 	char *to;
+	t49_action_t action;
 } keymap_t;
 
 typedef t49_rect_t hitbox_t;

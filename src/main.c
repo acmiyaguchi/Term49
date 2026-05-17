@@ -137,8 +137,6 @@ static int text_height;
 static int text_height_padding;
 static int advance;
 
-static int dispatch_action_string(const char *value);
-
 /* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
  * lock_input()), so no atomics needed. Start dirty for the first frame. */
@@ -457,7 +455,7 @@ void symmenu_toggle(symmenu_t *target){
 	mark_screen_dirty(1);
 }
 
-static const char* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
+static keymap_t* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
 	for (int row = 0; menu->keys[row] != NULL; ++row) {
 		for (int col = 0; menu->keys[row][col].map != NULL; ++col) {
 			symkey_t *key = &menu->keys[row][col];
@@ -471,7 +469,7 @@ static const char* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
 				} else {
 					key->flash = 1;
 				}
-				return key->map->to;
+				return key->map;
 			}
 		}
 	}
@@ -593,7 +591,10 @@ void handle_mousedown(Uint16 x, Uint16 y){
 
 	/* check for symmenu touches */
 	if(current_symmenu != NULL){
-		dispatch_action_string(symkey_for_mousedown(current_symmenu, x, y));
+		keymap_t *entry = symkey_for_mousedown(current_symmenu, x, y);
+		if (entry != NULL) {
+			app_dispatch_action(NULL, &entry->action);
+		}
 	}
 }
 
@@ -689,14 +690,6 @@ int app_dispatch_action(t49_app_t *app, const t49_action_t *action) {
 	return 0;
 }
 
-static int dispatch_action_string(const char *value) {
-	t49_action_t action;
-	if (!action_parse(value, &action)) {
-		return 0;
-	}
-	return app_dispatch_action(NULL, &action);
-}
-
 static symmenu_t *get_keyhold_actions(int keycode) {
 	if (!prefs->keyhold_actions) {
 		return NULL;
@@ -776,7 +769,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 	UChar *target = c;
 	struct timespec now;
 	uint64_t now_t, diff_t, metamode_last_t;
-	const char* keys = NULL;
+	keymap_t *keymap = NULL;
 	int32_t last_len = 0;
 	int32_t bs_i = 0;
 	size_t upcase_len = 0;
@@ -841,9 +834,9 @@ void handleKeyboardEvent(screen_event_t screen_event)
 
 		/* metamode sticky keys don't trigger repreat */
 		if (metamode && !metamode_just_set) {
-			keys = keystroke_lookup((char)screen_val, prefs->metamode_sticky_keys);
-			if (keys != NULL){
-				dispatch_action_string(keys);
+			keymap = keymap_lookup((char)screen_val, prefs->metamode_sticky_keys);
+			if (keymap != NULL){
+				app_dispatch_action(NULL, &keymap->action);
 				return;
 			}
 		}
@@ -880,7 +873,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 					 * Note that this really only works if the program on the other
 					 * end of the line understands unicode, and can marry up backspaces
 					 * with codepoints, instead of just blindly deleting one byte at a time. */
-					dispatch_action_string(menu->entries[0].to);
+					app_dispatch_action(NULL, &menu->entries[0].action);
 				} else {
 					symmenu_toggle(menu);
 				}
@@ -895,16 +888,16 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		}
 
 		if(metamode && !metamode_just_set){
-			keys = keystroke_lookup((char)screen_val, prefs->metamode_keys);
-			if(keys != NULL){
-				dispatch_action_string(keys);
+			keymap = keymap_lookup((char)screen_val, prefs->metamode_keys);
+			if(keymap != NULL){
+				app_dispatch_action(NULL, &keymap->action);
 				metamode_toggle();
 				return;
 			}
 			// else
-			keys = keystroke_lookup((char)screen_val, prefs->metamode_func_keys);
-			if(keys != NULL){
-				dispatch_action_string(keys);
+			keymap = keymap_lookup((char)screen_val, prefs->metamode_func_keys);
+			if(keymap != NULL){
+				app_dispatch_action(NULL, &keymap->action);
 			}
 			metamode_toggle();
 			return;
@@ -912,19 +905,19 @@ void handleKeyboardEvent(screen_event_t screen_event)
 
 		/* handle alt keys */
 		if (altsym_lock) {
-			keys = keystroke_lookup((char)screen_val, prefs->altsym_entries);
+			keymap = keymap_lookup((char)screen_val, prefs->altsym_entries);
 			altsym_toggle();
-			if (keys != NULL){
-				dispatch_action_string(keys);
+			if (keymap != NULL){
+				app_dispatch_action(NULL, &keymap->action);
 				return;
 			}
 		}
 
 		/* handle sym keys */
 		if (current_symmenu != NULL) {
-			keys = keystroke_lookup((char)screen_val, current_symmenu->entries);
-			if (keys != NULL){
-				dispatch_action_string(keys);
+			keymap = keymap_lookup((char)screen_val, current_symmenu->entries);
+			if (keymap != NULL){
+				app_dispatch_action(NULL, &keymap->action);
 				symmenu_toggle(NULL);
 				return;
 			}

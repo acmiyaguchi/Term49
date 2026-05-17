@@ -26,6 +26,7 @@
 
 #include "terminal.h"
 #include "accent_menus.h"
+#include "action.h"
 #include "symmenu.h"
 #include "prefs.h"
 
@@ -297,6 +298,13 @@ static int* create_int_array(config_t const *config, char const *path, size_t de
 	return result;
 }
 
+static void keymap_set_to(keymap_t *entry, const char *to) {
+	entry->to = strdup(to);
+	if (!action_parse(entry->to, &entry->action)) {
+		entry->action = (t49_action_t){0};
+	}
+}
+
 static keymap_t* create_keymap_array(config_t const *config, char const *path, size_t def_len, keymap_t const *def) {
 	config_setting_t *setting = config_lookup(config, path);
 	int use_default = 0;
@@ -316,14 +324,14 @@ static keymap_t* create_keymap_array(config_t const *config, char const *path, s
 	if (use_default) {
 		for (int i = 0; i < source_len; i++) {
 			result[i].from = def[i].from;
-			result[i].to = strdup(def[i].to);
+			keymap_set_to(&result[i], def[i].to);
 		}
 	} else {
 		for (int i = 0; i < source_len; i++) {
 			config_setting_t *m = config_setting_get_elem(setting, i);
 			char const *from_str = config_setting_get_string_elem(m, 0);
 			result[i].from = from_str[0];
-			result[i].to = strdup(config_setting_get_string_elem(m, 1));
+			keymap_set_to(&result[i], config_setting_get_string_elem(m, 1));
 		}
 	}
 
@@ -363,7 +371,7 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 			/* fill in the symkey row (rest done during render) */
 			for (int col = 0; col < def_row_lens[row]; ++col) {
 				menu->entries[entry_idx].from = def_entries[entry_idx].from;
-				menu->entries[entry_idx].to = strdup(def_entries[entry_idx].to);
+				keymap_set_to(&menu->entries[entry_idx], def_entries[entry_idx].to);
 				
 				menu->keys[row][col].flash = '\0';
 				menu->keys[row][col].map = &menu->entries[entry_idx];
@@ -402,7 +410,7 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 				config_setting_t *m = config_setting_get_elem(col_s, col);
 				char const *from_str = config_setting_get_string_elem(m, 0);
 				menu->entries[entry_idx].from = from_str[0];
-				menu->entries[entry_idx].to = strdup(config_setting_get_string_elem(m, 1));
+				keymap_set_to(&menu->entries[entry_idx], config_setting_get_string_elem(m, 1));
 			
 				menu->keys[row][col].flash = '\0';
 				menu->keys[row][col].map = &menu->entries[entry_idx];
@@ -653,12 +661,17 @@ int is_int_member(int const* list, int target) {
 	return 0;
 }
 
-const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
+keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head) {
 	while (keymap_head->to != NULL) {
 		if (keymap_head->from == keystroke) {
-			return keymap_head->to;
+			return keymap_head;
 		}
 		++keymap_head;
 	}
 	return NULL;
+}
+
+const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
+	keymap_t *entry = keymap_lookup(keystroke, keymap_head);
+	return entry != NULL ? entry->to : NULL;
 }

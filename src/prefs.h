@@ -34,6 +34,7 @@ pref_t* read_preferences(const char* filename);
 void save_preferences(pref_t const* pref, char const* filename);
 void destroy_preferences(pref_t *pref);
 
+keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);
 int is_int_member(int const* list, int target);
 
