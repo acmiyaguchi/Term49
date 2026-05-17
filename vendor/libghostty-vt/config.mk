@@ -1,4 +1,4 @@
-# Tunables for the libghostty-vt feasibility spike. One place for paths/flags.
+# Tunables for the libghostty-vt BB10/QNX integration. One place for paths/flags.
 # Mirrors fen-blackberry/config.mk. See ../../../docs/term49-modernization.md #36
 # and the plan in ~/.claude/plans/okay-in-the-worktree-eager-whisper.md.
 

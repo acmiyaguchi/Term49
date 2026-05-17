@@ -15,22 +15,18 @@ DEFINES := -D_FORTIFY_SOURCE=2 -D__PLAYBOOK__ -fstack-protector-strong
 # OpenGL libraries
 LIBPATHS += -L$(QNX_TARGET)/armle-v7/usr/lib
 
-# Include bundles libs
+# Include bundled libs
 LIBPATHS += -L./external/lib
 LIBS     += -lconfig -lSDL12 -lTouchControlOverlay
 
-# Optional libghostty-vt integration. The default build remains the stock
-# Term49 path; pass USE_GHOSTTY=1 after running `make libghostty-vt` to compile
-# the bridge and link the freestanding static library.
-USE_GHOSTTY ?= 0
-GHOSTTY_SPIKE := spike/libghostty-vt
-GHOSTTY_BUILD := $(GHOSTTY_SPIKE)/build/ghostty
+# Term49 now uses libghostty-vt as its terminal parser/state model and
+# renderer source of truth. The freestanding Ghostty static library is built
+# from the vendored integration tree on demand.
+GHOSTTY_DIR   := vendor/libghostty-vt
+GHOSTTY_BUILD := $(GHOSTTY_DIR)/build/ghostty
 GHOSTTY_A     := $(GHOSTTY_BUILD)/lib/libghostty-vt.a
-ifeq ($(USE_GHOSTTY),1)
 INCLUDE += -I$(GHOSTTY_BUILD)/include
-DEFINES += -DTERM49_USE_GHOSTTY=1
 LIBS += $(GHOSTTY_A) -lm -lgcc
-endif
 
 # change these as needed (debug right now)
 #DEBUGFLAGS	:= -O2
@@ -43,22 +39,21 @@ ASSET      	:= Device-Debug
 BINARY     	:= Term49
 BINARY_PATH	:= $(ASSET)/$(BINARY)
 
-SRCS := $(filter-out src/ghostty_bridge.c,$(wildcard src/*.c))
-ifeq ($(USE_GHOSTTY),1)
-SRCS += src/ghostty_bridge.c
-endif
+SRCS := $(wildcard src/*.c)
 OBJS := $(SRCS:.c=.o )
 
 include ./signing/bbpass
 
 .PHONY: all clean libghostty-vt package-debug deploy launch-debug
 
-all: package-debug
+all: $(BINARY)
 
-libghostty-vt:
-	$(MAKE) -C $(GHOSTTY_SPIKE) deps abi-probe lib
+libghostty-vt: $(GHOSTTY_A)
 
-$(BINARY): $(OBJS)
+$(GHOSTTY_A):
+	$(MAKE) -C $(GHOSTTY_DIR) deps abi-probe lib
+
+$(BINARY): $(GHOSTTY_A) $(OBJS)
 	mkdir -p $(ASSET)
 	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(LIBS) -o $(BINARY_PATH)
 
@@ -68,7 +63,7 @@ $(BINARY): $(OBJS)
 clean:
 	@rm -fv src/*.o
 	@rm -fv $(BINARY_PATH)
-	@rmdir -v $(ASSET)
+	@rmdir -v $(ASSET) 2>/dev/null || true
 	@rm -fv $(BINARY).bar
 
 signing/debugtoken.bar:
@@ -96,4 +91,3 @@ package-release: $(BINARY)
 
 sign: package-release
 	blackberry-signer -bbidtoken ./signing/$(BBIDTOKEN) -storepass $(KEYSTOREPASS) -keystore ./signing/$(KEYSTORE) $(BINARY).bar
-

@@ -1,7 +1,5 @@
 #include "ghostty_bridge.h"
 
-#ifdef TERM49_USE_GHOSTTY
-
 #include <stdbool.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -133,8 +131,8 @@ void ghostty_bridge_write(const uint8_t *data, size_t len) {
   /* BB10's pty output reaches Term49 with bare LF in common shell paths.
    * A terminal LF moves down without carriage-returning, which creates the
    * classic staircase effect: every prompt/newline starts at the previous
-   * column. The legacy ecma48 path intentionally treated cooked pty LF as
-   * CR+LF; preserve that behavior before handing bytes to Ghostty. Keep a
+   * column. Term49 historically treated cooked pty LF as CR+LF; preserve
+   * that behavior before handing bytes to Ghostty. Keep a
    * cross-chunk CR flag so real CRLF streams are not doubled. */
   for (i = 0; i < len; ++i) {
     if (data[i] == '\n' && !gb.prev_write_was_cr) {
@@ -299,8 +297,3 @@ int ghostty_bridge_visit_cells(ghostty_bridge_cell_visitor_t visitor, void *user
   return 0;
 }
 
-#else
-
-int ghostty_bridge_link_probe(void) { return 0; }
-
-#endif

@@ -14,7 +14,7 @@
 # pkgs.zig_0_15 == 0.15.2 in the locked nixpkgs.
 let zig = pkgs.zig_0_15;
 in
-pkgs.runCommand "libghostty-vt-spike-deps"
+pkgs.runCommand "libghostty-vt-bb10-deps"
 {
   passthru.versions = { zig = zig.version; };
 } ''

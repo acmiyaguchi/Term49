@@ -1,11 +1,11 @@
-/* Gate G — the feasibility verdict. qcc -V4.6.3,gcc_ntoarmv7le, linked
+/* Gate G — the standalone terminal API smoke test. qcc -V4.6.3,gcc_ntoarmv7le, linked
  * against ONLY libghostty-vt.a (+ tests/shims.c, -lm -lgcc), run on the
  * rooted Q10. API/usage taken verbatim from ghostty's own examples
  * (example/c-vt-formatter, example/c-vt-grid-traverse).
  *
  * Contract: feed "\x1b[31mhi"; PASS iff the plain-text formatter output
  * contains "hi" AND cell (0,0) foreground == named red (palette idx 1).
- * Prints observed values then the literal token SPIKE_OK / SPIKE_FAIL. */
+ * Prints observed values then the literal token SMOKE_OK / SMOKE_FAIL. */
 
 #include <assert.h>
 #include <stdio.h>
@@ -17,7 +17,7 @@
 /* Embedder allocator over QNX libc malloc/free. libghostty-vt's freestanding
  * default allocator is a 0-byte FBA (patches/0005: the NULL path is
  * unsupported on freestanding by design) — Term49 must pass a real one, so
- * the spike does too. Manual over-align (alignment is <=16 per the C
+ * this harness does too. Manual over-align (alignment is <=16 per the C
  * contract); only malloc/free are needed (no feature macros, no posix). */
 static void *gha_alloc(void *ctx, size_t len, uint8_t alignment, uintptr_t ra) {
     (void)ctx; (void)ra;
@@ -56,7 +56,7 @@ int main(void) {
     GhosttyTerminal terminal;
     GhosttyTerminalOptions opts = { .cols = 80, .rows = 24, .max_scrollback = 0 };
     if (ghostty_terminal_new(&GHA, &terminal, opts) != GHOSTTY_SUCCESS) {
-        printf("SPIKE_FAIL: ghostty_terminal_new\n"); return 1;
+        printf("SMOKE_FAIL: ghostty_terminal_new\n"); return 1;
     }
 
     const char *vt = "\x1b[31mhi";
@@ -68,11 +68,11 @@ int main(void) {
     fo.trim = true;
     GhosttyFormatter fmt;
     if (ghostty_formatter_terminal_new(&GHA, &fmt, terminal, fo) != GHOSTTY_SUCCESS) {
-        printf("SPIKE_FAIL: formatter_terminal_new\n"); return 1;
+        printf("SMOKE_FAIL: formatter_terminal_new\n"); return 1;
     }
     uint8_t *buf = NULL; size_t len = 0;
     if (ghostty_formatter_format_alloc(fmt, &GHA, &buf, &len) != GHOSTTY_SUCCESS) {
-        printf("SPIKE_FAIL: formatter_format_alloc\n"); return 1;
+        printf("SMOKE_FAIL: formatter_format_alloc\n"); return 1;
     }
     int has_hi = (buf != NULL && buf_has(buf, len, "hi"));
 
@@ -98,7 +98,7 @@ int main(void) {
     ghostty_formatter_free(fmt);
     ghostty_terminal_free(terminal);
 
-    if (has_hi && is_red) { printf("SPIKE_OK\n"); return 0; }
-    printf("SPIKE_FAIL: has_hi=%d is_red=%d\n", has_hi, is_red);
+    if (has_hi && is_red) { printf("SMOKE_OK\n"); return 0; }
+    printf("SMOKE_FAIL: has_hi=%d is_red=%d\n", has_hi, is_red);
     return 1;
 }

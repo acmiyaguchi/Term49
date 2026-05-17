@@ -1,5 +1,5 @@
 {
-  description = "libghostty-vt feasibility spike — pin a Zig toolchain for cross-building Ghostty's libc-free VT core to ARM-EABI, linked into BB10/QNX by BBNDK qcc";
+  description = "libghostty-vt BB10/QNX integration — pin a Zig toolchain for cross-building Ghostty's libc-free VT core to ARM-EABI, linked into BB10/QNX by BBNDK qcc";
 
   # No upstream flake to follow (unlike fen-blackberry, which followed fen's
   # nixpkgs). ghostty itself is the `vendor/ghostty` git submodule, consumed

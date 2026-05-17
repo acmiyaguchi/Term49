@@ -18,9 +18,7 @@
 #include "SDL_thread.h"
 
 #include "terminal.h"
-#include "ecma48.h"
 #include "preferences.h"
-#include "buffer.h"
 #include "io.h"
 #include "colors.h"
 

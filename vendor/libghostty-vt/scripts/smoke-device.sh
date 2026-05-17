@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# On-device spike gates. Push a self-contained ARM ELF to the rooted Q10,
-# run it by absolute path, echo its stdout, assert the PASS token.
+# On-device libghostty-vt checks. Push a self-contained ARM ELF to the rooted
+# Q10, run it by absolute path, echo stdout, assert the PASS token.
 #
-#   abi   (Gate E): build/abi/abi-q10  -> must print ABI_OK + bit-exact values
-#   spike (Gate G): build/spike-q10    -> must print SPIKE_OK + "hi" + red
-#   probe         : build/probe-steps-q10 -> must reach PROBE_OK
+#   abi   : build/abi/abi-q10        -> must print ABI_OK + bit-exact values
+#   smoke : build/smoke-terminal-q10 -> must print SMOKE_OK + "hi" + red
+#   probe : build/probe-api-q10      -> must reach PROBE_OK
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 . "$ROOT/scripts/lib-ssh.sh"
 
 DEPLOY_DIR="${DEPLOY_DIR:-/accounts/1000/shared/documents}"
-MODE="${1:-spike}"
+MODE="${1:-smoke}"
 
 case "$MODE" in
-  abi)   BIN="$ROOT/build/abi/abi-q10";       TOKEN="ABI_OK" ;;
-  spike) BIN="$ROOT/build/spike-q10";         TOKEN="SPIKE_OK" ;;
-  probe) BIN="$ROOT/build/probe-steps-q10";   TOKEN="PROBE_OK" ;;
-  *) echo "usage: smoke-device.sh abi|spike|probe" >&2; exit 2 ;;
+  abi)   BIN="$ROOT/build/abi/abi-q10";          TOKEN="ABI_OK" ;;
+  smoke) BIN="$ROOT/build/smoke-terminal-q10";   TOKEN="SMOKE_OK" ;;
+  probe) BIN="$ROOT/build/probe-api-q10";        TOKEN="PROBE_OK" ;;
+  *) echo "usage: smoke-device.sh abi|smoke|probe" >&2; exit 2 ;;
 esac
 [ -f "$BIN" ] || { echo "error: $BIN missing — build it first" >&2; exit 1; }
 

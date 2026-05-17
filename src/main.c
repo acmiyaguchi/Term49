@@ -39,14 +39,10 @@
 
 #include "types.h"
 #include "terminal.h"
-#include "ecma48.h"
 #include "preferences.h"
-#include "buffer.h"
 #include "io.h"
 #include "colors.h"
-#ifdef TERM49_USE_GHOSTTY
 #include "ghostty_bridge.h"
-#endif
 
 static int exit_application = 0;
 
@@ -111,8 +107,6 @@ static void set_persistent_home(void) {
 
 static char slave_ptyname[L_ctermid];
 
-static int cursor_x = 0;
-static int cursor_y = 0;
 char draw_cursor = 1;
 
 char flash = 0;
@@ -136,28 +130,17 @@ static int text_width;
 static int text_height;
 static int text_height_padding;
 static int advance;
-static int default_text_color_arr[PREFS_COLOR_NUM_ELEMENTS];
-static int default_bg_color_arr[PREFS_COLOR_NUM_ELEMENTS];
-static SDL_Color default_text_color = SDL_WHITE;
-static SDL_Color default_bg_color = SDL_BLACK;
-struct font_style default_text_style;
-
-struct screenchar blank_sc;
 
 /* Frame-level dirty gate. render() owes a repaint only when this is set.
  * Always written under input_mutex (every writer below already holds
  * lock_input()), so no atomics needed. Start dirty for the first frame. */
 static int screen_dirty = 1;
 
-static SDL_Surface* flash_surface;
-static SDL_Surface* cursor;
-static SDL_Surface* inv_cursor;
 static SDL_Surface* screen;
 static SDL_Surface* ctrl_key_indicator;
 static SDL_Surface* alt_key_indicator;
 static SDL_Surface* shift_key_indicator;
 static SDL_Surface* altsym_indicator;
-SDL_Surface* blank_surface;
 
 static pid_t child_pid = -1;
 
@@ -168,14 +151,8 @@ static SDL_mutex *input_mutex = NULL;
 
 static int event_pipe[2];
 
-/* from buffer.c */
-extern int rows;
-extern int cols;
-extern buf_t* buf;
-extern int MAX_COLS;
-extern int MAX_ROWS;
-extern int TEXT_BUFFER_SIZE;
-extern struct scroll_region sr;
+static int rows;
+static int cols;
 
 #define PB_D_PIXELS 32
 
@@ -203,6 +180,150 @@ int is_terminfo_keystrokes(const char* keystrokes){
 	return 0;
 }
 
+static int terminal_csi_key(UChar *tbuf, char code) {
+	tbuf[0] = 033;
+	tbuf[1] = '[';
+	tbuf[2] = code;
+	return 3;
+}
+
+static int terminal_esc_o_key(UChar *tbuf, char code) {
+	tbuf[0] = 033;
+	tbuf[1] = 'O';
+	tbuf[2] = code;
+	return 3;
+}
+
+static int terminal_func_key(UChar *tbuf, int num) {
+	int nc = 3;
+	tbuf[0] = 033;
+	tbuf[1] = '[';
+	switch(num){
+		case 1: tbuf[2] = '1'; nc = 4; break;
+		case 2: tbuf[2] = '2'; nc = 4; break;
+		case 3: tbuf[2] = '3'; nc = 4; break;
+		case 4: tbuf[2] = '4'; nc = 4; break;
+		case 5: tbuf[2] = '5'; nc = 4; break;
+		case 6: tbuf[2] = '6'; nc = 4; break;
+		case 15: tbuf[2] = '1'; tbuf[3] = '5'; nc = 5; break;
+		case 17: tbuf[2] = '1'; tbuf[3] = '7'; nc = 5; break;
+		case 18: tbuf[2] = '1'; tbuf[3] = '8'; nc = 5; break;
+		case 19: tbuf[2] = '1'; tbuf[3] = '9'; nc = 5; break;
+		case 20: tbuf[2] = '2'; tbuf[3] = '0'; nc = 5; break;
+		case 21: tbuf[2] = '2'; tbuf[3] = '1'; nc = 5; break;
+		case 23: tbuf[2] = '2'; tbuf[3] = '3'; nc = 5; break;
+		case 24: tbuf[2] = '2'; tbuf[3] = '4'; nc = 5; break;
+	}
+	tbuf[nc - 1] = '~';
+	return nc;
+}
+
+static int terminal_key_sequence(int sym, int mod, UChar *tbuf) {
+	int num_chars = 1;
+	tbuf[0] = (UChar)sym;
+
+	switch (sym){
+		case KEYCODE_BACKSPACE: tbuf[0] = 010; break;
+		case KEYCODE_TAB:       tbuf[0] = 011; break;
+		case KEYCODE_ESCAPE:    tbuf[0] = 033; break;
+		case KEYCODE_UP:        return terminal_csi_key(tbuf, 'A');
+		case KEYCODE_DOWN:      return terminal_csi_key(tbuf, 'B');
+		case KEYCODE_RIGHT:     return terminal_csi_key(tbuf, 'C');
+		case KEYCODE_LEFT:      return terminal_csi_key(tbuf, 'D');
+		case KEYCODE_RETURN:    tbuf[0] = 015; break;
+		case KEYCODE_KP_ENTER:  tbuf[0] = 015; break;
+		case KEYCODE_DELETE:    return terminal_func_key(tbuf, 3);
+		case KEYCODE_INSERT:    return terminal_func_key(tbuf, 2);
+		case KEYCODE_HOME:      return terminal_csi_key(tbuf, 'H');
+		case KEYCODE_END:       return terminal_csi_key(tbuf, 'F');
+		case KEYCODE_PG_UP:     return terminal_func_key(tbuf, 5);
+		case KEYCODE_PG_DOWN:   return terminal_func_key(tbuf, 6);
+		case KEYCODE_BACK_TAB:  return terminal_csi_key(tbuf, 'Z');
+		case KEYCODE_F1:        return terminal_esc_o_key(tbuf, 'P');
+		case KEYCODE_F2:        return terminal_esc_o_key(tbuf, 'Q');
+		case KEYCODE_F3:        return terminal_esc_o_key(tbuf, 'R');
+		case KEYCODE_F4:        return terminal_esc_o_key(tbuf, 'S');
+		case KEYCODE_F5:        return terminal_func_key(tbuf, 15);
+		case KEYCODE_F6:        return terminal_func_key(tbuf, 17);
+		case KEYCODE_F7:        return terminal_func_key(tbuf, 18);
+		case KEYCODE_F8:        return terminal_func_key(tbuf, 19);
+		case KEYCODE_F9:        return terminal_func_key(tbuf, 20);
+		case KEYCODE_F10:       return terminal_func_key(tbuf, 21);
+		case KEYCODE_F11:       return terminal_func_key(tbuf, 23);
+		case KEYCODE_F12:       return terminal_func_key(tbuf, 24);
+	}
+
+	if((mod & KEYMOD_SHIFT) || (mod & KEYMOD_SHIFT_LOCK) || (mod & KEYMOD_CAPS_LOCK)){
+		switch(sym){
+			case KEYCODE_A: tbuf[0] = 'A'; break;
+			case KEYCODE_B: tbuf[0] = 'B'; break;
+			case KEYCODE_C: tbuf[0] = 'C'; break;
+			case KEYCODE_D: tbuf[0] = 'D'; break;
+			case KEYCODE_E: tbuf[0] = 'E'; break;
+			case KEYCODE_F: tbuf[0] = 'F'; break;
+			case KEYCODE_G: tbuf[0] = 'G'; break;
+			case KEYCODE_H: tbuf[0] = 'H'; break;
+			case KEYCODE_I: tbuf[0] = 'I'; break;
+			case KEYCODE_J: tbuf[0] = 'J'; break;
+			case KEYCODE_K: tbuf[0] = 'K'; break;
+			case KEYCODE_L: tbuf[0] = 'L'; break;
+			case KEYCODE_M: tbuf[0] = 'M'; break;
+			case KEYCODE_N: tbuf[0] = 'N'; break;
+			case KEYCODE_O: tbuf[0] = 'O'; break;
+			case KEYCODE_P: tbuf[0] = 'P'; break;
+			case KEYCODE_Q: tbuf[0] = 'Q'; break;
+			case KEYCODE_R: tbuf[0] = 'R'; break;
+			case KEYCODE_S: tbuf[0] = 'S'; break;
+			case KEYCODE_T: tbuf[0] = 'T'; break;
+			case KEYCODE_U: tbuf[0] = 'U'; break;
+			case KEYCODE_V: tbuf[0] = 'V'; break;
+			case KEYCODE_W: tbuf[0] = 'W'; break;
+			case KEYCODE_X: tbuf[0] = 'X'; break;
+			case KEYCODE_Y: tbuf[0] = 'Y'; break;
+			case KEYCODE_Z: tbuf[0] = 'Z'; break;
+		}
+	}
+
+	if(mod & KEYMOD_CTRL){
+		switch (sym) {
+			case KEYCODE_SPACE: tbuf[0] = 000; break;
+			case KEYCODE_A: tbuf[0] = 001; break;
+			case KEYCODE_B: tbuf[0] = 002; break;
+			case KEYCODE_C: tbuf[0] = 003; break;
+			case KEYCODE_D: tbuf[0] = 004; break;
+			case KEYCODE_E: tbuf[0] = 005; break;
+			case KEYCODE_F: tbuf[0] = 006; break;
+			case KEYCODE_G: tbuf[0] = 007; break;
+			case KEYCODE_H: tbuf[0] = 010; break;
+			case KEYCODE_I: tbuf[0] = 011; break;
+			case KEYCODE_J: tbuf[0] = 012; break;
+			case KEYCODE_K: tbuf[0] = 013; break;
+			case KEYCODE_L: tbuf[0] = 014; break;
+			case KEYCODE_M: tbuf[0] = 015; break;
+			case KEYCODE_N: tbuf[0] = 016; break;
+			case KEYCODE_O: tbuf[0] = 017; break;
+			case KEYCODE_P: tbuf[0] = 020; break;
+			case KEYCODE_Q: tbuf[0] = 021; break;
+			case KEYCODE_R: tbuf[0] = 022; break;
+			case KEYCODE_S: tbuf[0] = 023; break;
+			case KEYCODE_T: tbuf[0] = 024; break;
+			case KEYCODE_U: tbuf[0] = 025; break;
+			case KEYCODE_V: tbuf[0] = 026; break;
+			case KEYCODE_W: tbuf[0] = 027; break;
+			case KEYCODE_X: tbuf[0] = 030; break;
+			case KEYCODE_Y: tbuf[0] = 031; break;
+			case KEYCODE_Z: tbuf[0] = 032; break;
+			case KEYCODE_LEFT_BRACKET: tbuf[0] = 033; break;
+			case KEYCODE_BACK_SLASH: tbuf[0] = 034; break;
+			case KEYCODE_RIGHT_BRACKET: tbuf[0] = 035; break;
+			case KEYCODE_GRAVE: if(mod & KEYMOD_SHIFT){tbuf[0] = 036;} break;
+			case KEYCODE_SLASH: if(mod & KEYMOD_SHIFT){tbuf[0] = 037;} break;
+		}
+	}
+	return num_chars;
+}
+
+
 int send_metamode_keystrokes(const char* keystrokes){
 
 	UChar* ukeystrokes;
@@ -216,7 +337,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		/* if the keystrokes for this key match a terminfo pattern,
 		 * send the appropriate sequence instead of the literal string */
 		if(terminfo_key){
-			ukeystrokes_len = ecma48_parse_control_codes(terminfo_key, 0, terminfo_keystrokes);
+			ukeystrokes_len = terminal_key_sequence(terminfo_key, 0, terminfo_keystrokes);
 			/* and write out to the tty whatever the keys were */
 			io_write_master(terminfo_keystrokes, ukeystrokes_len);
 			return 1;
@@ -362,40 +483,8 @@ int font_init(int font_size){
 	TTF_SetFontKerning(font, 0);
 	TTF_SetFontHinting(font, TTF_HINTING_NORMAL);
 
-	/* get default colour settings from prefs struct*/
-	default_text_color.r = (Uint8)prefs->text_color[0];
-	default_text_color.g = (Uint8)prefs->text_color[1];
-	default_text_color.b = (Uint8)prefs->text_color[2];
-	default_text_color.unused = 0;
-	
-	default_bg_color.r = (Uint8)prefs->background_color[0];
-	default_bg_color.g = (Uint8)prefs->background_color[1];
-	default_bg_color.b = (Uint8)prefs->background_color[2];
-	default_bg_color.unused = 0;
-
-	default_text_style.fg_color = default_text_color;
-	default_text_style.bg_color = default_bg_color;
-	default_text_style.style = TTF_STYLE_NORMAL;
-	default_text_style.reverse = 0;
-
-	/* initialize special characters */
-	UChar str[2] = {' ', NULL};
-	blank_surface = TTF_RenderUNICODE_Shaded(font, str, default_text_color, default_bg_color);
-	if (blank_surface == NULL){
-		PRINT(stderr, "Couldn't render blank surface: %s\n", TTF_GetError());
-		return TERM_FAILURE;
-	}
-
-	blank_sc.c = ' ';
-	blank_sc.style = default_text_style;
-	blank_sc.surface = blank_surface;
-	flash_surface = TTF_RenderUNICODE_Shaded(font, str, default_bg_color, default_text_color);
-	if (flash_surface == NULL){
-		PRINT(stderr, "Couldn't render flash surface: %s\n", TTF_GetError());
-		return TERM_FAILURE;
-	}
-
-	str[0] = 'A';
+	/* initialize modifier indicator glyphs */
+	UChar str[2] = {'A', 0};
 	alt_key_indicator = TTF_RenderUNICODE_Shaded(font, str, metamode_cursor_fg, metamode_cursor_bg);
 	if (alt_key_indicator == NULL){
 		PRINT(stderr, "Couldn't render alt_key_indicator surface: %s\n", TTF_GetError());
@@ -430,14 +519,6 @@ int font_init(int font_size){
 		return TERM_FAILURE;
 	}
 
-	/* Initialize the cursor */
-	UChar cursorstr[2] = {' ', NULL};
-	cursor = TTF_RenderUNICODE_Shaded(font, cursorstr, default_bg_color, default_text_color);
-	if (cursor == NULL){
-		PRINT(stderr, "Couldn't render cursor char: %s\n", TTF_GetError());
-		return TERM_FAILURE;
-	}
-
 	/* Get the size of the font */
 	int minx, maxx, miny, maxy;
 	if(TTF_GlyphMetrics(font, (Uint16)'X', &minx, &maxx, &miny, &maxy, &advance) != 0){
@@ -456,13 +537,10 @@ int font_init(int font_size){
 
 void font_uninit(){
 
-	SDL_FreeSurface(blank_surface);
-	SDL_FreeSurface(flash_surface);
 	SDL_FreeSurface(metamode_cursor);
 	SDL_FreeSurface(ctrl_key_indicator);
 	SDL_FreeSurface(alt_key_indicator);
 	SDL_FreeSurface(shift_key_indicator);
-	SDL_FreeSurface(cursor);
 	if(font != NULL){
 		TTF_CloseFont(font);
 	}
@@ -531,7 +609,6 @@ void rescreen(int w, int h){
 	screen = SDL_SetVideoMode(width, height, PB_D_PIXELS, SDL_HWSURFACE | SDL_DOUBLEBUF);
 	/* reset the font size as well */
 	font_uninit();
-	buf_clear_all_renders();
 	if(font_init(prefs->font_size) == TERM_FAILURE){
 		fprintf(stderr, "Couldn't initialize font\n");
 		exit_application = 1;
@@ -853,7 +930,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 			toggle_vkeymod(KEYMOD_CTRL);
 			break;
 		default:
-			num_chars = ecma48_parse_control_codes(screen_val, modifiers, c);
+			num_chars = terminal_key_sequence(screen_val, modifiers, c);
 			int nc;
 			for(nc = 0; nc < num_chars; ++nc){
 				PRINT(stderr, "Writing 0x%x\n", (int)c[nc]);
@@ -908,43 +985,13 @@ void setup_screen_size(int s_w, int s_h){
 		return;
 	}
 
-	int old_rows = rows;
-	int old_bottom_line = buf_bottom_line();
 	rows = s_h / text_height;
 	cols = s_w / text_width;
-	int diff_rows = rows - old_rows;
 	PRINT(stderr, "Rows: %d Cols: %d\n", rows, cols);
 
-	/* calculate where we should start drawing */
-	if(buf->line && old_rows > rows){ // new size smaller
-		buf->top_line = buf->line - buf->top_line + 1 > rows ? buf->line - rows + 1 : buf->top_line;
-		// clear covered up lines that are below the cursor
-		int toclear = old_bottom_line - buf_bottom_line();
-		PRINT(stderr, "new rows: %d, new bottom: %d, old rows: %d, old_bottom: %d, clearing %d lines (SIZE: %d)\n",
-		      rows, buf_bottom_line(), old_rows, old_bottom_line, toclear, TEXT_BUFFER_SIZE);
-		buf_erase_lines(buf_bottom_line() + 1, toclear);
-	} else if (buf->line && old_rows < rows){ // new size bigger
-		//buf->top_line = buf->line - rows + 1 < 0 ? 0 : buf->line - rows + 1;
-		buf->top_line = buf->top_line - diff_rows < 0 ? 0 : buf->top_line - diff_rows;
-		// clear newly revealed lines of artifacts
-		int toclear = buf_bottom_line() < TEXT_BUFFER_SIZE ?
-			buf_bottom_line() - old_bottom_line :
-			TEXT_BUFFER_SIZE - 1 - old_bottom_line;
-		PRINT(stderr, "new rows: %d, new bottom: %d, old rows: %d, old_bottom: %d, clearing %d lines\n",
-		      rows, buf_bottom_line(), old_rows, old_bottom_line, toclear);
-		buf_erase_lines(old_bottom_line + 1, toclear);
-	}
-
-	/* and reset the scroll region */
-	sr.top = 1;
-	sr.bottom = rows;
-
-	// set the tty size
 	set_tty_window_size();
-#ifdef TERM49_USE_GHOSTTY
 	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
 	                      (uint32_t)advance, (uint32_t)text_height);
-#endif
 }
 
 void lock_input(){
@@ -977,8 +1024,7 @@ void set_screen_cols(int ncols){
 	if (prefs->allow_resize_columns) {
 		int new_fontsize = preferences_guess_best_font_size(prefs, ncols);
 		font_uninit();
-		buf_clear_all_renders();
-		if(font_init(new_fontsize) == TERM_FAILURE){
+			if(font_init(new_fontsize) == TERM_FAILURE){
 			fprintf(stderr, "Error setting new font size\n");
 			exit_application = 1;
 		} else {
@@ -986,10 +1032,8 @@ void set_screen_cols(int ncols){
 			/* and force the number of columns */
 			cols = ncols;
 			set_tty_window_size();
-#ifdef TERM49_USE_GHOSTTY
 			ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
 			                      (uint32_t)advance, (uint32_t)text_height);
-#endif
 			screen_dirty = 1;
 		}
 	}
@@ -1077,55 +1121,34 @@ static int sdl_init() {
 	/* Don't show the mouse icon */
 	SDL_ShowCursor(SDL_DISABLE);
 
-	/* we allocate as much buffer as we will ever need */
-	int largest_dimension = screen->w > screen->h ? screen->w : screen->h;
-	MAX_ROWS = largest_dimension / MIN_FONT_SIZE;
-	MAX_COLS = largest_dimension / MIN_FONT_SIZE;
-	TEXT_BUFFER_SIZE = MAX_ROWS * 2;
-	fprintf(stderr, "Allocating %d rows and %d cols\n",TEXT_BUFFER_SIZE, MAX_COLS);
-
 	/* initialize the number of rows and columns */
 	rows = screen->h / text_height;
 	cols = screen->w / text_width;
 
-	if(buf_init() == TERM_FAILURE){
-		PRINT(stderr, "Couldn't initialize font\n");
-		TTF_Quit();
-		SDL_Quit();
-		return TERM_FAILURE;
-	}
 
 	setup_screen_size(screen->w, screen->h);
 	
 	/* and set the last 'press' */
 	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
 
-	ecma48_init();
-#ifdef TERM49_USE_GHOSTTY
 	if(ghostty_bridge_init((uint16_t)cols, (uint16_t)rows, 1000) != 0){
 		fprintf(stderr, "Unable to initialize libghostty-vt shadow terminal\n");
 		return TERM_FAILURE;
 	}
 	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
 	                      (uint32_t)advance, (uint32_t)text_height);
-#endif
 
 	return TERM_SUCCESS;
 }
 
 void uninit(){
 
-	buf_uninit();
-
 	SDL_DestroyMutex(input_mutex);
 
 	font_uninit();
 	SDL_FreeSurface(screen);
 
-#ifdef TERM49_USE_GHOSTTY
 	ghostty_bridge_uninit();
-#endif
-	ecma48_uninit();
 
 	TTF_Quit();
 	SDL_Quit();
@@ -1135,22 +1158,6 @@ void uninit(){
 	io_uninit();
 }
 
-SDL_Color adjust_color(SDL_Color in, struct font_style sty){
-	int i;
-	if(sty.style & TTF_STYLE_BOLD){
-		for(i = 0; i < 8; ++i){
-			if((in.b == term_colors[i].b) &&
-			   (in.g == term_colors[i].g) &&
-			   (in.r == term_colors[i].r)){
-				in = term_colors[i+8];
-				break;
-			}
-		}
-	}
-	return in;
-}
-
-#ifdef TERM49_USE_GHOSTTY
 static SDL_Color ghostty_sdl_color(ghostty_bridge_rgb_t rgb) {
 	SDL_Color out;
 	out.r = rgb.r;
@@ -1313,181 +1320,18 @@ static int render_ghostty() {
 
 	return 1;
 }
-#endif
 
 void render() {
+	render_ghostty();
+}
 
-#ifdef TERM49_USE_GHOSTTY
-	if (render_ghostty()) { return; }
-#endif
-
-	int offset;
-	struct screenchar* sc;
-	SDL_Surface* torender;
-	UChar str[2];
-	str[1] = NULL;
-
-	/* Set the background */
-	SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, default_bg_color.r, default_bg_color.g, default_bg_color.b));
-
-	for(int i = 0; i < rows; ++i){
-		float x = 0.0;
-		float y = text_height * (i);
-		
-		for(int j = 0; j < cols; ++j){
-			/* guard against screen rotations that push the bottom of the screen past the
-			 * bottom of the buffer. */
-			sc = i+buf->top_line < TEXT_BUFFER_SIZE ? &buf->text[i+buf->top_line][j] : &blank_sc;
-			if((sc->surface == NULL) && (sc->c != 0)){
-				// we have added a new char, but not rendered it yet
-				str[0] = sc->c;
-				TTF_SetFontStyle(font, sc->style.style);
-				if(buf->inverse_video){
-					sc->surface = TTF_RenderUNICODE_Shaded(font, str, adjust_color(sc->style.bg_color, sc->style), sc->style.fg_color);
-				} else {
-					sc->surface = TTF_RenderUNICODE_Shaded(font, str, adjust_color(sc->style.fg_color, sc->style), sc->style.bg_color);
-				}
-				if(sc->surface == NULL){
-					PRINT(stderr, "Rendering failed for char %d\n", (int)sc->c);
-				}
-			}
-			if(sc->surface == NULL || flash){
-				// no glyph here - render blank
-				if(buf->inverse_video){
-					torender = flash ? blank_surface : flash_surface;
-				} else {
-					torender = flash ? flash_surface : blank_surface;
-				}
-			} else {
-				torender = sc->surface;
-			}
-
-			/* construct the destination rectangle */
-			SDL_Rect destrect;
-			destrect.x = x;
-			destrect.y = y;
-			destrect.w = torender->w;
-			destrect.h = torender->h;
-			if(SDL_BlitSurface(torender, NULL, screen, &destrect) != 0){
-				PRINT(stderr, "Blit Failed: %s\n", SDL_GetError());
-			}
-			x += advance;
-		}
+static void terminal_setenv(void) {
+	/* terminfo is located via $TERMINFO (an absolute path to the bundled
+	 * database, exported in main() before fork). */
+	setenv("TERM", "xterm-256color", 1);
+	if(system("/base/bin/stty +sane erase=^H") == -1){
+		PRINT(stderr, "Error invoking system(stty..)\n");
 	}
-
-	if (draw_cursor){
-		// draw the cursor
-		/* Free the old cursor if we have one */
-		SDL_FreeSurface(inv_cursor);
-		inv_cursor = NULL;
-		/* Get the character under the cursor */
-
-		int drawcols = buf->col;
-		if(buf->col == cols){
-			// Don't draw off the edge - also make backspace from the right margin work 'right'
-			drawcols -= 1;
-		}
-
-		sc = &buf->text[buf->line][drawcols];
-		if(sc->c){
-			str[0] = sc->c;
-			TTF_SetFontStyle(font, sc->style.style);
-			if(buf->inverse_video){
-				inv_cursor = TTF_RenderUNICODE_Shaded(font, str, adjust_color(sc->style.fg_color, sc->style), sc->style.bg_color);
-			} else {
-				inv_cursor = TTF_RenderUNICODE_Shaded(font, str, adjust_color(sc->style.bg_color, sc->style), sc->style.fg_color);
-			}
-			if(inv_cursor == NULL){
-				PRINT(stderr, "Rendering failed for char %d\n", (int)sc->c);
-			}
-		}
-		cursor_x = drawcols;
-		cursor_y = buf->line - buf->top_line;
-
-		SDL_Rect destrect;
-		destrect.x = cursor_x * advance;
-		destrect.y = cursor_y * text_height;
-		destrect.w = cursor->w;
-		destrect.h = cursor->h;
-		if(inv_cursor != NULL){
-			SDL_BlitSurface(inv_cursor, NULL, screen, &destrect);
-		} else {
-			SDL_BlitSurface(buf->inverse_video ? blank_surface: cursor, NULL, screen, &destrect);
-		}
-	}
-
-	if(metamode && metamode_cursor != NULL){
-		/* draw the metamode cursor */
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 0;
-		destrect.w = metamode_cursor->w;
-		destrect.h = metamode_cursor->h;
-		SDL_BlitSurface(metamode_cursor, NULL, screen, &destrect);
-	}
-
-	if(vmodifiers & KEYMOD_CTRL){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 1 * text_height;
-		destrect.w = ctrl_key_indicator->w;
-		destrect.h = ctrl_key_indicator->h;
-		SDL_BlitSurface(ctrl_key_indicator, NULL, screen, &destrect);
-	}
-
-	if(vmodifiers & KEYMOD_ALT){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 2 * text_height;
-		destrect.w = alt_key_indicator->w;
-		destrect.h = alt_key_indicator->h;
-		SDL_BlitSurface(alt_key_indicator, NULL, screen, &destrect);
-	}
-
-	if(vmodifiers & KEYMOD_SHIFT){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 3 * text_height;
-		destrect.w = shift_key_indicator->w;
-		destrect.h = shift_key_indicator->h;
-		SDL_BlitSurface(shift_key_indicator, NULL, screen, &destrect);
-	}
-
-	if (altsym_lock) {
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 3 * text_height;
-		destrect.w = shift_key_indicator->w;
-		destrect.h = shift_key_indicator->h;
-		SDL_BlitSurface(altsym_indicator, NULL, screen, &destrect);
-	}
-
-	if ((current_symmenu != NULL) && (current_symmenu->surface != NULL)) {
-		/* blit symmenu surface */
-		SDL_Rect destrect;
-		destrect.w = current_symmenu->surface->w;
-		destrect.h = current_symmenu->surface->h;
-		destrect.x = 0;
-		destrect.y = screen->h - current_symmenu->surface->h;;
-	
-		if (SDL_BlitSurface(current_symmenu->surface, NULL, screen, &destrect) != 0) {
-			PRINT(stderr, "Symmenu blit failed: %s\n", SDL_GetError());
-			return;
-		}
-	}
-
-	SDL_Flip(screen);
-
-	if(flash){
-		/* turn it off */
-		flash = 0;
-		/* force the repaint that clears the flash (we hold the render
-		 * lock here, so this write to screen_dirty is safe) */
-		screen_dirty = 1;
-		/* write to the input pipe so we run again */
-		indicate_event_input();
-	}
-
 }
 
 static int pty_init() {
@@ -1558,7 +1402,7 @@ static int pty_init() {
 		dup2(slave_fd, STDOUT_FILENO);
 		dup2(slave_fd, STDERR_FILENO);
 
-		ecma48_setenv();
+		terminal_setenv();
 
 		/* add in our private binary path */
 		char* home = getenv("SANDBOX");
@@ -1591,12 +1435,10 @@ static int pty_init() {
 		/* Set LC_CTYPE=en_US.UTF-8
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
-#ifdef TERM49_USE_GHOSTTY
 		/* Let the interactive shell report that this Term49 binary is using
 		 * libghostty-vt for terminal-state parsing and rendering. */
 		setenv("TERM49_GHOSTTY_RENDERER", "1", 1);
 		setenv("TERM49_GHOSTTY_SHADOW", "0", 1);
-#endif
 		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
 		 * absolute path: CWD is now the shared HOME, so the old
 		 * "../app/native/..." relative path no longer resolves. */
@@ -1649,13 +1491,7 @@ int run_render(void* data){
 	char ev_buf[100];
 	int n = 0;
 	char rawbuf[READ_BUFFER_SIZE];
-#ifndef TERM49_USE_GHOSTTY
-	UChar lbuf[READ_BUFFER_SIZE];
-#endif
 	ssize_t num_bytes = 0;
-#ifndef TERM49_USE_GHOSTTY
-	ssize_t num_chars = 0;
-#endif
 	int master = io_get_master();
 	while(!exit_application){
 		FD_ZERO(&fds);
@@ -1667,17 +1503,9 @@ int run_render(void* data){
 		} else {
 			if(FD_ISSET(master, &fds)){
 				lock_input();
-				// Read anything from the child. In Ghostty builds, raw VT bytes go
-				// directly to libghostty-vt; otherwise keep the legacy ICU+ecma48 path.
+				// Feed raw VT bytes directly to libghostty-vt.
 				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
-#ifdef TERM49_USE_GHOSTTY
 					ghostty_bridge_write((const uint8_t*)rawbuf, (size_t)num_bytes);
-#else
-					num_chars = io_decode_tty_bytes(rawbuf, (size_t)num_bytes, lbuf, READ_BUFFER_SIZE);
-					if(num_chars > 0){
-						ecma48_filter_text(lbuf, num_chars);
-					}
-#endif
 				}
 				/* child produced output -> screen changed */
 				screen_dirty = 1;

@@ -1,68 +1,77 @@
 # Term49
 
-Term49 is a terminal emulator for BlackBerry 10. It is a continuation of the amazing [Term48](https://github.com/mordak/Term48) project by [mordak](https://github.com/mordak).
-
-It implements (relevant parts of) the [ECMA-48 standard][ecma], but also includes some other control sequences to make it compliant with the `xterm-256color` terminfo specification. It is a work in progress, but is good enough for daily use. Pull requests, feature requests and bug reports are welcome.
+Term49 is a terminal emulator for BlackBerry 10. This branch uses
+`libghostty-vt` as the production terminal parser/state model and renders the
+visible grid from Ghostty through the existing SDL/SDL_ttf UI.
 
 The [current release](https://github.com/BerryFarm/Term49/releases) requires OS version >= 10.3.
 
 ## Development
 
-To compile Term49, you will need some additional libraries:
+To compile Term49, you will need the BlackBerry 10 NDK plus the bundled third
+party libraries in `external/lib`:
 
 * [libSDL][libsdl]
 * [Touch Control Overlay][tco]
 * [libconfig][libconfig]
 
-Prebuilt versions of these shared libraries are available in `external/lib` (see Makefile); to build from source you will need to check out the submodules (call `git clone` with the `--recursive` option) and build them with the Momentics IDE. Note that when compiling SDL, you must define `-D__PLAYBOOK__ -DRAW_KEYBOARD_EVENTS`.
+The Ghostty VT core is vendored under `vendor/libghostty-vt/`. The top-level
+Makefile builds `vendor/libghostty-vt/build/ghostty/lib/libghostty-vt.a` on
+demand before linking Term49.
 
-You can build and deploy Term49 without using Momentics IDE:
+Typical local build inside the BBNDK shell:
 
-* Load the proper `bbndk-env` file
-* Copy your debug token to `signing/debugtoken.bar` (or see the section below on generating a debug token)
-* Populate the `BBIP` and `BBPASS` fields in `signing/bbpass` with your device's dev-mode IP address and device password
-* Update the `<author>` and `<authorId>` tags in `bar-descriptor.xml` to match the `Package-Author` and `Package-Author-Id` for your debug token: `unzip -p signing/debugtoken.bar META-INF/MANIFEST.MF | grep 'Package-Author:\|Package-Author-Id:'`
-* `make`
-* `make deploy`
+```sh
+make Term49
+```
 
-## Generating a Debug Token
+Canonical packaging on the rooted BB10 device used by this tree is self-signed
+`-devMode` packaging plus `bb-deploy`:
 
-* Use this form to obtain your `bbidtoken.csk` file: https://developer.blackberry.com/codesigning/
-* Copy `bbidtoken.csk` to `signing/bbidtoken.csk`
-* In `signing/bbpass`, fill in:
-  - `CNNAME`: the Common Name for your signing cert (usually your name)
-  - `KEYSTOREPASS`: CSK password you entered in step 1 signup
-  - `BBPIN`: target device's PIN
-  - `BBPASS`: target device's password
-* Run `make` in `signing/Makefile` to request and deploy the token to your device.
+```sh
+blackberry-nativepackager -devMode -package Term49.bar bar-descriptor.xml -configuration Device-Debug
+bb-deploy Term49.bar
+```
 
-Important: any symbols need to be escaped according to bash / Makefile rules e.g. backslashes before symbols `\!` and double dollar signs `\$$`.
+The historical debug-token `make package-debug` / `make deploy` targets are
+kept for upstream compatibility but are not the preferred workflow here.
+
+## libghostty-vt examples and checks
+
+`vendor/libghostty-vt/` is the standalone integration/example entry point for
+building Ghostty's VT C API for BB10/QNX:
+
+```sh
+make -C vendor/libghostty-vt deps
+make -C vendor/libghostty-vt abi-probe
+make -C vendor/libghostty-vt abi-zig
+make -C vendor/libghostty-vt lib
+make -C vendor/libghostty-vt harness
+make -C vendor/libghostty-vt smoke
+```
+
+Term49 itself is the primary application example. The small standalone checks
+live in `vendor/libghostty-vt/tests/`.
+
+## Architecture notes
+
+* `src/ghostty_bridge.c` owns the Ghostty terminal and render-state objects.
+* PTY output bytes are fed directly to `ghostty_terminal_vt_write()`.
+* The renderer reads visible cells via `ghostty_terminal_grid_ref()`; this is
+  slower than the render-state row iterator but was stable on-device.
+* BB10 pty output may contain bare LF, so the bridge normalizes bare `\n` to
+  `\r\n` before feeding Ghostty to avoid staircase newlines.
+* The old Term49 ECMA-48 parser and screen buffer have been removed.
 
 ## Signing the release
 
-To distribute Term49, you need to sign the application bar with BlackBerry. To do that, run `make sign`.
-
-## Debugging with GDB
-
-To connect to the target device and enable debug tools such as GDB, the `blackberry-connect` tool must be started with the right arguments. For this, two terminals must have the correct `bbndk-env` environment loaded (or run the `make connect` command in the background).
-
-### Terminal 1: `blackberry-connect`
-* Start in the Term49 root directory.
-* `cd signing`
-* If the SSH key hasn't been generated yet, run `make ssh-key`.
-* `make connect`
-* Leave terminal running until done debugging.
-
-### Terminal 2: `gdb`
-* Start in the Term49 root directory.
-* `make launch-debug`
-* The package will be built, deployed to target device, and launched stopped. On host, `ntoarm-gdb` will start, connect to target device, and attach to the application process. To continue execution, run the GDB command `continue`. Further information on GDB can be found online.
+To distribute Term49 through the historical BlackBerry signing flow, run
+`make sign` after configuring `signing/bbpass`.
 
 ## See also
 
 * [Term48 in BlackBerry AppWorld](http://appworld.blackberry.com/webstore/content/26272878/)
 
-[ecma]: http://www.ecma-international.org/publications/standards/Ecma-048.htm
 [libsdl]: https://github.com/mordak/SDL/tree/term48
 [tco]: https://github.com/blackberry/TouchControlOverlay
 [libconfig]: http://www.hyperrealm.com/libconfig/

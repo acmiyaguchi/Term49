@@ -1,0 +1,45 @@
+# libghostty-vt for BB10/QNX
+
+This directory builds Ghostty's `libghostty-vt` C API as a freestanding static
+library that can be linked into BlackBerry 10 native apps with BBNDK `qcc`.
+Term49 uses this tree as its production terminal parser/state dependency.
+
+## Build
+
+Run from the Term49 top-level BBNDK shell:
+
+```sh
+make -C vendor/libghostty-vt deps       # materialize pinned Zig + deps
+make -C vendor/libghostty-vt abi-probe  # choose Zig ARM ABI from qcc output
+make -C vendor/libghostty-vt abi-zig    # prove Zig/qcc ABI boundary
+make -C vendor/libghostty-vt lib        # build build/ghostty/lib/libghostty-vt.a
+```
+
+The top-level Term49 `make Term49` depends on this library and will build it on
+demand if missing.
+
+## Standalone examples/checks
+
+```sh
+make -C vendor/libghostty-vt harness     # tests/smoke_terminal.c
+make -C vendor/libghostty-vt smoke       # run smoke-terminal-q10 on the Q10
+make -C vendor/libghostty-vt probe       # tests/probe_api.c
+make -C vendor/libghostty-vt smoke-probe
+```
+
+`tests/smoke_terminal.c` is the minimal terminal API example: create a Ghostty
+terminal, feed VT bytes, query the visible grid/style, and assert the expected
+text/color. `tests/probe_api.c` walks the non-formatter API step by step for
+on-device diagnostics.
+
+Known caveat: the older formatter-oriented path still crashes on this target;
+Term49 intentionally uses `ghostty_terminal_grid_ref()`/render-state APIs
+instead.
+
+## Layout
+
+* `vendor/ghostty/` — pinned Ghostty submodule.
+* `patches/` — freestanding/BB10 patch set applied before building.
+* `scripts/cross-build.sh` — qcc/Zig build driver.
+* `scripts/smoke-device.sh` — rooted Q10 smoke runner.
+* `tests/` — standalone ABI/API examples.

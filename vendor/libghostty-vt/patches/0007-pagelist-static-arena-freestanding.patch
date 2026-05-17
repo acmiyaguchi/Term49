@@ -6,12 +6,12 @@ index 17eea73..245db5f 100644
      // In tests we use our testing allocator so we can detect leaks.
      if (builtin.is_test) return std.testing.allocator;
  
-+    // SPIKE patches/0007: freestanding has no OS page allocator
++    // BB10 patches/0007: freestanding has no OS page allocator
 +    // (std.heap.page_allocator -> posix mmap, absent on freestanding).
 +    // Back terminal pages with a static arena to prove the BB10/QNX
 +    // end-to-end path. PRODUCTION TODO: thread the embedder/QNX
 +    // allocator through pageAllocator() instead — this fixed buffer
-+    // caps total page memory (fine for the spike's 80x24, no scrollback).
++    // caps total page memory (sufficient for Term49's current BB10 build).
 +    if (builtin.target.os.tag == .freestanding) {
 +        const S = struct {
 +            var buf: [8 * 1024 * 1024]u8 = undefined;

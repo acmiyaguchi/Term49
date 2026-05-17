@@ -1,5 +1,5 @@
 /* Diagnostic harness for the libghostty-vt BB10 integration sequence.
- * Unlike spike_main.c, this avoids the formatter path so we can tell whether
+ * Unlike smoke_terminal.c, this avoids the formatter path so we can tell whether
  * the remaining Q10 crash is formatter-specific or in terminal/render state. */
 #include <stdio.h>
 #include <string.h>
