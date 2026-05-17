@@ -34,7 +34,6 @@ static UErrorCode  tty_conv_err = U_ZERO_ERROR;
 static UConverter* utf8_conv;
 static UErrorCode  utf8_conv_err = U_ZERO_ERROR;
 
-static char readbuf[READ_BUFFER_SIZE];
 static char writebuf[CHARACTER_BUFFER * U8_MAX_LENGTH];
 static char* writebufLimit;
 
@@ -128,35 +127,8 @@ ssize_t io_write_master_char(const char *buf, size_t n){
   return write(master_fd, buf, n);
 }
 
-ssize_t io_decode_tty_bytes(const char *bytes, size_t nbytes, UChar *buf, size_t nUChar){
-	const char *source = bytes;
-	const char *sourceLimit = bytes + nbytes;
-  UChar *target = buf;
-  UChar *targetLimit = buf + nUChar;
-
-  ucnv_toUnicode(tty_conv, &target, targetLimit, &source, sourceLimit, NULL, FALSE, &tty_conv_err);
-
-  if(tty_conv_err == U_BUFFER_OVERFLOW_ERROR){
-  	fprintf(stderr, "ucnv_toUnicode() in io_decode_tty_bytes ran out of target buffer\n");
-  	tty_conv_err = U_ZERO_ERROR;
-  }
-
-  return (ssize_t)(target - buf);
-}
-
 ssize_t io_read_master_raw(char *buf, size_t nbytes){
   return read(master_fd, buf, nbytes);
-}
-
-ssize_t io_read_master(UChar *buf, size_t nUChar){
-	int32_t count;
-
-  /* Read nUChar bytes, which necessarily translates into <= nUChar UChars */
-	count = io_read_master_raw(readbuf, nUChar);
-	if(count <= 0){
-		return count;
-	}
-	return io_decode_tty_bytes(readbuf, count, buf, nUChar);
 }
 
 ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf){

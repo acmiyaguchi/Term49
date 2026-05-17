@@ -9,8 +9,8 @@
 #   probe     : qcc-link stepwise API probe
 #
 # qcc/readelf stages need the parent BBNDK FHS (QNX_TARGET set). Zig is run
-# by absolute path from build/deps (works in the FHS chroot; if not, run the
-# zig-only stages via `nix develop` per CLAUDE.md). Mirrors fen-blackberry.
+# by absolute path from build/deps; if it will not run inside the FHS chroot,
+# use this directory's `nix develop` shell for Zig-only stages.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

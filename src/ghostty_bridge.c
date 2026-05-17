@@ -86,11 +86,6 @@ static void gb_write_pty(GhosttyTerminal terminal, const uint8_t *data,
   }
 }
 
-int ghostty_bridge_link_probe(void) {
-  bool simd = false;
-  return ghostty_build_info(GHOSTTY_BUILD_INFO_SIMD, &simd) == GHOSTTY_SUCCESS && simd;
-}
-
 int ghostty_bridge_init(uint16_t cols, uint16_t rows, size_t max_scrollback) {
   if (gb.initialized) { return 0; }
 
@@ -128,12 +123,10 @@ void ghostty_bridge_write(const uint8_t *data, size_t len) {
 
   if (!gb.initialized || data == NULL || len == 0) { return; }
 
-  /* BB10's pty output reaches Term49 with bare LF in common shell paths.
-   * A terminal LF moves down without carriage-returning, which creates the
-   * classic staircase effect: every prompt/newline starts at the previous
-   * column. Term49 historically treated cooked pty LF as CR+LF; preserve
-   * that behavior before handing bytes to Ghostty. Keep a
-   * cross-chunk CR flag so real CRLF streams are not doubled. */
+  /* BB10's pty output can contain bare LF. A terminal LF moves down without
+   * carriage-returning, creating staircase newlines. Normalize bare LF to
+   * CRLF before handing bytes to Ghostty, while tracking CR across chunks so
+   * real CRLF streams are not doubled. */
   for (i = 0; i < len; ++i) {
     if (data[i] == '\n' && !gb.prev_write_was_cr) {
       static const uint8_t crlf[2] = { '\r', '\n' };

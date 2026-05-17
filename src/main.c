@@ -1438,7 +1438,6 @@ static int pty_init() {
 		/* Let the interactive shell report that this Term49 binary is using
 		 * libghostty-vt for terminal-state parsing and rendering. */
 		setenv("TERM49_GHOSTTY_RENDERER", "1", 1);
-		setenv("TERM49_GHOSTTY_SHADOW", "0", 1);
 		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
 		 * absolute path: CWD is now the shared HOME, so the old
 		 * "../app/native/..." relative path no longer resolves. */

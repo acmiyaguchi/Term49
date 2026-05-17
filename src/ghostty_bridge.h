@@ -48,6 +48,4 @@ int ghostty_bridge_resize(uint16_t cols, uint16_t rows,
 int ghostty_bridge_update_render_state(void);
 int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame);
 int ghostty_bridge_visit_cells(ghostty_bridge_cell_visitor_t visitor, void *userdata);
-int ghostty_bridge_link_probe(void);
-
 #endif /* GHOSTTY_BRIDGE_H_ */

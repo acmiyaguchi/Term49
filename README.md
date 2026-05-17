@@ -1,8 +1,8 @@
 # Term49
 
-Term49 is a terminal emulator for BlackBerry 10. This branch uses
-`libghostty-vt` as the production terminal parser/state model and renders the
-visible grid from Ghostty through the existing SDL/SDL_ttf UI.
+Term49 is a terminal emulator for BlackBerry 10. It uses `libghostty-vt` as
+its terminal parser/state model and renders the visible grid from Ghostty
+through the existing SDL/SDL_ttf UI.
 
 The [current release](https://github.com/BerryFarm/Term49/releases) requires OS version >= 10.3.
 
@@ -22,19 +22,15 @@ demand before linking Term49.
 Typical local build inside the BBNDK shell:
 
 ```sh
-make Term49
+make
 ```
 
-Canonical packaging on the rooted BB10 device used by this tree is self-signed
-`-devMode` packaging plus `bb-deploy`:
+Package and deploy to a rooted/dev-mode BB10 device:
 
 ```sh
-blackberry-nativepackager -devMode -package Term49.bar bar-descriptor.xml -configuration Device-Debug
-bb-deploy Term49.bar
+make package-dev
+make deploy
 ```
-
-The historical debug-token `make package-debug` / `make deploy` targets are
-kept for upstream compatibility but are not the preferred workflow here.
 
 ## libghostty-vt examples and checks
 
@@ -65,8 +61,8 @@ live in `vendor/libghostty-vt/tests/`.
 
 ## Signing the release
 
-To distribute Term49 through the historical BlackBerry signing flow, run
-`make sign` after configuring `signing/bbpass`.
+To distribute Term49 through the BlackBerry signing flow, run `make sign`
+after configuring `signing/bbpass`.
 
 ## See also
 
