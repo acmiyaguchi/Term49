@@ -20,7 +20,6 @@
 #include "terminal.h"
 #include "preferences.h"
 #include "io.h"
-#include "colors.h"
 
 void destroy_symmenu(symmenu_t *menu) {
 	for (symkey_t **row = menu->keys; row != NULL; ++row) {
@@ -79,8 +78,8 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 	/* render a test character to set the proper height */
 	UChar testchar;
 	io_read_utf8_string("#", 2, &testchar);
-	SDL_Surface *testsurf = TTF_RenderUNICODE_Shaded(fg_font, &testchar, (SDL_Color)SYMMENU_FONT, (SDL_Color)SYMMENU_BACKGROUND);
-	int bg_h = testsurf->h + (2*SYMKEY_BORDER_SIZE) + SYMMENU_FRET_SIZE;
+	SDL_Surface *testsurf = TTF_RenderUNICODE_Shaded(fg_font, &testchar, (SDL_Color)T49_SYMMENU_COLOR_FONT, (SDL_Color)T49_SYMMENU_COLOR_BACKGROUND);
+	int bg_h = testsurf->h + (2*T49_SYMKEY_BORDER_SIZE) + T49_SYMMENU_FRET_SIZE;
 	SDL_FreeSurface(testsurf);
 	int screen_width = atoi(getenv("WIDTH"));
 	int bg_w = screen_width / longest_row_len;
@@ -111,7 +110,7 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 	destrect.h = menu_surface->h;
 	destrect.x = 0; destrect.y = 0;
 	
-	SDL_Color bgc = (SDL_Color)SYMMENU_BACKGROUND;
+	SDL_Color bgc = (SDL_Color)T49_SYMMENU_COLOR_BACKGROUND;
 	Uint32 bg_fill_color = SDL_MapRGB(screen->format, bgc.r, bgc.b, bgc.g);
 	
 	if (SDL_FillRect(menu_surface, &destrect, bg_fill_color) != 0) {
@@ -124,10 +123,10 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 		SDL_Rect destrect;
 		destrect.x = 0;
 		destrect.y = bg_h * i;
-		destrect.h = SYMMENU_FRET_SIZE;
+		destrect.h = T49_SYMMENU_FRET_SIZE;
 		destrect.w = screen->w;
 
-		SDL_Color bgc = (SDL_Color)SYMMENU_FRET;
+		SDL_Color bgc = (SDL_Color)T49_SYMMENU_COLOR_FRET;
 		Uint32 fret_fill_color = SDL_MapRGB(screen->format, bgc.r, bgc.b, bgc.g);
 	
 		if (SDL_FillRect(menu_surface, &destrect, fret_fill_color) != 0) {
@@ -137,18 +136,18 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 
 		/* left-to-right borders */
 		destrect.x = 0;
-		destrect.y = bg_h * i + SYMMENU_FRET_SIZE;
-		destrect.h = SYMKEY_BORDER_SIZE;
+		destrect.y = bg_h * i + T49_SYMMENU_FRET_SIZE;
+		destrect.h = T49_SYMKEY_BORDER_SIZE;
 		destrect.w = screen->w;
-		bgc = (SDL_Color)SYMMENU_BORDER;
+		bgc = (SDL_Color)T49_SYMMENU_COLOR_BORDER;
 		fret_fill_color = SDL_MapRGB(screen->format, bgc.r, bgc.b, bgc.g);
 		if (SDL_FillRect(menu_surface, &destrect, fret_fill_color) != 0) {
 			fprintf(stderr, "Symmenu border bgfill failed: %s\n", SDL_GetError());
 			return NULL;
 		}
 		destrect.x = 0;
-		destrect.y = bg_h * (i + 1) - SYMKEY_BORDER_SIZE;
-		bgc = (SDL_Color)SYMMENU_BORDER;
+		destrect.y = bg_h * (i + 1) - T49_SYMKEY_BORDER_SIZE;
+		bgc = (SDL_Color)T49_SYMMENU_COLOR_BORDER;
 		fret_fill_color = SDL_MapRGB(screen->format, bgc.r, bgc.b, bgc.g);
 		if (SDL_FillRect(menu_surface, &destrect, fret_fill_color) != 0) {
 			fprintf(stderr, "Symmenu border bgfill failed: %s\n", SDL_GetError());
@@ -164,9 +163,9 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 			SDL_Rect destrect;
 
 			/* main symbol */
-			destrect.x = sk->hitbox.x + SYMKEY_BORDER_SIZE;
-			destrect.y = sk->hitbox.y - (screen->h - num_rows * bg_h) + SYMKEY_BORDER_SIZE + SYMMENU_FRET_SIZE;
-			SDL_Surface *destsurf = TTF_RenderUNICODE_Shaded(fg_font, sk->uc, (SDL_Color)SYMMENU_FONT, (SDL_Color)SYMMENU_BACKGROUND);
+			destrect.x = sk->hitbox.x + T49_SYMKEY_BORDER_SIZE;
+			destrect.y = sk->hitbox.y - (screen->h - num_rows * bg_h) + T49_SYMKEY_BORDER_SIZE + T49_SYMMENU_FRET_SIZE;
+			SDL_Surface *destsurf = TTF_RenderUNICODE_Shaded(fg_font, sk->uc, (SDL_Color)T49_SYMMENU_COLOR_FONT, (SDL_Color)T49_SYMMENU_COLOR_BACKGROUND);
 			destrect.w = destsurf->w;
 			destrect.h = destsurf->h;
 			if (SDL_BlitSurface(destsurf, NULL, menu_surface, &destrect) != 0){
@@ -177,8 +176,8 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 			/* from key */
 			cornerchar[0] = sk->map->from;
 			destrect.x = sk->hitbox.x;
-			destrect.y = sk->hitbox.y - (screen->h - num_rows * bg_h) + SYMKEY_BORDER_SIZE + SYMMENU_FRET_SIZE;
-			destsurf = TTF_RenderUNICODE_Shaded(corner_font, cornerchar, (SDL_Color)SYMMENU_FONT, (SDL_Color)SYMMENU_BACKGROUND);
+			destrect.y = sk->hitbox.y - (screen->h - num_rows * bg_h) + T49_SYMKEY_BORDER_SIZE + T49_SYMMENU_FRET_SIZE;
+			destsurf = TTF_RenderUNICODE_Shaded(corner_font, cornerchar, (SDL_Color)T49_SYMMENU_COLOR_FONT, (SDL_Color)T49_SYMMENU_COLOR_BACKGROUND);
 			destrect.w = destsurf->w;
 			destrect.h = destsurf->h;
 			if(SDL_BlitSurface(destsurf, NULL, menu_surface, &destrect) != 0){

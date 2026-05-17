@@ -41,7 +41,6 @@
 #include "terminal.h"
 #include "preferences.h"
 #include "io.h"
-#include "colors.h"
 #include "ghostty_bridge.h"
 
 static int exit_application = 0;
@@ -120,8 +119,8 @@ static char altsym_lock = 0;
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
 static struct timespec metamode_last;
-static SDL_Color metamode_cursor_fg = SDL_BLACK;
-static SDL_Color metamode_cursor_bg = SDL_GREEN;
+static SDL_Color metamode_cursor_fg = T49_COLOR_BLACK;
+static SDL_Color metamode_cursor_bg = T49_COLOR_GREEN;
 static SDL_Surface* metamode_cursor;
 static int vmodifiers = 0;
 
@@ -1152,7 +1151,7 @@ static int sdl_init() {
 	return TERM_SUCCESS;
 }
 
-void uninit(){
+void app_shutdown(void){
 
 	SDL_DestroyMutex(input_mutex);
 
@@ -1658,14 +1657,14 @@ int main(int argc, char **argv) {
 	/* Initialize IO */
 	if (TERM_SUCCESS != io_init(prefs)) {
 		PRINT(stderr, "Unable to initialize IO\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 	
 	/* Initialize pty */
 	if (TERM_SUCCESS != pty_init()) {
 		PRINT(stderr, "Unable to initialize pty/tty\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 
@@ -1676,14 +1675,14 @@ int main(int argc, char **argv) {
 	act.sa_flags = SA_NOCLDSTOP;
 	if (sigaction(SIGCHLD, &act, NULL) < 0) {
 		PRINT(stderr, "sigaction failed\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 
 	/* initialize SDL video etc */
 	if (TERM_SUCCESS != sdl_init()) {
 		PRINT(stderr, "Unable to initialize SDL\n");
-		uninit();
+		app_shutdown();
 		return TERM_FAILURE;
 	}
 
@@ -1766,7 +1765,7 @@ int main(int argc, char **argv) {
 	PRINT(stderr, "Exiting run loop\n");
 	SDL_KillThread(render_thread);
 	virtualkeyboard_hide();
-	uninit();
+	app_shutdown();
 
 	return 0;
 }
