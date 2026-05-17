@@ -54,6 +54,12 @@ lib() {
   ( cd "$GSRC" && "$ZIG" build \
       -Dtarget="$ZIG_TARGET" -Dcpu="$ZIG_MCPU" -Doptimize="$ZIG_OPT" $GHOSTTY_LIB_ARGS \
       --prefix "$GH" )
+  # For freestanding targets we skip Ghostty's shared lib, and the static-lib
+  # install path only installs the archive. Copy the public C headers explicitly
+  # so Term49 can include <ghostty/vt.h> from the build prefix.
+  mkdir -p "$GH/include"
+  rm -rf "$GH/include/ghostty"
+  cp -R "$GSRC/include/ghostty" "$GH/include/ghostty"
   [ -f "$GH/lib/libghostty-vt.a" ] || { echo "error: $GH/lib/libghostty-vt.a not produced" >&2; exit 1; }
   [ -f "$GH/include/ghostty/vt.h" ] || { echo "error: $GH/include/ghostty/vt.h not produced" >&2; exit 1; }
   echo "== libghostty-vt.a undefined symbols (nm -u) =="

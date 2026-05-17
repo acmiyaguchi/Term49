@@ -8,13 +8,17 @@ The [current release](https://github.com/BerryFarm/Term49/releases) requires OS 
 
 ## Development
 
-To compile Term49, you will need the BlackBerry 10 NDK plus the bundled third
-party libraries in `external/lib`:
+To compile Term49, you will need the BlackBerry 10 NDK plus the vendored third
+party libraries in `vendor/prebuilt-bb10/lib`:
 
 * [libSDL][libsdl]
 * [Touch Control Overlay][tco]
 * [libconfig][libconfig]
 
+Third-party source checkouts and BB10 prebuilt binaries live under `vendor/`.
+After cloning, run `git submodule update --init --recursive`. See
+`vendor/README.md` and `vendor/manifest.md` for the dependency inventory,
+prebuilt hashes, and upgrade notes.
 The Ghostty VT core is vendored under `vendor/libghostty-vt/`. The top-level
 Makefile builds `vendor/libghostty-vt/build/ghostty/lib/libghostty-vt.a` on
 demand before linking Term49.
