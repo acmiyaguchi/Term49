@@ -269,12 +269,67 @@ static config_t *upgrade_config(char const *path, int old_version) {
 	return dst;
 }
 
+/* --- libconfig structural validation ---------------------------------
+ * The loaders below index into config aggregates. A malformed .term49rc
+ * (wrong element types, scalars where lists are expected, short arrays)
+ * must fall back to defaults instead of dereferencing NULL. These
+ * helpers are NULL-tolerant: config_setting_type/is_* are macros that
+ * deref (S)->type and config_setting_get_elem() derefs its argument, so
+ * every setting pointer is checked before use. They are only invoked
+ * once the caller has confirmed the top-level setting is the right
+ * aggregate type, so config_setting_length() here is always safe. */
+
+static int keymap_elem_valid(config_setting_t *m) {
+	/* a keymap entry is an aggregate whose elements 0 and 1 are strings;
+	 * get_string_elem() is type/range-safe once m itself is non-NULL */
+	return m != NULL
+		&& config_setting_get_string_elem(m, 0) != NULL
+		&& config_setting_get_string_elem(m, 1) != NULL;
+}
+
+static int keymap_list_valid(config_setting_t *setting) {
+	for (int i = 0; i < config_setting_length(setting); ++i) {
+		if (!keymap_elem_valid(config_setting_get_elem(setting, i))) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
+static int symmenu_rows_valid(config_setting_t *rows_s) {
+	for (int row = 0; row < config_setting_length(rows_s); ++row) {
+		config_setting_t *col_s = config_setting_get_elem(rows_s, row);
+		if (col_s == NULL || !config_setting_is_aggregate(col_s)) {
+			return 0;
+		}
+		for (int col = 0; col < config_setting_length(col_s); ++col) {
+			if (!keymap_elem_valid(config_setting_get_elem(col_s, col))) {
+				return 0;
+			}
+		}
+	}
+	return 1;
+}
+
+static int number_array_valid(config_setting_t *setting, int min_len) {
+	if (config_setting_length(setting) < min_len) {
+		return 0;
+	}
+	for (int i = 0; i < config_setting_length(setting); ++i) {
+		config_setting_t *e = config_setting_get_elem(setting, i);
+		if (e == NULL || !config_setting_is_number(e)) {
+			return 0;
+		}
+	}
+	return 1;
+}
+
 static int* create_int_array(config_t const *config, char const *path, size_t def_len, int const *def, int dynamic) {
 	config_setting_t *setting = config_lookup(config, path);
 	int use_default = 0;
 	size_t source_len = 0;
 
-	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_ARRAY)) {
+	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_ARRAY) || !number_array_valid(setting, 0)) {
 		fprintf(stderr, "invalid array %s, using default\n", path);
 		source_len = def_len;
 		use_default = 1;
@@ -310,7 +365,7 @@ static keymap_t* create_keymap_array(config_t const *config, char const *path, s
 	int use_default = 0;
 	size_t source_len = 0;
 
-	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_LIST)) {
+	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_LIST) || !keymap_list_valid(setting)) {
 		fprintf(stderr, "invalid keymap list %s, using default\n", path);
 		source_len = def_len;
 		use_default = 1;
@@ -344,8 +399,7 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 
 	symmenu_t *menu = calloc(1, sizeof(symmenu_t));
 	
-	/* TODO: more robust checking on config syntax */
-	if (!rows_s || (config_setting_type(rows_s) != CONFIG_TYPE_LIST)) {
+	if (!rows_s || (config_setting_type(rows_s) != CONFIG_TYPE_LIST) || !symmenu_rows_valid(rows_s)) {
 		fprintf(stderr, "invalid symmenu %s, using default\n", path);
 
 		/* calculate the length of the keymap entry array */
@@ -427,7 +481,7 @@ static hitbox_t* create_hitbox(config_t const *config, char const *path, hitbox_
 	config_setting_t *setting = config_lookup(config, path);
 	int use_default = 0;
 
-	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_ARRAY)) {
+	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_ARRAY) || !number_array_valid(setting, 4)) {
 		fprintf(stderr, "invalid array %s, using default\n", path);
 		use_default = 1;
 	}
