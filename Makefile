@@ -2,12 +2,13 @@ CC := qcc
 
 INCLUDE := -I$(QNX_TARGET)/usr/include
 INCLUDE += -I$(QNX_TARGET)/usr/include/freetype2
-INCLUDE += -I./external/include
+VENDOR_PREBUILT := ./vendor/prebuilt-bb10
+
+INCLUDE += -I$(VENDOR_PREBUILT)/include
 
 # BB10 libraries
 LIBPATHS	:= -L$(QNX_TARGET)/armle-v7/lib
 LIBS    	:= -lbps -licui18n -licuuc -lscreen -lm -lfreetype -lclipboard
-LIBS    	+= -lconfig
 
 # Defines
 DEFINES := -D_FORTIFY_SOURCE=2 -D__PLAYBOOK__ -fstack-protector-strong
@@ -15,8 +16,8 @@ DEFINES := -D_FORTIFY_SOURCE=2 -D__PLAYBOOK__ -fstack-protector-strong
 # OpenGL libraries
 LIBPATHS += -L$(QNX_TARGET)/armle-v7/usr/lib
 
-# Include bundled libs
-LIBPATHS += -L./external/lib
+# Include vendored BB10 prebuilt libs
+LIBPATHS += -L$(VENDOR_PREBUILT)/lib
 LIBS     += -lconfig -lSDL12 -lTouchControlOverlay
 
 # Term49 uses libghostty-vt as its terminal parser/state model and renderer
@@ -24,6 +25,7 @@ LIBS     += -lconfig -lSDL12 -lTouchControlOverlay
 GHOSTTY_DIR   := vendor/libghostty-vt
 GHOSTTY_BUILD := $(GHOSTTY_DIR)/build/ghostty
 GHOSTTY_A     := $(GHOSTTY_BUILD)/lib/libghostty-vt.a
+GHOSTTY_H     := $(GHOSTTY_BUILD)/include/ghostty/vt.h
 INCLUDE += -I$(GHOSTTY_BUILD)/include
 LIBS += $(GHOSTTY_A) -lm -lgcc
 
@@ -46,14 +48,14 @@ include ./signing/bbpass
 
 all: $(BINARY_PATH)
 
-libghostty-vt: $(GHOSTTY_A)
+libghostty-vt: $(GHOSTTY_A) $(GHOSTTY_H)
 
-$(GHOSTTY_A):
+$(GHOSTTY_A) $(GHOSTTY_H):
 	$(MAKE) -C $(GHOSTTY_DIR) deps lib
 
 $(BINARY): $(BINARY_PATH)
 
-$(BINARY_PATH): $(GHOSTTY_A) $(OBJS)
+$(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(OBJS)
 	mkdir -p $(ASSET)
 	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(LIBS) -o $(BINARY_PATH)
 

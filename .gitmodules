@@ -1,14 +1,14 @@
-[submodule "SDL"]
-	path = SDL
+[submodule "vendor/sdl"]
+	path = vendor/sdl
 	url = https://github.com/mordak/SDL.git
-  branch = term48
-[submodule "TouchControlOverlay"]
-	path = TouchControlOverlay
+	branch = term48
+[submodule "vendor/touch-control-overlay"]
+	path = vendor/touch-control-overlay
 	url = https://github.com/blackberry/TouchControlOverlay.git
-[submodule "libconfig"]
-	path = libconfig
+[submodule "vendor/libconfig"]
+	path = vendor/libconfig
 	url = https://github.com/hyperrealm/libconfig.git
-  tag = f9f23d7
+	tag = f9f23d7
 [submodule "vendor/libghostty-vt/vendor/ghostty"]
 	path = vendor/libghostty-vt/vendor/ghostty
 	url = https://github.com/ghostty-org/ghostty.git
