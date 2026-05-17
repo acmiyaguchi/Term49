@@ -55,16 +55,6 @@ ssize_t session_write_bytes(session_t *s, const char *buf, size_t n) {
 	return io_write_master_char(buf, n);
 }
 
-int session_resize(session_t *s, int cols, int rows) {
-	/* Window-driven resize still flows through rescreen()/setup_screen_size()
-	 * in this stage; this forwarder exists so #4 can move the pty/bridge
-	 * resize here without changing callers. */
-	(void)s;
-	(void)cols;
-	(void)rows;
-	return 0;
-}
-
 int session_dispatch_action(session_t *s, const action_t *a) {
 	if (s == NULL || a == NULL) {
 		return 0;

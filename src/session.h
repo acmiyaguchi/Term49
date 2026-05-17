@@ -31,11 +31,6 @@ int  session_master_fd(const session_t *s);
 ssize_t session_write_text(session_t *s, const UChar *buf, size_t n);
 ssize_t session_write_bytes(session_t *s, const char *buf, size_t n);
 
-/* Forwarder to the existing window-size path (cols/rows -> TIOCSWINSZ ->
- * SIGWINCH -> ghostty_bridge_resize). Provided for contract completeness;
- * window-driven resize still flows through rescreen() in this stage. */
-int  session_resize(session_t *s, int cols, int rows);
-
 /* Session-scoped action subset: SEND_BYTES / SEND_TERMINFO / PASTE_CLIPBOARD.
  * Returns 1 if handled, 0 otherwise. NULL session => 0. */
 int  session_dispatch_action(session_t *s, const action_t *a);
