@@ -412,9 +412,6 @@ static symmenu_t* create_symmenu(config_t const *config, char const *path, int d
 		}
 	}
 
-	/* call the rendering function later after SDL init*/
-	menu->surface = NULL;
-
 	return menu;
 }
 

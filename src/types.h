@@ -23,7 +23,6 @@ typedef struct t49_symmenu {
 	/* row terminated by NULL pointer, col by NULL symkey_t->map */
 	symkey_t **keys; 
 	keymap_t *entries; /* terminated by NULL keymap_t.to */
-	struct SDL_Surface *surface;
 } symmenu_t;
 
 typedef struct t49_pref {

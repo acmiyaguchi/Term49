@@ -19,6 +19,7 @@
 
 #include "terminal.h"
 #include "prefs.h"
+#include "symmenu.h"
 #include "io.h"
 
 void destroy_symmenu(symmenu_t *menu) {
@@ -31,11 +32,29 @@ void destroy_symmenu(symmenu_t *menu) {
 	}
 	
 	free(menu->entries);
-	SDL_FreeSurface(menu->surface);
+}
+
+void destroy_symmenu_render(symmenu_render_t *render) {
+	if (render == NULL) {
+		return;
+	}
+	SDL_FreeSurface(render->surface);
+	free(render);
+}
+
+static symmenu_render_t *make_symmenu_render(symmenu_t *menu, SDL_Surface *surface) {
+	symmenu_render_t *render = calloc(1, sizeof(symmenu_render_t));
+	if (render == NULL) {
+		SDL_FreeSurface(surface);
+		return NULL;
+	}
+	render->menu = menu;
+	render->surface = surface;
+	return render;
 }
 
 /* Use the preferences struct to initalize all the SDL stuff for symmenu */
-SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu) {
+symmenu_render_t *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu) {
 	/* get info about menu */
 	int num_rows = 0;
 	int longest_row_len = 0;
@@ -115,6 +134,7 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 	
 	if (SDL_FillRect(menu_surface, &destrect, bg_fill_color) != 0) {
 		fprintf(stderr, "Symmenu bgfill failed: %s\n", SDL_GetError());
+		SDL_FreeSurface(menu_surface);
 		return NULL;
 	}
 
@@ -131,6 +151,7 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 	
 		if (SDL_FillRect(menu_surface, &destrect, fret_fill_color) != 0) {
 			fprintf(stderr, "Symmenu fret bgfill failed: %s\n", SDL_GetError());
+			SDL_FreeSurface(menu_surface);
 			return NULL;
 		}
 
@@ -143,6 +164,7 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 		fret_fill_color = SDL_MapRGB(screen->format, bgc.r, bgc.b, bgc.g);
 		if (SDL_FillRect(menu_surface, &destrect, fret_fill_color) != 0) {
 			fprintf(stderr, "Symmenu border bgfill failed: %s\n", SDL_GetError());
+			SDL_FreeSurface(menu_surface);
 			return NULL;
 		}
 		destrect.x = 0;
@@ -151,12 +173,13 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 		fret_fill_color = SDL_MapRGB(screen->format, bgc.r, bgc.b, bgc.g);
 		if (SDL_FillRect(menu_surface, &destrect, fret_fill_color) != 0) {
 			fprintf(stderr, "Symmenu border bgfill failed: %s\n", SDL_GetError());
+			SDL_FreeSurface(menu_surface);
 			return NULL;
 		}
 	}
 
 	/* render the keys */
-	UChar cornerchar[2]; cornerchar[1] = NULL;
+	UChar cornerchar[2]; cornerchar[1] = 0;
 	for (int row = 0; menu->keys[row] != NULL; ++row) {
 		for (int col = 0; menu->keys[row][col].map != NULL; ++col) {
 			symkey_t *sk = &menu->keys[row][col];
@@ -170,6 +193,9 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 			destrect.h = destsurf->h;
 			if (SDL_BlitSurface(destsurf, NULL, menu_surface, &destrect) != 0){
 				PRINT(stderr, "Blit Failed: %s\n", SDL_GetError());
+				SDL_FreeSurface(destsurf);
+				SDL_FreeSurface(menu_surface);
+				return NULL;
 			}
 			SDL_FreeSurface(destsurf);
 
@@ -182,6 +208,9 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 			destrect.h = destsurf->h;
 			if(SDL_BlitSurface(destsurf, NULL, menu_surface, &destrect) != 0){
 				PRINT(stderr, "Blit Failed: %s\n", SDL_GetError());
+				SDL_FreeSurface(destsurf);
+				SDL_FreeSurface(menu_surface);
+				return NULL;
 			}
 			SDL_FreeSurface(destsurf);
 		}
@@ -191,5 +220,5 @@ SDL_Surface *render_symmenu(SDL_Surface *screen, pref_t *prefs, symmenu_t *menu)
 	TTF_CloseFont(corner_font);
 	TTF_CloseFont(bg_font);
 
-	return menu_surface;
+	return make_symmenu_render(menu, menu_surface);
 }
