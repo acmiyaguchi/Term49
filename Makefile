@@ -49,7 +49,7 @@ all: $(BINARY_PATH)
 libghostty-vt: $(GHOSTTY_A)
 
 $(GHOSTTY_A):
-	$(MAKE) -C $(GHOSTTY_DIR) deps abi-probe lib
+	$(MAKE) -C $(GHOSTTY_DIR) deps lib
 
 $(BINARY): $(BINARY_PATH)
 

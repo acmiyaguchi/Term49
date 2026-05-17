@@ -39,8 +39,6 @@ building Ghostty's VT C API for BB10/QNX:
 
 ```sh
 make -C vendor/libghostty-vt deps
-make -C vendor/libghostty-vt abi-probe
-make -C vendor/libghostty-vt abi-zig
 make -C vendor/libghostty-vt lib
 make -C vendor/libghostty-vt harness
 make -C vendor/libghostty-vt smoke
@@ -53,8 +51,7 @@ live in `vendor/libghostty-vt/tests/`.
 
 * `src/ghostty_bridge.c` owns the Ghostty terminal and render-state objects.
 * PTY output bytes are fed directly to `ghostty_terminal_vt_write()`.
-* The renderer reads visible cells via `ghostty_terminal_grid_ref()`; this is
-  slower than the render-state row iterator but was stable on-device.
+* The renderer reads visible cells via Ghostty's render-state row iterator.
 * BB10 pty output may contain bare LF, so the bridge normalizes bare `\n` to
   `\r\n` before feeding Ghostty to avoid staircase newlines.
 * The old Term49 ECMA-48 parser and screen buffer have been removed.

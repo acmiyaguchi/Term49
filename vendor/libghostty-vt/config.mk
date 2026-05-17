@@ -17,8 +17,7 @@ ZIG ?= $(shell echo "$(CURDIR)/build/deps/zig/bin/zig")
 
 # Zig codegen target. Zig has NO QNX target — this is a generic ARM-EABI
 # triple used purely as a code generator; the .a is pure computation linked
-# by qcc. `make abi-probe` may overwrite build/abi/zig_target; cross-build.sh
-# prefers that file over this default.
+# by qcc.
 ZIG_TARGET ?= arm-freestanding-eabi
 ZIG_MCPU   ?= cortex_a9
 ZIG_OPT    ?= ReleaseSmall

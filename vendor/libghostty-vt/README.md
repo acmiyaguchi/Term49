@@ -10,7 +10,6 @@ Run from the Term49 top-level BBNDK shell:
 
 ```sh
 make -C vendor/libghostty-vt deps       # materialize pinned Zig + deps
-make -C vendor/libghostty-vt abi-probe  # choose Zig ARM ABI from qcc output
 make -C vendor/libghostty-vt lib        # build build/ghostty/lib/libghostty-vt.a
 ```
 
@@ -22,18 +21,11 @@ if missing.
 ```sh
 make -C vendor/libghostty-vt harness     # tests/smoke_terminal.c
 make -C vendor/libghostty-vt smoke       # run smoke-terminal-q10 on the Q10
-make -C vendor/libghostty-vt probe       # tests/probe_api.c
-make -C vendor/libghostty-vt smoke-probe
 ```
 
 `tests/smoke_terminal.c` is the minimal terminal API example: create a Ghostty
 terminal, feed VT bytes, query the visible grid/style, and assert the expected
-text/color. `tests/probe_api.c` walks the non-formatter API step by step for
-on-device diagnostics.
-
-Known caveat: the older formatter-oriented path still crashes on this target;
-Term49 intentionally uses `ghostty_terminal_grid_ref()`/render-state APIs
-instead.
+text/color.
 
 ## Layout
 
@@ -41,4 +33,4 @@ instead.
 * `patches/` — freestanding/BB10 patch set applied before building.
 * `scripts/cross-build.sh` — qcc/Zig build driver.
 * `scripts/smoke-device.sh` — rooted Q10 smoke runner.
-* `tests/` — standalone ABI/API examples.
+* `tests/` — standalone smoke-test sources.
