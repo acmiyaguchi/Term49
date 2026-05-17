@@ -36,7 +36,7 @@ typedef struct t49_event {
 		t49_key_event_t key;
 		t49_rect_t touch;
 		struct { int w, h; } resize;
-		struct { int active; } activate;
+		struct { int active; int state; } activate;
 		struct { int visible; int height; } vkb;
 	} as;
 } t49_event_t;

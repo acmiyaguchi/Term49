@@ -44,6 +44,7 @@
 #include "prefs.h"
 #include "symmenu.h"
 #include "renderer_sdl.h"
+#include "platform_sdl.h"
 #include "io.h"
 #include "ghostty_bridge.h"
 
@@ -1756,46 +1757,38 @@ int main(int argc, char **argv) {
 	while (!exit_application) {
 
 		//Request and process all available events
-		SDL_Event event;
+		SDL_Event raw_event;
+		t49_event_t event;
 
-		SDL_WaitEvent(&event);
+		SDL_WaitEvent(&raw_event);
 		lock_input();
-		switch (event.type) {
-		case SDL_QUIT:
-			exit_application = 1;
-			break;
-		case SDL_VIDEORESIZE:
-			rescreen(event.resize.w, event.resize.h);
-			mark_screen_dirty(1);
-			break;
-		case SDL_KEYDOWN:
-			{
-				PRINT(stderr, "SDL_KEYDOWN\n");
-				UChar uc;
-				char sdlkey = event.key.keysym.sym;
-				uc = (UChar)sdlkey;
-				io_write_master(&uc, 1);
+		if (platform_sdl_translate_event(&raw_event, &event)) {
+			switch (event.type) {
+			case T49_EVENT_QUIT:
+				exit_application = 1;
+				break;
+			case T49_EVENT_RESIZE:
+				rescreen(event.as.resize.w, event.as.resize.h);
+				mark_screen_dirty(1);
+				break;
+			case T49_EVENT_KEY:
+				{
+					PRINT(stderr, "SDL_KEYDOWN\n");
+					UChar uc = (UChar)event.as.key.unicode;
+					io_write_master(&uc, 1);
+				}
+				mark_screen_dirty(0);
+				break;
+			case T49_EVENT_TOUCH_DOWN:
+				handle_mousedown(event.as.touch.x, event.as.touch.y);
+				mark_screen_dirty(1);
+				break;
+			case T49_EVENT_ACTIVATE:
+				handle_activeevent(event.as.activate.active, event.as.activate.state);
+				break;
+			default:
+				break;
 			}
-			mark_screen_dirty(0);
-			break;
-		case SDL_SYSWMEVENT:
-			{
-				bps_event_t* bps_event = event.syswm.msg->event;
-				int screene_type;
-				int domain = bps_event_get_domain(bps_event);
-				PRINT(stderr, "Unhandled SYSWMEVENT: %d\n", domain);
-			}
-			break;
-		case SDL_MOUSEBUTTONDOWN:
-			handle_mousedown(event.button.x, event.button.y);
-			mark_screen_dirty(1);
-			break;
-		case SDL_ACTIVEEVENT:
-			handle_activeevent(event.active.gain, event.active.state);
-			break;
-		default:
-			PRINT(stderr, "Unknown Event: %d\n", event.type);
-			break;
 		}
 		indicate_event_input();
 		unlock_input();
