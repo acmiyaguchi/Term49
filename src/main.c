@@ -865,17 +865,38 @@ void handleKeyboardEvent(screen_event_t screen_event)
 }
 
 void set_tty_window_size(){
-	if(tcsetsize(io_get_master(), rows, cols) < 0){
+	int master = io_get_master();
+	struct winsize ws;
+
+	memset(&ws, 0, sizeof(ws));
+	ws.ws_row = rows;
+	ws.ws_col = cols;
+	ws.ws_xpixel = screen ? screen->w : 0;
+	ws.ws_ypixel = screen ? screen->h : 0;
+
+	if(tcsetsize(master, rows, cols) < 0){
 		PRINT(stderr, "ERROR: tcsetsize() returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
 	}
-	/* and send SIGWINCH */
+	if(ioctl(master, TIOCSWINSZ, &ws) < 0){
+		PRINT(stderr, "ERROR: TIOCSWINSZ returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
+	}
+
+	/* Send SIGWINCH to the shell's process group. TIOCGPGRP on the pty
+	 * master fails on BB10/QNX, so fall back to the child process group
+	 * created by setsid() in pty_init(). Sending SIGWINCH to our own app
+	 * process group leaves mksh thinking it is still 80 columns wide, which
+	 * causes broken prompt/readline wrapping until something like tmux fixes
+	 * the size for its inner pty. */
 	int pgrp;
-	if(ioctl(io_get_master(), TIOCGPGRP, &pgrp) != -1){
+	if(ioctl(master, TIOCGPGRP, &pgrp) != -1){
 		killpg(pgrp, SIGWINCH);
+	} else if(child_pid > 0){
+		PRINT(stderr, "Could not get pgrp of tty: %s; using child pgid %d\n", strerror(errno), child_pid);
+		if(killpg(child_pid, SIGWINCH) < 0){
+			kill(child_pid, SIGWINCH);
+		}
 	} else {
-		PRINT(stderr, "Could not get pgrp of tty: %s\n", strerror(errno));
-		/* and assume the pgrp is our own, because we're not allowed to set pgrp.. */
-		killpg(getpid(), SIGWINCH);
+		PRINT(stderr, "Could not get pgrp of tty and no child exists: %s\n", strerror(errno));
 	}
 }
 
@@ -1129,7 +1150,176 @@ SDL_Color adjust_color(SDL_Color in, struct font_style sty){
 	return in;
 }
 
+#ifdef TERM49_USE_GHOSTTY
+static SDL_Color ghostty_sdl_color(ghostty_bridge_rgb_t rgb) {
+	SDL_Color out;
+	out.r = rgb.r;
+	out.g = rgb.g;
+	out.b = rgb.b;
+	out.unused = 0;
+	return out;
+}
+
+struct ghostty_render_context {
+	ghostty_bridge_frame_t frame;
+	int failed;
+};
+
+static void render_ghostty_cell(uint16_t x, uint16_t y,
+                                const ghostty_bridge_cell_t *cell,
+                                void *userdata) {
+	struct ghostty_render_context *ctx = (struct ghostty_render_context *)userdata;
+	SDL_Color fg;
+	SDL_Color bg;
+	SDL_Surface *glyph = NULL;
+	SDL_Rect destrect;
+	int style = TTF_STYLE_NORMAL;
+	UChar str[3] = {0, 0, 0};
+
+	if (ctx == NULL || cell == NULL || x >= cols || y >= rows) { return; }
+
+	fg = ghostty_sdl_color(cell->has_fg ? cell->fg : ctx->frame.default_fg);
+	bg = ghostty_sdl_color(cell->has_bg ? cell->bg : ctx->frame.default_bg);
+
+	if (cell->inverse || flash ||
+	    (draw_cursor && ctx->frame.cursor_visible &&
+	     x == ctx->frame.cursor_x && y == ctx->frame.cursor_y)) {
+		SDL_Color tmp = fg;
+		fg = bg;
+		bg = tmp;
+	}
+
+	destrect.x = x * advance;
+	destrect.y = y * text_height;
+	destrect.w = advance;
+	destrect.h = text_height;
+	SDL_FillRect(screen, &destrect, SDL_MapRGB(screen->format, bg.r, bg.g, bg.b));
+
+	if (!cell->has_text || cell->codepoint == 0 || cell->wide_tail || cell->invisible) {
+		return;
+	}
+
+	if (cell->codepoint <= 0xffff) {
+		str[0] = (UChar)cell->codepoint;
+	} else {
+		str[0] = 0xfffd;
+	}
+
+	if (cell->bold) { style |= TTF_STYLE_BOLD; }
+	if (cell->italic) { style |= TTF_STYLE_ITALIC; }
+	if (cell->underline) { style |= TTF_STYLE_UNDERLINE; }
+	TTF_SetFontStyle(font, style);
+
+	glyph = TTF_RenderUNICODE_Shaded(font, str, fg, bg);
+	if (glyph == NULL) {
+		PRINT(stderr, "Ghostty glyph render failed for U+%04x: %s\n",
+		      (unsigned)cell->codepoint, TTF_GetError());
+		ctx->failed = 1;
+		return;
+	}
+	if (SDL_BlitSurface(glyph, NULL, screen, &destrect) != 0) {
+		PRINT(stderr, "Ghostty glyph blit failed: %s\n", SDL_GetError());
+		ctx->failed = 1;
+	}
+	SDL_FreeSurface(glyph);
+}
+
+static int render_ghostty() {
+	struct ghostty_render_context ctx;
+	SDL_Color bg;
+
+	if (ghostty_bridge_begin_frame(&ctx.frame) != 0) {
+		fprintf(stderr, "ghostty render: begin_frame failed\n");
+		return 0;
+	}
+	if (ctx.frame.cursor_wide_tail && ctx.frame.cursor_x > 0) {
+		ctx.frame.cursor_x -= 1;
+	}
+	ctx.failed = 0;
+
+	bg = ghostty_sdl_color(ctx.frame.default_bg);
+	SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, bg.r, bg.g, bg.b));
+	if (ghostty_bridge_visit_cells(render_ghostty_cell, &ctx) != 0 || ctx.failed) {
+		fprintf(stderr, "ghostty render: visit_cells failed\n");
+		return 0;
+	}
+
+	TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
+
+	if(metamode && metamode_cursor != NULL){
+		SDL_Rect destrect;
+		destrect.x = (cols-1) * advance;
+		destrect.y = 0;
+		destrect.w = metamode_cursor->w;
+		destrect.h = metamode_cursor->h;
+		SDL_BlitSurface(metamode_cursor, NULL, screen, &destrect);
+	}
+
+	if(vmodifiers & KEYMOD_CTRL){
+		SDL_Rect destrect;
+		destrect.x = (cols-1) * advance;
+		destrect.y = 1 * text_height;
+		destrect.w = ctrl_key_indicator->w;
+		destrect.h = ctrl_key_indicator->h;
+		SDL_BlitSurface(ctrl_key_indicator, NULL, screen, &destrect);
+	}
+
+	if(vmodifiers & KEYMOD_ALT){
+		SDL_Rect destrect;
+		destrect.x = (cols-1) * advance;
+		destrect.y = 2 * text_height;
+		destrect.w = alt_key_indicator->w;
+		destrect.h = alt_key_indicator->h;
+		SDL_BlitSurface(alt_key_indicator, NULL, screen, &destrect);
+	}
+
+	if(vmodifiers & KEYMOD_SHIFT){
+		SDL_Rect destrect;
+		destrect.x = (cols-1) * advance;
+		destrect.y = 3 * text_height;
+		destrect.w = shift_key_indicator->w;
+		destrect.h = shift_key_indicator->h;
+		SDL_BlitSurface(shift_key_indicator, NULL, screen, &destrect);
+	}
+
+	if (altsym_lock) {
+		SDL_Rect destrect;
+		destrect.x = (cols-1) * advance;
+		destrect.y = 3 * text_height;
+		destrect.w = shift_key_indicator->w;
+		destrect.h = shift_key_indicator->h;
+		SDL_BlitSurface(altsym_indicator, NULL, screen, &destrect);
+	}
+
+	if ((current_symmenu != NULL) && (current_symmenu->surface != NULL)) {
+		SDL_Rect destrect;
+		destrect.w = current_symmenu->surface->w;
+		destrect.h = current_symmenu->surface->h;
+		destrect.x = 0;
+		destrect.y = screen->h - current_symmenu->surface->h;;
+		if (SDL_BlitSurface(current_symmenu->surface, NULL, screen, &destrect) != 0) {
+			PRINT(stderr, "Symmenu blit failed: %s\n", SDL_GetError());
+			return 1;
+		}
+	}
+
+	SDL_Flip(screen);
+
+	if(flash){
+		flash = 0;
+		screen_dirty = 1;
+		indicate_event_input();
+	}
+
+	return 1;
+}
+#endif
+
 void render() {
+
+#ifdef TERM49_USE_GHOSTTY
+	if (render_ghostty()) { return; }
+#endif
 
 	int offset;
 	struct screenchar* sc;
@@ -1402,9 +1592,10 @@ static int pty_init() {
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
 #ifdef TERM49_USE_GHOSTTY
-		/* Let the interactive shell report whether this Term49 binary was
-		 * built with the libghostty-vt shadow terminal enabled. */
-		setenv("TERM49_GHOSTTY_SHADOW", "1", 1);
+		/* Let the interactive shell report that this Term49 binary is using
+		 * libghostty-vt for terminal-state parsing and rendering. */
+		setenv("TERM49_GHOSTTY_RENDERER", "1", 1);
+		setenv("TERM49_GHOSTTY_SHADOW", "0", 1);
 #endif
 		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
 		 * absolute path: CWD is now the shared HOME, so the old
@@ -1458,9 +1649,13 @@ int run_render(void* data){
 	char ev_buf[100];
 	int n = 0;
 	char rawbuf[READ_BUFFER_SIZE];
+#ifndef TERM49_USE_GHOSTTY
 	UChar lbuf[READ_BUFFER_SIZE];
+#endif
 	ssize_t num_bytes = 0;
+#ifndef TERM49_USE_GHOSTTY
 	ssize_t num_chars = 0;
+#endif
 	int master = io_get_master();
 	while(!exit_application){
 		FD_ZERO(&fds);
@@ -1472,17 +1667,17 @@ int run_render(void* data){
 		} else {
 			if(FD_ISSET(master, &fds)){
 				lock_input();
-				// Read anything from the child. Feed raw UTF-8/VT bytes to the
-				// libghostty-vt shadow terminal, then decode the same bytes through
-				// the legacy ICU path so the existing renderer remains authoritative.
+				// Read anything from the child. In Ghostty builds, raw VT bytes go
+				// directly to libghostty-vt; otherwise keep the legacy ICU+ecma48 path.
 				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
 #ifdef TERM49_USE_GHOSTTY
 					ghostty_bridge_write((const uint8_t*)rawbuf, (size_t)num_bytes);
-#endif
+#else
 					num_chars = io_decode_tty_bytes(rawbuf, (size_t)num_bytes, lbuf, READ_BUFFER_SIZE);
 					if(num_chars > 0){
 						ecma48_filter_text(lbuf, num_chars);
 					}
+#endif
 				}
 				/* child produced output -> screen changed */
 				screen_dirty = 1;
