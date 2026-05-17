@@ -66,9 +66,9 @@ harness() {
   need_fhs
   local A="$GH/lib/libghostty-vt.a"
   [ -f "$A" ] || { echo "error: $A missing — run 'make lib' first" >&2; exit 1; }
-  echo ">> linking against: $A  (headers: $GH/include) + tests/shims.c"
+  echo ">> linking against: $A  (headers: $GH/include)"
   $CC -O2 -std=gnu99 -I"$GH/include" \
-    "$ROOT/tests/smoke_terminal.c" "$ROOT/tests/shims.c" "$A" \
+    "$ROOT/tests/smoke_terminal.c" "$A" \
     -lm -lgcc -o "$ROOT/build/smoke-terminal-q10"
   file "$ROOT/build/smoke-terminal-q10"
   file "$ROOT/build/smoke-terminal-q10" | grep -qiE 'ARM' || { echo "error: not an ARM binary" >&2; exit 1; }

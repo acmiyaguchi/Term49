@@ -1,6 +1,6 @@
 /* Standalone terminal API smoke test for BB10/QNX. Built with
  * qcc -V4.6.3,gcc_ntoarmv7le, linked against only libghostty-vt.a,
- * tests/shims.c, libm, and libgcc, then run on the Q10.
+ * libm, and libgcc, then run on the Q10.
  *
  * Contract: feed "\x1b[31mhi"; PASS iff cells (0,0)/(1,0) contain
  * "h"/"i" and cell (0,0) has the named-red foreground color. */
