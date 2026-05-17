@@ -773,10 +773,11 @@ static symmenu_t *get_keyhold_actions(int keycode) {
 }
 
 /* App-layer keyboard handler. Moved verbatim from the old handleKeyboardEvent
- * body (screen_val -> k->sym, screen_flags -> k->flags, the KEY_DOWN gate ->
- * k->pressed, tty writes -> session_write_text) so device behavior is
- * unchanged. It now runs behind the typed event model: any platform key
- * source builds a TERM_EVENT_KEY and the app routes it here. */
+ * body (screen_val -> k->sym, the screen_flags KEY_DOWN/KEY_REPEAT bits decoded
+ * to k->pressed/k->repeat at the platform boundary, tty writes ->
+ * session_write_text) so device behavior is unchanged. It now runs behind the
+ * typed event model: any platform key source builds a TERM_EVENT_KEY and the
+ * app routes it here. */
 static void app_handle_key(app_t *app, const key_event_t *k)
 {
 	session_t *session = app_active_session(app);
@@ -799,7 +800,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		fflush(stdout);
 
 		/* if we're toggling metamode on or off with doubletap */
-		if((k->sym == metamode_doubletap_key) && !(k->flags & KEY_REPEAT)){
+		if((k->sym == metamode_doubletap_key) && !k->repeat){
 			clock_gettime(CLOCK_MONOTONIC, &now);
 			now_t = timespec2nsec(&now);
 			metamode_last_t = timespec2nsec(&metamode_last);
@@ -813,7 +814,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 
 		/* handle sticky keys */
 		if(k->sym == KEYCODE_BB_SYM_KEY){
-			if(!(k->flags & KEY_REPEAT)){
+			if(!k->repeat){
 				symmenu_toggle(prefs->main_symmenu);
 			} else{
 				/* they are holding it down */
@@ -824,7 +825,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 
 		if(k->sym == KEYCODE_BB_ALT_KEY){
 			if (prefs->sticky_alt_key) {
-				if(k->flags & KEY_REPEAT){
+				if(k->repeat){
 					return;
 				} else {
 					altsym_toggle();
@@ -836,7 +837,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		if(!virtualkeyboard_visible
 		   && ((k->sym == KEYCODE_LEFT_SHIFT) || (k->sym == KEYCODE_RIGHT_SHIFT))){
 			if (prefs->sticky_shift_key) {
-				if(k->flags & KEY_REPEAT){
+				if(k->repeat){
 					return;
 				} else {
 					toggle_vkeymod(KEYMOD_SHIFT);
@@ -855,7 +856,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		/* handle key repeat to upcase / metamode */
-		if ((k->flags & KEY_REPEAT) &&
+		if (k->repeat &&
 		    prefs->keyhold_actions &&
 		    !is_int_member(prefs->keyhold_actions_exempt, k->sym)) {
 			if (!key_repeat_done) {
@@ -1030,7 +1031,6 @@ void handleKeyboardEvent(screen_event_t screen_event)
 	ev.as.key.keycode = screen_val;
 	ev.as.key.unicode = screen_val;
 	ev.as.key.alternate_sym = screen_alt_val;
-	ev.as.key.flags = screen_flags;
 	ev.as.key.modifiers = modifiers;
 	ev.as.key.pressed = (screen_flags & KEY_DOWN) ? 1 : 0;
 	ev.as.key.repeat = (screen_flags & KEY_REPEAT) ? 1 : 0;

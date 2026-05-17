@@ -29,11 +29,11 @@ typedef struct key_event {
 	int pressed;
 	int repeat;
 	/* Rich screen-key fields (BB10 screen_event_t SCREEN_PROPERTY_KEY_*).
-	 * sym mirrors keycode for the plain SDL path; flags carries the raw
-	 * KEY_DOWN/KEY_REPEAT bits; alternate_sym is informational. */
+	 * sym mirrors keycode for the plain SDL path; alternate_sym is
+	 * informational. The raw KEY_DOWN/KEY_REPEAT bits are decoded into
+	 * pressed/repeat at the platform boundary and never cross this contract. */
 	int sym;
 	int alternate_sym;
-	int flags;
 } key_event_t;
 
 typedef struct event {
