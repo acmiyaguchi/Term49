@@ -34,6 +34,19 @@ pref_t* read_preferences(const char* filename);
 void save_preferences(pref_t const* pref, char const* filename);
 void destroy_preferences(pref_t *pref);
 
+/* Loader boundary. pref_t is the loader-agnostic plain-data contract; the
+ * concrete config parser (libconfig today, Lua in #7) stays PRIVATE to the
+ * loader .c file -- no other translation unit includes <libconfig.h> or any
+ * future lua headers. #7 adds prefs_lua_loader() populating the SAME pref_t
+ * and selects it here, with no consumer changes. */
+typedef struct t49_prefs_loader {
+	pref_t *(*load)(const char *path);
+	void    (*save)(const pref_t *prefs, const char *path);
+	void    (*destroy)(pref_t *prefs);
+} t49_prefs_loader_t;
+
+const t49_prefs_loader_t *prefs_libconfig_loader(void);
+
 keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);
 int is_int_member(int const* list, int target);

@@ -675,3 +675,16 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 	keymap_t *entry = keymap_lookup(keystroke, keymap_head);
 	return entry != NULL ? entry->to : NULL;
 }
+
+/* The .term49rc/libconfig loader behind the t49_prefs_loader_t seam.
+ * libconfig is included only in this file; #7 adds a sibling
+ * prefs_lua_loader() populating the same pref_t. */
+static const t49_prefs_loader_t LIBCONFIG_LOADER = {
+	read_preferences,
+	save_preferences,
+	destroy_preferences,
+};
+
+const t49_prefs_loader_t *prefs_libconfig_loader(void) {
+	return &LIBCONFIG_LOADER;
+}

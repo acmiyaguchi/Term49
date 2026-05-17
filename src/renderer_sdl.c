@@ -1,5 +1,6 @@
 #include <stdlib.h>
 
+#include "renderer.h"
 #include "renderer_sdl.h"
 #include "symmenu_sdl.h"
 
@@ -100,4 +101,52 @@ SDL_Surface *renderer_sdl_symmenu_surface_for(t49_renderer_sdl_t *renderer, symm
 int renderer_sdl_symmenu_height(t49_renderer_sdl_t *renderer, symmenu_t *menu) {
 	SDL_Surface *surface = renderer_sdl_symmenu_surface_for(renderer, menu);
 	return surface != NULL ? surface->h : 0;
+}
+
+/* --- t49_renderer vtable adapter (the seam #6 swaps) --- */
+
+static int sdl_ops_init_symmenus(t49_renderer_t *r, void *screen, pref_t *prefs) {
+	return renderer_sdl_init_symmenus(renderer_impl(r), (SDL_Surface *)screen, prefs);
+}
+
+static void *sdl_ops_symmenu_surface_for(t49_renderer_t *r, symmenu_t *menu) {
+	return renderer_sdl_symmenu_surface_for(renderer_impl(r), menu);
+}
+
+static int sdl_ops_symmenu_height(t49_renderer_t *r, symmenu_t *menu) {
+	return renderer_sdl_symmenu_height(renderer_impl(r), menu);
+}
+
+static void sdl_ops_destroy(t49_renderer_t *r) {
+	renderer_sdl_destroy(renderer_impl(r));
+}
+
+static const t49_renderer_ops_t SDL_RENDERER_OPS = {
+	sdl_ops_init_symmenus,
+	sdl_ops_symmenu_surface_for,
+	sdl_ops_symmenu_height,
+	sdl_ops_destroy,
+};
+
+const t49_renderer_ops_t *renderer_sdl_ops(void) {
+	return &SDL_RENDERER_OPS;
+}
+
+t49_renderer_t *renderer_sdl_create_t49(void) {
+	t49_renderer_t *r;
+	t49_renderer_sdl_t *impl;
+
+	r = renderer_create(renderer_sdl_ops());
+	if (r == NULL) {
+		return NULL;
+	}
+
+	impl = renderer_sdl_create();
+	if (impl == NULL) {
+		renderer_destroy(r);   /* sdl_ops_destroy(NULL impl) is a no-op */
+		return NULL;
+	}
+
+	renderer_set_impl(r, impl);
+	return r;
 }

@@ -21,4 +21,10 @@ typedef struct t49_rect {
 	int h;
 } t49_rect_t;
 
+/* Stable session handle id. 0 means "none" / "the active session" so that
+ * actions and APIs default to the active session without churn when
+ * multi-session (#4) lands. Lives here (not session.h) so action.h and
+ * session.h can both use it without an include cycle. */
+typedef unsigned int t49_session_id_t;
+
 #endif /* T49_TYPES_H_ */

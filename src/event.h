@@ -28,6 +28,12 @@ typedef struct t49_key_event {
 	int modifiers;
 	int pressed;
 	int repeat;
+	/* Rich screen-key fields (BB10 screen_event_t SCREEN_PROPERTY_KEY_*).
+	 * sym mirrors keycode for the plain SDL path; flags carries the raw
+	 * KEY_DOWN/KEY_REPEAT bits; alternate_sym is informational. */
+	int sym;
+	int alternate_sym;
+	int flags;
 } t49_key_event_t;
 
 typedef struct t49_event {
@@ -37,6 +43,8 @@ typedef struct t49_event {
 		t49_rect_t touch;
 		struct { int w, h; } resize;
 		struct { int active; int state; } activate;
+		/* visible: 1 show, 0 hide, -1 height-only update (keep current
+		 * visibility). height: reported keyboard height for the -1 case. */
 		struct { int visible; int height; } vkb;
 	} as;
 } t49_event_t;

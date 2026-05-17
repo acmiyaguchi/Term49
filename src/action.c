@@ -54,6 +54,10 @@ int action_parse(const char *value, t49_action_t *out) {
 		return 0;
 	}
 
+	/* Parsed keybindings always target the active session; #4/#5 set this
+	 * explicitly when routing to a specific session. */
+	out->target.session = 0;
+
 	if (parse_builtin(value, &builtin)) {
 		out->kind = T49_ACTION_BUILTIN;
 		out->as.builtin.id = builtin;

@@ -10,6 +10,16 @@
 
 #include <stddef.h>
 
+#include "t49_types.h"
+
+/* Which session an action applies to. session == 0 means "the active
+ * session"; every keybinding parsed today resolves to 0, so behavior is
+ * unchanged. Control-socket / Lua / TAB_* (#5/#4) set a real id without
+ * any signature churn. */
+typedef struct t49_action_target {
+	t49_session_id_t session;
+} t49_action_target_t;
+
 typedef enum t49_action_kind {
 	T49_ACTION_SEND_BYTES,
 	T49_ACTION_SEND_TERMINFO,
@@ -33,6 +43,7 @@ typedef enum t49_builtin_action {
 
 typedef struct t49_action {
 	t49_action_kind_t kind;
+	t49_action_target_t target;   /* {0} => active session (set by action_parse) */
 	union {
 		struct {
 			const char *data;
