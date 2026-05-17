@@ -39,7 +39,7 @@ typedef struct t49_pref {
 	
 	symmenu_t *main_symmenu;
 	symmenu_t *accent_menus[26][2];
-	symmenu_t *altsym_entries;
+	keymap_t *altsym_entries;
 	
 	int sticky_sym_key, sticky_shift_key, sticky_alt_key;
 	int *keyhold_actions_exempt; /* terminated by -1 */

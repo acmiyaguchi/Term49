@@ -49,4 +49,7 @@ typedef struct t49_action {
 	} as;
 } t49_action_t;
 
+int action_parse(const char *value, t49_action_t *out);
+int action_is_builtin(const t49_action_t *action, t49_builtin_action_t id);
+
 #endif /* ACTION_H_ */

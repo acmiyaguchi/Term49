@@ -40,6 +40,7 @@
 
 #include "types.h"
 #include "terminal.h"
+#include "action.h"
 #include "prefs.h"
 #include "symmenu.h"
 #include "io.h"
@@ -645,6 +646,46 @@ void toggle_vkeymod(int mod){
 	mark_screen_dirty(1);
 }
 
+static int dispatch_action(const t49_action_t *action) {
+	if (action == NULL) {
+		return 0;
+	}
+
+	switch (action->kind) {
+	case T49_ACTION_SEND_BYTES:
+		return send_metamode_keystrokes(action->as.bytes.data);
+	case T49_ACTION_SEND_TERMINFO:
+		return send_metamode_keystrokes(action->as.terminfo_name);
+	case T49_ACTION_BUILTIN:
+		switch (action->as.builtin.id) {
+		case T49_BUILTIN_ALT_DOWN:
+			toggle_vkeymod(KEYMOD_ALT);
+			return 1;
+		case T49_BUILTIN_CTRL_DOWN:
+			toggle_vkeymod(KEYMOD_CTRL);
+			return 1;
+		case T49_BUILTIN_RESCREEN:
+			rescreen(-1, -1);
+			return 1;
+		case T49_BUILTIN_PASTE_CLIPBOARD:
+			io_paste_from_clipboard();
+			return 1;
+		default:
+			return 0;
+		}
+	}
+
+	return 0;
+}
+
+static int dispatch_action_string(const char *value) {
+	t49_action_t action;
+	if (!action_parse(value, &action)) {
+		return 0;
+	}
+	return dispatch_action(&action);
+}
+
 static symmenu_t *get_keyhold_actions(int keycode) {
 	if (!prefs->keyhold_actions) {
 		return NULL;
@@ -791,7 +832,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		if (metamode && !metamode_just_set) {
 			keys = keystroke_lookup((char)screen_val, prefs->metamode_sticky_keys);
 			if (keys != NULL){
-				send_metamode_keystrokes(keys);
+				dispatch_action_string(keys);
 				return;
 			}
 		}
@@ -828,7 +869,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 					 * Note that this really only works if the program on the other
 					 * end of the line understands unicode, and can marry up backspaces
 					 * with codepoints, instead of just blindly deleting one byte at a time. */
-					send_metamode_keystrokes(menu->entries[0].to);
+					dispatch_action_string(menu->entries[0].to);
 				} else {
 					symmenu_toggle(menu);
 				}
@@ -845,18 +886,14 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		if(metamode && !metamode_just_set){
 			keys = keystroke_lookup((char)screen_val, prefs->metamode_keys);
 			if(keys != NULL){
-				send_metamode_keystrokes(keys);
+				dispatch_action_string(keys);
 				metamode_toggle();
 				return;
 			}
 			// else
 			keys = keystroke_lookup((char)screen_val, prefs->metamode_func_keys);
 			if(keys != NULL){
-				int f = 0; /* check custom func commands */
-				if(!f && (0 == strncmp(keys, "alt_down", 8)))          { toggle_vkeymod(KEYMOD_ALT);f=1;}
-				if(!f && (0 == strncmp(keys, "ctrl_down", 9)))         { toggle_vkeymod(KEYMOD_CTRL);f=1;}
-				if(!f && (0 == strncmp(keys, "rescreen", 8)))          { rescreen(-1, -1);f=1;}
-				if(!f && (0 == strncmp(keys, "paste_clipboard", 15)))  { io_paste_from_clipboard();f=1;}
+				dispatch_action_string(keys);
 			}
 			metamode_toggle();
 			return;
@@ -867,7 +904,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 			keys = keystroke_lookup((char)screen_val, prefs->altsym_entries);
 			altsym_toggle();
 			if (keys != NULL){
-				send_metamode_keystrokes(keys);
+				dispatch_action_string(keys);
 				return;
 			}
 		}
@@ -876,7 +913,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		if (current_symmenu != NULL) {
 			keys = keystroke_lookup((char)screen_val, current_symmenu->entries);
 			if (keys != NULL){
-				send_metamode_keystrokes(keys);
+				dispatch_action_string(keys);
 				symmenu_toggle(NULL);
 				return;
 			}
