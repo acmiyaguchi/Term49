@@ -175,7 +175,9 @@ int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame) {
   frame->cursor_x = 0;
   frame->cursor_y = 0;
   frame->cursor_wide_tail = 0;
+  frame->dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
 
+  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &frame->dirty);
   ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_COLS, &frame->cols);
   ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_ROWS, &frame->rows);
   ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursor_has_value);
@@ -208,85 +210,147 @@ static int gb_resolve_style_color(GhosttyStyleColor color, ghostty_bridge_rgb_t 
   }
 }
 
-int ghostty_bridge_visit_cells(ghostty_bridge_cell_visitor_t visitor, void *userdata) {
-  uint16_t rows = 0;
-  uint16_t cols = 0;
-  uint16_t y;
+static void gb_init_cell(ghostty_bridge_cell_t *cell) {
+  cell->has_text = 0;
+  cell->codepoint = 0;
+  cell->has_fg = 0;
+  cell->has_bg = 0;
+  cell->fg.r = cell->fg.g = cell->fg.b = 0;
+  cell->bg.r = cell->bg.g = cell->bg.b = 0;
+  cell->bold = 0;
+  cell->italic = 0;
+  cell->underline = 0;
+  cell->inverse = 0;
+  cell->invisible = 0;
+  cell->wide_tail = 0;
+}
 
-  if (!gb.initialized || visitor == NULL) { return -1; }
-  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_ROWS, &rows);
-  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_COLS, &cols);
+static void gb_read_render_cell(GhosttyRenderStateRowCells cells,
+                                ghostty_bridge_cell_t *cell) {
+  GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
+  GhosttyCell raw = 0;
+  GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
+  GhosttyColorRgb color;
+  uint32_t graphemes_len = 0;
 
-  for (y = 0; y < rows; ++y) {
-    uint16_t x;
-    for (x = 0; x < cols; ++x) {
-      GhosttyGridRef ref = GHOSTTY_INIT_SIZED(GhosttyGridRef);
-      GhosttyPoint pt = {
-        .tag = GHOSTTY_POINT_TAG_VIEWPORT,
-        .value = { .coordinate = { .x = x, .y = y } },
-      };
-      GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
-      GhosttyCell raw = 0;
-      GhosttyCellWide wide = GHOSTTY_CELL_WIDE_NARROW;
-      uint32_t stack_buf[8];
-      size_t graphemes_len = 0;
-      ghostty_bridge_cell_t cell;
+  gb_init_cell(cell);
 
-      cell.has_text = 0;
-      cell.codepoint = 0;
-      cell.has_fg = 0;
-      cell.has_bg = 0;
-      cell.fg.r = cell.fg.g = cell.fg.b = 0;
-      cell.bg.r = cell.bg.g = cell.bg.b = 0;
-      cell.bold = 0;
-      cell.italic = 0;
-      cell.underline = 0;
-      cell.inverse = 0;
-      cell.invisible = 0;
-      cell.wide_tail = 0;
+  if (ghostty_render_state_row_cells_get(cells,
+        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_LEN,
+        &graphemes_len) == GHOSTTY_SUCCESS && graphemes_len > 0) {
+    uint32_t stack_buf[8];
+    uint32_t *buf = stack_buf;
 
-      if (ghostty_terminal_grid_ref(gb.terminal, pt, &ref) != GHOSTTY_SUCCESS) {
-        visitor(x, y, &cell, userdata);
-        continue;
-      }
-
-      if (ghostty_grid_ref_graphemes(&ref, stack_buf,
-                                     sizeof(stack_buf) / sizeof(stack_buf[0]),
-                                     &graphemes_len) == GHOSTTY_SUCCESS &&
-          graphemes_len > 0) {
-        cell.has_text = 1;
-        cell.codepoint = stack_buf[0];
-      } else if (graphemes_len > sizeof(stack_buf) / sizeof(stack_buf[0])) {
-        uint32_t *buf = (uint32_t *)malloc(graphemes_len * sizeof(uint32_t));
-        if (buf != NULL &&
-            ghostty_grid_ref_graphemes(&ref, buf, graphemes_len, &graphemes_len) == GHOSTTY_SUCCESS &&
-            graphemes_len > 0) {
-          cell.has_text = 1;
-          cell.codepoint = buf[0];
-        }
-        free(buf);
-      }
-
-      if (ghostty_grid_ref_cell(&ref, &raw) == GHOSTTY_SUCCESS) {
-        ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
-        cell.wide_tail = (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL ||
-                          wide == GHOSTTY_CELL_WIDE_SPACER_HEAD) ? 1 : 0;
-      }
-
-      if (ghostty_grid_ref_style(&ref, &style) == GHOSTTY_SUCCESS) {
-        cell.bold = style.bold ? 1 : 0;
-        cell.italic = style.italic ? 1 : 0;
-        cell.underline = style.underline != 0 ? 1 : 0;
-        cell.inverse = style.inverse ? 1 : 0;
-        cell.invisible = style.invisible ? 1 : 0;
-        cell.has_fg = gb_resolve_style_color(style.fg_color, &cell.fg);
-        cell.has_bg = gb_resolve_style_color(style.bg_color, &cell.bg);
-      }
-
-      visitor(x, y, &cell, userdata);
+    if (graphemes_len > sizeof(stack_buf) / sizeof(stack_buf[0])) {
+      buf = (uint32_t *)malloc((size_t)graphemes_len * sizeof(uint32_t));
     }
+
+    if (buf != NULL &&
+        ghostty_render_state_row_cells_get(cells,
+          GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_BUF,
+          buf) == GHOSTTY_SUCCESS) {
+      cell->has_text = 1;
+      cell->codepoint = buf[0];
+    }
+
+    if (buf != stack_buf) { free(buf); }
   }
 
-  return 0;
+  if (ghostty_render_state_row_cells_get(cells,
+        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW,
+        &raw) == GHOSTTY_SUCCESS) {
+    ghostty_cell_get(raw, GHOSTTY_CELL_DATA_WIDE, &wide);
+    cell->wide_tail = (wide == GHOSTTY_CELL_WIDE_SPACER_TAIL ||
+                       wide == GHOSTTY_CELL_WIDE_SPACER_HEAD) ? 1 : 0;
+  }
+
+  if (ghostty_render_state_row_cells_get(cells,
+        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_STYLE,
+        &style) == GHOSTTY_SUCCESS) {
+    cell->bold = style.bold ? 1 : 0;
+    cell->italic = style.italic ? 1 : 0;
+    cell->underline = style.underline != 0 ? 1 : 0;
+    cell->inverse = style.inverse ? 1 : 0;
+    cell->invisible = style.invisible ? 1 : 0;
+  }
+
+  if (ghostty_render_state_row_cells_get(cells,
+        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_FG_COLOR,
+        &color) == GHOSTTY_SUCCESS) {
+    cell->has_fg = 1;
+    cell->fg = gb_rgb(color);
+  } else if (gb_resolve_style_color(style.fg_color, &cell->fg)) {
+    cell->has_fg = 1;
+  }
+
+  if (ghostty_render_state_row_cells_get(cells,
+        GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_BG_COLOR,
+        &color) == GHOSTTY_SUCCESS) {
+    cell->has_bg = 1;
+    cell->bg = gb_rgb(color);
+  } else if (gb_resolve_style_color(style.bg_color, &cell->bg)) {
+    cell->has_bg = 1;
+  }
+}
+
+int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t visitor, void *userdata) {
+  GhosttyRenderStateRowIterator row_iter = NULL;
+  GhosttyRenderStateRowCells cells = NULL;
+  uint16_t y = 0;
+  int rc = -1;
+
+  if (!gb.initialized || visitor == NULL) { return -1; }
+  if (ghostty_render_state_row_iterator_new(&GB_ALLOC, &row_iter) != GHOSTTY_SUCCESS) { return -1; }
+  if (ghostty_render_state_row_cells_new(&GB_ALLOC, &cells) != GHOSTTY_SUCCESS) { goto done; }
+  if (ghostty_render_state_get(gb.render_state,
+        GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
+        &row_iter) != GHOSTTY_SUCCESS) { goto done; }
+
+  while (ghostty_render_state_row_iterator_next(row_iter)) {
+    bool row_dirty = true;
+    uint16_t x = 0;
+    bool clean = false;
+
+    if (dirty_only) {
+      if (ghostty_render_state_row_get(row_iter,
+            GHOSTTY_RENDER_STATE_ROW_DATA_DIRTY,
+            &row_dirty) != GHOSTTY_SUCCESS) { goto done; }
+      if (!row_dirty) {
+        ++y;
+        continue;
+      }
+    }
+
+    if (ghostty_render_state_row_get(row_iter,
+          GHOSTTY_RENDER_STATE_ROW_DATA_CELLS,
+          &cells) != GHOSTTY_SUCCESS) { goto done; }
+
+    while (ghostty_render_state_row_cells_next(cells)) {
+      ghostty_bridge_cell_t cell;
+      gb_read_render_cell(cells, &cell);
+      visitor(x, y, &cell, userdata);
+      ++x;
+    }
+
+    ghostty_render_state_row_set(row_iter,
+      GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY,
+      &clean);
+    ++y;
+  }
+
+  rc = 0;
+
+done:
+  ghostty_render_state_row_cells_free(cells);
+  ghostty_render_state_row_iterator_free(row_iter);
+  return rc;
+}
+
+int ghostty_bridge_finish_frame(void) {
+  GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
+  if (!gb.initialized) { return -1; }
+  return ghostty_render_state_set(gb.render_state,
+    GHOSTTY_RENDER_STATE_OPTION_DIRTY,
+    &clean) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 

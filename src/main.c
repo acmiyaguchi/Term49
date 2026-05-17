@@ -135,6 +135,14 @@ static int advance;
  * Always written under input_mutex (every writer below already holds
  * lock_input()), so no atomics needed. Start dirty for the first frame. */
 static int screen_dirty = 1;
+static int screen_full_dirty = 1;
+
+static void mark_screen_dirty(int full_repaint) {
+	screen_dirty = 1;
+	if (full_repaint) {
+		screen_full_dirty = 1;
+	}
+}
 
 static SDL_Surface* screen;
 static SDL_Surface* ctrl_key_indicator;
@@ -153,6 +161,8 @@ static int event_pipe[2];
 
 static int rows;
 static int cols;
+
+static void glyph_cache_clear(void);
 
 #define PB_D_PIXELS 32
 
@@ -400,18 +410,18 @@ int get_wm_info(SDL_SysWMinfo* info){
  * regardless of which SDL event delivered the input. */
 void metamode_toggle(){
 	metamode = metamode ? 0 : 1;
-	screen_dirty = 1;
+	mark_screen_dirty(1);
 }
 
 void altsym_toggle() {
 	altsym_lock = altsym_lock ? 0 : 1;
-	screen_dirty = 1;
+	mark_screen_dirty(1);
 }
 
 void symmenu_stick(){
 	PRINT(stderr, "Sticking Sym key\n");
 	symmenu_lock = 1;
-	screen_dirty = 1;
+	mark_screen_dirty(1);
 }
 
 void symmenu_toggle(symmenu_t *target){
@@ -432,7 +442,7 @@ void symmenu_toggle(symmenu_t *target){
 		}
 		symmenu_lock = 0;
 	}
-	screen_dirty = 1;
+	mark_screen_dirty(1);
 }
 
 static const char* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
@@ -537,6 +547,7 @@ int font_init(int font_size){
 
 void font_uninit(){
 
+	glyph_cache_clear();
 	SDL_FreeSurface(metamode_cursor);
 	SDL_FreeSurface(ctrl_key_indicator);
 	SDL_FreeSurface(alt_key_indicator);
@@ -619,7 +630,7 @@ void rescreen(int w, int h){
 		vkb_h = get_virtualkeyboard_height();
 		setup_screen_size(width, height - vkb_h);
 	}
-	screen_dirty = 1;
+	mark_screen_dirty(1);
 }
 
 void toggle_vkeymod(int mod){
@@ -630,7 +641,7 @@ void toggle_vkeymod(int mod){
 	else {
 		vmodifiers |= mod;
 	}
-	screen_dirty = 1;
+	mark_screen_dirty(1);
 }
 
 static symmenu_t *get_keyhold_actions(int keycode) {
@@ -877,7 +888,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 			 * (see render()); clearing them changes the frame, so the
 			 * dirty gate must repaint even if this key emits nothing
 			 * visible itself -- otherwise a stale indicator lingers. */
-			screen_dirty = 1;
+			mark_screen_dirty(1);
 		}
 		vmodifiers = 0;
 
@@ -1034,7 +1045,7 @@ void set_screen_cols(int ncols){
 			set_tty_window_size();
 			ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
 			                      (uint32_t)advance, (uint32_t)text_height);
-			screen_dirty = 1;
+			mark_screen_dirty(1);
 		}
 	}
 }
@@ -1167,6 +1178,71 @@ static SDL_Color ghostty_sdl_color(ghostty_bridge_rgb_t rgb) {
 	return out;
 }
 
+#define GLYPH_CACHE_SIZE 2048
+
+typedef struct glyph_cache_entry {
+	uint32_t codepoint;
+	uint32_t fg;
+	uint32_t bg;
+	int style;
+	SDL_Surface *surface;
+} glyph_cache_entry_t;
+
+static glyph_cache_entry_t glyph_cache[GLYPH_CACHE_SIZE];
+
+static uint32_t color_key(SDL_Color c) {
+	return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
+}
+
+static unsigned glyph_cache_hash(uint32_t codepoint, int style, uint32_t fg, uint32_t bg) {
+	uint32_t h = codepoint * 2654435761u;
+	h ^= fg * 2246822519u;
+	h ^= bg * 3266489917u;
+	h ^= (uint32_t)style * 668265263u;
+	return (unsigned)(h & (GLYPH_CACHE_SIZE - 1));
+}
+
+static void glyph_cache_clear(void) {
+	int i;
+	for (i = 0; i < GLYPH_CACHE_SIZE; ++i) {
+		if (glyph_cache[i].surface != NULL) {
+			SDL_FreeSurface(glyph_cache[i].surface);
+			glyph_cache[i].surface = NULL;
+		}
+	}
+}
+
+static SDL_Surface *glyph_cache_lookup(uint32_t codepoint, int style,
+                                       SDL_Color fg, SDL_Color bg) {
+	uint32_t fg_key = color_key(fg);
+	uint32_t bg_key = color_key(bg);
+	unsigned idx = glyph_cache_hash(codepoint, style, fg_key, bg_key);
+	glyph_cache_entry_t *entry = &glyph_cache[idx];
+	UChar str[3] = {0, 0, 0};
+
+	if (entry->surface != NULL && entry->codepoint == codepoint &&
+	    entry->style == style && entry->fg == fg_key && entry->bg == bg_key) {
+		return entry->surface;
+	}
+
+	if (entry->surface != NULL) {
+		SDL_FreeSurface(entry->surface);
+		entry->surface = NULL;
+	}
+
+	str[0] = (codepoint <= 0xffff) ? (UChar)codepoint : (UChar)0xfffd;
+	TTF_SetFontStyle(font, style);
+	entry->surface = TTF_RenderUNICODE_Shaded(font, str, fg, bg);
+	if (entry->surface == NULL) {
+		return NULL;
+	}
+	entry->codepoint = codepoint;
+	entry->style = style;
+	entry->fg = fg_key;
+	entry->bg = bg_key;
+	return entry->surface;
+}
+
 struct ghostty_render_context {
 	ghostty_bridge_frame_t frame;
 	int failed;
@@ -1181,7 +1257,6 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
 	SDL_Surface *glyph = NULL;
 	SDL_Rect destrect;
 	int style = TTF_STYLE_NORMAL;
-	UChar str[3] = {0, 0, 0};
 
 	if (ctx == NULL || cell == NULL || x >= cols || y >= rows) { return; }
 
@@ -1206,18 +1281,11 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
 		return;
 	}
 
-	if (cell->codepoint <= 0xffff) {
-		str[0] = (UChar)cell->codepoint;
-	} else {
-		str[0] = 0xfffd;
-	}
-
 	if (cell->bold) { style |= TTF_STYLE_BOLD; }
 	if (cell->italic) { style |= TTF_STYLE_ITALIC; }
 	if (cell->underline) { style |= TTF_STYLE_UNDERLINE; }
-	TTF_SetFontStyle(font, style);
 
-	glyph = TTF_RenderUNICODE_Shaded(font, str, fg, bg);
+	glyph = glyph_cache_lookup(cell->codepoint, style, fg, bg);
 	if (glyph == NULL) {
 		PRINT(stderr, "Ghostty glyph render failed for U+%04x: %s\n",
 		      (unsigned)cell->codepoint, TTF_GetError());
@@ -1228,10 +1296,9 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
 		PRINT(stderr, "Ghostty glyph blit failed: %s\n", SDL_GetError());
 		ctx->failed = 1;
 	}
-	SDL_FreeSurface(glyph);
 }
 
-static int render_ghostty() {
+static int render_ghostty(int force_full_repaint) {
 	struct ghostty_render_context ctx;
 	SDL_Color bg;
 
@@ -1244,11 +1311,18 @@ static int render_ghostty() {
 	}
 	ctx.failed = 0;
 
+	force_full_repaint = force_full_repaint || flash ||
+		ctx.frame.dirty == GHOSTTY_BRIDGE_DIRTY_FULL;
+
 	bg = ghostty_sdl_color(ctx.frame.default_bg);
-	SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, bg.r, bg.g, bg.b));
-	if (ghostty_bridge_visit_cells(render_ghostty_cell, &ctx) != 0 || ctx.failed) {
-		fprintf(stderr, "ghostty render: visit_cells failed\n");
-		return 0;
+	if (force_full_repaint) {
+		SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, bg.r, bg.g, bg.b));
+	}
+	if (force_full_repaint || ctx.frame.dirty != 0) {
+		if (ghostty_bridge_visit_cells(!force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
+			fprintf(stderr, "ghostty render: visit_cells failed\n");
+			return 0;
+		}
 	}
 
 	TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
@@ -1310,19 +1384,20 @@ static int render_ghostty() {
 		}
 	}
 
+	ghostty_bridge_finish_frame();
 	SDL_Flip(screen);
 
 	if(flash){
 		flash = 0;
-		screen_dirty = 1;
+		mark_screen_dirty(1);
 		indicate_event_input();
 	}
 
 	return 1;
 }
 
-void render() {
-	render_ghostty();
+void render(int force_full_repaint) {
+	render_ghostty(force_full_repaint);
 }
 
 static void terminal_setenv(void) {
@@ -1503,8 +1578,9 @@ int run_render(void* data){
 				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
 					ghostty_bridge_write((const uint8_t*)rawbuf, (size_t)num_bytes);
 				}
-				/* child produced output -> screen changed */
-				screen_dirty = 1;
+				/* child produced output -> terminal rows changed; let Ghostty's
+				 * render-state dirty map decide whether this is full or partial. */
+				mark_screen_dirty(0);
 				unlock_input();
 			}
 			if(FD_ISSET(event_pipe[0], &fds)){
@@ -1519,13 +1595,15 @@ int run_render(void* data){
 		 * the white-flash storm. */
 		lock_input();
 		int do_render = screen_dirty;
+		int force_full_repaint = screen_full_dirty;
 		screen_dirty = 0;
+		screen_full_dirty = 0;
 		unlock_input();
 
 		if(do_render){
 			PRINT(stderr, "Render Loop\n");
 			lock_input();
-			render();
+			render(force_full_repaint);
 			unlock_input();
 		}
 	}
@@ -1609,6 +1687,10 @@ int main(int argc, char **argv) {
 
 	/* start up main event loop */
 	SDL_Thread *render_thread = SDL_CreateThread(run_render, NULL);
+	/* screen_dirty starts set for the first frame, but the render thread
+	 * blocks in select() until either pty output or an SDL event arrives.
+	 * Poke it once so launch never sits on an undrawn black backbuffer. */
+	indicate_event_input();
 	while (!exit_application) {
 
 		//Request and process all available events
@@ -1622,17 +1704,17 @@ int main(int argc, char **argv) {
 			break;
 		case SDL_VIDEORESIZE:
 			rescreen(event.resize.w, event.resize.h);
-			screen_dirty = 1;
+			mark_screen_dirty(1);
 			break;
 		case SDL_KEYDOWN:
 			{
-				fprintf(stderr, "SDL_KEYDOWN\n");
+				PRINT(stderr, "SDL_KEYDOWN\n");
 				UChar uc;
 				char sdlkey = event.key.keysym.sym;
 				uc = (UChar)sdlkey;
 				io_write_master(&uc, 1);
 			}
-			screen_dirty = 1;
+			mark_screen_dirty(0);
 			break;
 		case SDL_SYSWMEVENT:
 			{
@@ -1644,7 +1726,7 @@ int main(int argc, char **argv) {
 			break;
 		case SDL_MOUSEBUTTONDOWN:
 			handle_mousedown(event.button.x, event.button.y);
-			screen_dirty = 1;
+			mark_screen_dirty(1);
 			break;
 		case SDL_ACTIVEEVENT:
 			handle_activeevent(event.active.gain, event.active.state);

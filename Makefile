@@ -27,9 +27,9 @@ GHOSTTY_A     := $(GHOSTTY_BUILD)/lib/libghostty-vt.a
 INCLUDE += -I$(GHOSTTY_BUILD)/include
 LIBS += $(GHOSTTY_A) -lm -lgcc
 
-# change these as needed (debug right now)
-#DEBUGFLAGS	:= -O2
-DEBUGFLAGS	:= -O0 -g -DDEBUGMSGS
+# Optimized by default for on-device latency. Use `make DEBUGFLAGS='-O0 -g -DDEBUGMSGS'`
+# when you specifically need a chatty debug build.
+DEBUGFLAGS	?= -O2
 CFLAGS    	:= $(INCLUDE) -V4.6.3,gcc_ntoarmv7le -Wc,-std=gnu99 $(DEBUGFLAGS)
 LDOPTS    	:= -Wl,-z,relro -Wl,-z,now
 

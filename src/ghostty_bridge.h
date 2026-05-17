@@ -4,6 +4,10 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define GHOSTTY_BRIDGE_DIRTY_FALSE 0
+#define GHOSTTY_BRIDGE_DIRTY_PARTIAL 1
+#define GHOSTTY_BRIDGE_DIRTY_FULL 2
+
 typedef struct ghostty_bridge_rgb {
   uint8_t r;
   uint8_t g;
@@ -34,6 +38,7 @@ typedef struct ghostty_bridge_frame {
   uint16_t cursor_x;
   uint16_t cursor_y;
   int cursor_wide_tail;
+  int dirty;
 } ghostty_bridge_frame_t;
 
 typedef void (*ghostty_bridge_cell_visitor_t)(uint16_t x, uint16_t y,
@@ -47,5 +52,6 @@ int ghostty_bridge_resize(uint16_t cols, uint16_t rows,
                           uint32_t cell_width_px, uint32_t cell_height_px);
 int ghostty_bridge_update_render_state(void);
 int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame);
-int ghostty_bridge_visit_cells(ghostty_bridge_cell_visitor_t visitor, void *userdata);
+int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t visitor, void *userdata);
+int ghostty_bridge_finish_frame(void);
 #endif /* GHOSTTY_BRIDGE_H_ */
