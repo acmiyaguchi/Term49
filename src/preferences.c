@@ -824,18 +824,17 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 
 /* The .term49rc/libconfig loader behind the prefs_loader_t seam.
  *
- * #7 Phase 3 decision -- KEEP libconfig, fully encapsulated. libconfig
- * stays as the legacy .term49rc reader/writer; it is already private to
- * this translation unit, so a future parser swap or a Lua loader is a
- * sibling behind prefs_loader_t, NOT a rewrite. We deliberately do NOT
- * replace it with a custom format: that risks the ".term49rc still
- * loads" guarantee for no near-term gain. Per #9 staging, an alternate
- * Lua loader populating the SAME pref_t is post-#6 follow-up work.
+ * libconfig is kept and stays fully private to this translation unit:
+ * it remains the legacy .term49rc reader/writer, and an alternate parser
+ * or loader is added as a sibling behind prefs_loader_t rather than a
+ * rewrite. It is deliberately not replaced with a custom format -- that
+ * would risk the guarantee that existing .term49rc files keep loading,
+ * for no proportionate gain.
  *
- * #7 Phase 2 note -- no separate parser-neutral IR is introduced
- * because pref_t (plain data) + prefs_loader_t (this vtable) already ARE
- * that representation. The scalar schema table above is the single
- * source of truth a Lua loader would target. */
+ * No separate parser-neutral representation is needed: pref_t (plain
+ * data) plus prefs_loader_t (this vtable) already are that boundary, and
+ * the scalar schema table above is the single source of truth any
+ * alternate loader would populate. */
 static const prefs_loader_t LIBCONFIG_LOADER = {
 	read_preferences,
 	save_preferences,
