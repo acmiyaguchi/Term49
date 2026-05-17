@@ -33,7 +33,7 @@ int platform_sdl_translate_event(const SDL_Event *event, event_t *out) {
 		 * SDL calls handleKeyboardEvent directly); this covers any plain
 		 * SDL keydown (e.g. an external keyboard). Build a rich key event
 		 * so app_handle_key() treats it like a non-repeat key press.
-		 * out is memset to 0 above, so flags/modifiers/repeat stay 0. */
+		 * out is memset to 0 above, so modifiers/repeat stay 0. */
 		out->type = TERM_EVENT_KEY;
 		out->as.key.sym = event->key.keysym.sym;
 		out->as.key.keycode = event->key.keysym.sym;
@@ -63,9 +63,23 @@ int platform_sdl_translate_event(const SDL_Event *event, event_t *out) {
 }
 
 /* --- platform vtable adapter (the seam #6 swaps) ---
- * next_event stays NULL in #10: the SDL_WaitEvent pump remains inline in
- * main()'s run loop (it is wound through lock_input/indicate_event_input).
- * #6 implements next_event with the native Screen/BPS source. */
+ * next_event drives the SDL pull pump: SDL_WaitEvent + translate behind the
+ * vtable, called from main()'s run loop via platform_next_event(). It owns
+ * only the SDL pull source; the BB10 device key path (handleKeyboardEvent)
+ * and BPS VKB events stay direct push callbacks until #6 replaces this with
+ * the native Screen/BPS source. SDL_WaitEvent blocks, so the run loop calls
+ * this outside lock_input() (the wait must not hold input_mutex). */
+
+static int sdl_plat_next_event(platform_t *p, event_t *out) {
+	SDL_Event raw;
+	(void)p;
+	/* SDL_WaitEvent returns 0 on error; do not translate an uninitialized
+	 * event. Returning 0 keeps the run loop's unconditional render poke. */
+	if (SDL_WaitEvent(&raw) == 0) {
+		return 0;
+	}
+	return platform_sdl_translate_event(&raw, out);
+}
 
 static void sdl_plat_vkb_show(platform_t *p)  { (void)p; virtualkeyboard_show(); }
 static void sdl_plat_vkb_hide(platform_t *p)  { (void)p; virtualkeyboard_hide(); }
@@ -75,7 +89,7 @@ static int  sdl_plat_notify(platform_t *p, const char *msg)  { (void)p; (void)ms
 static int  sdl_plat_open_url(platform_t *p, const char *url){ (void)p; (void)url; return -1; }
 
 static const platform_ops_t SDL_PLATFORM_OPS = {
-	.next_event  = NULL,
+	.next_event  = sdl_plat_next_event,
 	.vkb_show    = sdl_plat_vkb_show,
 	.vkb_hide    = sdl_plat_vkb_hide,
 	.vkb_height  = sdl_plat_vkb_height,

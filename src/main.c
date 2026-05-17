@@ -1871,13 +1871,14 @@ int main(int argc, char **argv) {
 	indicate_event_input();
 	while (!exit_application) {
 
-		//Request and process all available events
-		SDL_Event raw_event;
+		//Request and process the next event. platform_next_event blocks
+		//(SDL_WaitEvent) outside the lock; only dispatch is locked. The
+		//render-thread poke stays unconditional, as before.
 		event_t event;
+		int have = platform_next_event(g_platform, &event);
 
-		SDL_WaitEvent(&raw_event);
 		lock_input();
-		if (platform_sdl_translate_event(&raw_event, &event)) {
+		if (have) {
 			app_handle_event(g_app, &event);
 		}
 		indicate_event_input();

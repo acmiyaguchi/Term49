@@ -5,13 +5,14 @@
 
 /* Backend-agnostic platform handle + operations. The platform owns the raw
  * event source and OS services (virtual keyboard, device query, notify,
- * invoke). In #10 only the service forwarders are wired; next_event stays
- * NULL and the SDL pump remains inline in main(). #6 implements next_event
- * with the native Screen/BPS source and flips the run loop in one place. */
+ * invoke). In #10 the SDL pull pump is wired through next_event (the run loop
+ * calls platform_next_event); the BB10 device key path and BPS VKB events
+ * remain direct push callbacks. #6 replaces next_event with the native
+ * Screen/BPS source and folds the push callbacks in, in one place. */
 typedef struct platform platform_t;
 
 typedef struct platform_ops {
-	int  (*next_event)(platform_t *p, event_t *out); /* 1=event; NULL in #10 */
+	int  (*next_event)(platform_t *p, event_t *out); /* 1=event filled; SDL pull pump wired in #10 */
 	void (*vkb_show)(platform_t *p);
 	void (*vkb_hide)(platform_t *p);
 	int  (*vkb_height)(platform_t *p);
