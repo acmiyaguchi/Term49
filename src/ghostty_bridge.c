@@ -151,7 +151,7 @@ int ghostty_bridge_resize(uint16_t cols, uint16_t rows,
                                  cell_width_px, cell_height_px) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
-int ghostty_bridge_update_render_state(void) {
+static int gb_update_render_state(void) {
   if (!gb.initialized) { return -1; }
   return ghostty_render_state_update(gb.render_state, gb.terminal) == GHOSTTY_SUCCESS ? 0 : -1;
 }
@@ -160,7 +160,7 @@ int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame) {
   bool cursor_has_value = false;
 
   if (!gb.initialized || frame == NULL) { return -1; }
-  if (ghostty_bridge_update_render_state() != 0) { return -1; }
+  if (gb_update_render_state() != 0) { return -1; }
 
   gb.colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
   if (ghostty_render_state_colors_get(gb.render_state, &gb.colors) != GHOSTTY_SUCCESS) {

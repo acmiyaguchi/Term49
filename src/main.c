@@ -107,9 +107,9 @@ static void set_persistent_home(void) {
 
 static char slave_ptyname[L_ctermid];
 
-char draw_cursor = 1;
+static char draw_cursor = 1;
 
-char flash = 0;
+static char flash = 0;
 
 static pref_t *prefs = NULL;
 static symmenu_t *current_symmenu = NULL;
@@ -131,7 +131,7 @@ static int text_height;
 static int text_height_padding;
 static int advance;
 
-/* Frame-level dirty gate. render() owes a repaint only when this is set.
+/* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
  * lock_input()), so no atomics needed. Start dirty for the first frame. */
 static int screen_dirty = 1;
@@ -885,7 +885,7 @@ void handleKeyboardEvent(screen_event_t screen_event)
 		modifiers |= vmodifiers;
 		if (vmodifiers != 0) {
 			/* the on-screen ctrl/alt/shift indicators reflect vmodifiers
-			 * (see render()); clearing them changes the frame, so the
+			 * clearing them changes the frame, so the
 			 * dirty gate must repaint even if this key emits nothing
 			 * visible itself -- otherwise a stale indicator lingers. */
 			mark_screen_dirty(1);
@@ -1424,10 +1424,6 @@ static int render_ghostty(int force_full_repaint) {
 	return 1;
 }
 
-void render(int force_full_repaint) {
-	render_ghostty(force_full_repaint);
-}
-
 static void terminal_setenv(void) {
 	/* terminfo is located via $TERMINFO (an absolute path to the bundled
 	 * database, exported in main() before fork). */
@@ -1631,7 +1627,7 @@ int run_render(void* data){
 		if(do_render){
 			PRINT(stderr, "Render Loop\n");
 			lock_input();
-			render(force_full_repaint);
+			render_ghostty(force_full_repaint);
 			unlock_input();
 		}
 	}

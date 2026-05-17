@@ -50,7 +50,6 @@ void ghostty_bridge_uninit(void);
 void ghostty_bridge_write(const uint8_t *data, size_t len);
 int ghostty_bridge_resize(uint16_t cols, uint16_t rows,
                           uint32_t cell_width_px, uint32_t cell_height_px);
-int ghostty_bridge_update_render_state(void);
 int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame);
 int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t visitor, void *userdata);
 int ghostty_bridge_visit_row(uint16_t target_y, ghostty_bridge_cell_visitor_t visitor, void *userdata);
