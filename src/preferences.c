@@ -837,7 +837,12 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	}
 
 	fputs("-- Term49 configuration (Lua). Generated automatically; safe to\n"
-	      "-- edit. This file is never rewritten by Term49.\n\n", f);
+	      "-- edit. This file is never rewritten by Term49.\n"
+	      "--\n"
+	      "-- SECURITY: this file is executed as a full Lua program at startup\n"
+	      "-- and on reload, with the full standard library (including os and\n"
+	      "-- io). Treat it like a shell rc -- only run a .term49.lua you wrote\n"
+	      "-- or trust.\n\n", f);
 	fprintf(f, "prefs_version = %d\n\n", PREFS_VERSION);
 
 	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {

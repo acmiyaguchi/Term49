@@ -53,3 +53,8 @@ BB10 prebuilts. Lua is plain C compiled directly by `qcc` (no Zig/nix step,
 unlike libghostty-vt) and statically linked, so it adds no `prebuilt-bb10`
 artifact or `bar-descriptor.xml` asset. libconfig was removed when Lua became
 the sole config language.
+
+`~/.term49.lua` is executed as arbitrary Lua with the full standard library
+(`os`, `io`, `package`, …) at startup and on every live reload. It is a
+trusted, user-owned config/script file (like a shell rc), not a sandbox; this
+is intentional so the config can script the terminal.
