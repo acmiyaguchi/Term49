@@ -46,6 +46,11 @@ typedef struct prefs_loader {
 /* Lua is the only config language. prefs_lua_loader() executes the
  * user's .term49.lua and builds pref_t directly from its globals. */
 const prefs_loader_t *prefs_lua_loader(void);
+/* Re-run .term49.lua for a live reload. Returns a fresh pref_t on
+ * success (scripting state already committed); returns NULL on a
+ * parse error / OOM WITHOUT disturbing the running config or Lua
+ * state, so a broken edit can't wipe a working setup to defaults. */
+pref_t *prefs_lua_reload(void);
 /* Serialize pref_t to a .term49.lua; used to persist a first-run
  * default config. */
 void prefs_emit_lua(const pref_t *prefs, const char *path);

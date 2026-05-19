@@ -589,6 +589,24 @@ static const luaL_Reg TERM_LUA_LIB[] = {
 	{ NULL, NULL }
 };
 
+/* Fresh Lua state with stdlib + the `term` table registered (so the
+ * config can use it at top level and in keybinding functions). NULL on
+ * OOM; the caller decides whether that is fatal. */
+static lua_State *lua_new_state(void) {
+	lua_State *L = luaL_newstate();
+	if (L == NULL) {
+		return NULL;
+	}
+	luaL_openlibs(L);
+	luaL_newlib(L, TERM_LUA_LIB);
+	lua_setglobal(L, "term");
+	return L;
+}
+
+/* Startup loader (vtable). Always returns a usable pref_t: a
+ * missing/broken .term49.lua falls back to compiled defaults, which is
+ * the only sensible behaviour at startup (there is no prior config to
+ * keep). Destructive: commits the new lua_State unconditionally. */
 static pref_t *prefs_lua_load(const char *path) {
 	if (g_lua_state) { lua_close(g_lua_state); g_lua_state = NULL; }
 
@@ -598,16 +616,11 @@ static pref_t *prefs_lua_load(const char *path) {
 		exit(1);
 	}
 
-	lua_State *L = luaL_newstate();
+	lua_State *L = lua_new_state();
 	if (L == NULL) {
 		fprintf(stderr, "fatal error: luaL_newstate failed\n");
 		exit(1);
 	}
-	luaL_openlibs(L);
-	/* Register `term` before running the config so it is usable at top
-	 * level and by functions the config defines for keybindings. */
-	luaL_newlib(L, TERM_LUA_LIB);
-	lua_setglobal(L, "term");
 
 	if (luaL_dofile(L, path) != LUA_OK) {
 		/* missing/erroring config -> every global absent -> all defaults */
@@ -620,6 +633,40 @@ static pref_t *prefs_lua_load(const char *path) {
 	prefs_build_from_lua(L, prefs);
 
 	g_lua_state = L; /* retained for scripting; closed in prefs_lua_destroy */
+	return prefs;
+}
+
+/* Reload loader. Non-destructive on failure: a Lua syntax/parse error
+ * (or OOM) returns NULL with the live g_lua_state and the caller's
+ * pref_t left completely untouched, so a fat-fingered config edit can
+ * never silently wipe a running setup back to defaults. On success the
+ * new scripting state is committed and a fresh pref_t returned for the
+ * caller to move into place. */
+pref_t *prefs_lua_reload(void) {
+	lua_State *L = lua_new_state();
+	if (L == NULL) {
+		fprintf(stderr, "term49: reload aborted: out of memory\n");
+		return NULL;
+	}
+
+	if (luaL_dofile(L, PREFS_LUA_FILE_PATH) != LUA_OK) {
+		fprintf(stderr, "term49: reload rejected, keeping current config: %s\n",
+		        lua_tostring(L, -1));
+		lua_close(L);
+		return NULL;
+	}
+
+	pref_t *prefs = calloc(1, sizeof(pref_t));
+	if (prefs == NULL) {
+		lua_close(L);
+		return NULL;
+	}
+	prefs->prefs_version = PREFS_VERSION;
+	prefs_build_from_lua(L, prefs);
+
+	/* Commit the scripting state only now that the file parsed. */
+	if (g_lua_state) { lua_close(g_lua_state); }
+	g_lua_state = L;
 	return prefs;
 }
 

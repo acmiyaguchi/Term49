@@ -710,9 +710,15 @@ int app_run_action_string(const char *s){
  * re-applied (io converter is opened once at startup); changing it
  * still needs a restart. */
 static void app_reload_config(void){
-	pref_t *fresh = g_prefs_loader->load(PREFS_LUA_FILE_PATH);
+	pref_t *fresh = prefs_lua_reload();
 	if(fresh == NULL){
-		fprintf(stderr, "term49: reload failed; keeping current config\n");
+		/* Parse error / OOM: prefs_lua_reload() left the running config
+		 * and scripting state fully intact, so a broken edit can't wipe
+		 * a working setup to defaults. No transient on-screen cue: this
+		 * BB10 SDL backend only composites on the next event pump, so a
+		 * flash would not show until an unrelated tap (confusing). The
+		 * feedback is simply that nothing changes -- the rejected edit
+		 * is logged to stderr for dev builds. */
 		return;
 	}
 	/* drop pointers into the config we're about to free */
