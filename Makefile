@@ -44,7 +44,12 @@ OBJS := $(SRCS:.c=.o )
 
 include ./signing/bbpass
 
-.PHONY: all clean libghostty-vt package-dev package-release deploy sign
+# deploy/connect call the BlackBerry NDK tools directly (like qcc and
+# blackberry-nativepackager above). Credentials come from signing/bbpass;
+# refuse to run while BBPASS is still its "" placeholder.
+check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in signing/bbpass before deploying' >&2; exit 1; }
+
+.PHONY: all clean libghostty-vt package-dev package-release deploy connect sign
 
 all: $(BINARY_PATH)
 
@@ -72,7 +77,12 @@ package-dev: $(BINARY_PATH)
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
 
 deploy: package-dev
-	bb-deploy $(BINARY).bar
+	@$(check-creds)
+	@blackberry-deploy -installApp -launchApp -device $(BBIP) -password $(BBPASS) -package $(BINARY).bar
+
+connect:
+	@$(check-creds)
+	@blackberry-connect $(BBIP) -password $(BBPASS)
 
 package-release: $(BINARY_PATH)
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml
