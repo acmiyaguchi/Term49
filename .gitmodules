@@ -12,3 +12,6 @@
 [submodule "vendor/libghostty-vt/vendor/ghostty"]
 	path = vendor/libghostty-vt/vendor/ghostty
 	url = https://github.com/ghostty-org/ghostty.git
+[submodule "vendor/lua"]
+	path = vendor/lua
+	url = https://github.com/lua/lua.git

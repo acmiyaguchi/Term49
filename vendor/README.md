@@ -13,6 +13,7 @@ source-vs-prebuilt reproducibility status.
 | `touch-control-overlay/` | Source submodule for `prebuilt-bb10/lib/libTouchControlOverlay.so`; this is an indirect dependency of the SDL fork. |
 | `libconfig/` | Source submodule for the libconfig C library that produced `prebuilt-bb10/lib/libconfig.so`. |
 | `libghostty-vt/` | Vendored Ghostty terminal parser/state model integration. |
+| `lua/` | Source submodule for Lua 5.4 (`lua/lua` upstream), built to a static `liblua.a` by the top-level Makefile and statically linked. Term49's config language and scripting runtime. |
 
 ## Current prebuilt inventory
 

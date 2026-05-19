@@ -27,7 +27,19 @@ GHOSTTY_BUILD := $(GHOSTTY_DIR)/build/ghostty
 GHOSTTY_A     := $(GHOSTTY_BUILD)/lib/libghostty-vt.a
 GHOSTTY_H     := $(GHOSTTY_BUILD)/include/ghostty/vt.h
 INCLUDE += -I$(GHOSTTY_BUILD)/include
-LIBS += $(GHOSTTY_A) -lm -lgcc
+LIBS += $(GHOSTTY_A)
+
+# Term49 embeds Lua 5.4 (vendored, statically linked) as its config language
+# and scripting runtime. Static archive => no new .so / bar-descriptor asset.
+# Sources live at the lua/lua repo root; exclude the interpreter main (lua.c),
+# the amalgamation (onelua.c), and the internal test harness (ltests.c).
+LUA_DIR  := vendor/lua
+LUA_SRC  := $(filter-out $(LUA_DIR)/lua.c $(LUA_DIR)/onelua.c $(LUA_DIR)/ltests.c,$(wildcard $(LUA_DIR)/*.c))
+LUA_OBJS := $(LUA_SRC:.c=.o)
+LUA_A    := $(LUA_DIR)/build/liblua.a
+LUA_AR   ?= ntoarmv7-ar
+INCLUDE  += -I$(LUA_DIR)
+LIBS     += $(LUA_A) -lm -lgcc
 
 # Optimized by default for on-device latency. Use `make DEBUGFLAGS='-O0 -g -DDEBUGMSGS'`
 # when you specifically need a chatty debug build.
@@ -60,15 +72,27 @@ $(GHOSTTY_A) $(GHOSTTY_H):
 
 $(BINARY): $(BINARY_PATH)
 
-$(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(OBJS)
+$(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(LUA_A) $(OBJS)
 	mkdir -p $(ASSET)
 	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(LIBS) -o $(BINARY_PATH)
+
+# Lua sources are upstream third-party C: build them without Term49's
+# app DEFINES (no __PLAYBOOK__/_FORTIFY_SOURCE), only LUA_USE_POSIX for QNX.
+# More specific stem than the generic %.o rule, so make prefers this for
+# vendor/lua/*.c.
+$(LUA_DIR)/%.o: $(LUA_DIR)/%.c
+	$(CC) $(CFLAGS) -DLUA_USE_POSIX -c $< -o $@
+
+$(LUA_A): $(LUA_OBJS)
+	mkdir -p $(dir $@)
+	$(LUA_AR) rcs $@ $(LUA_OBJS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $(DEFINES) $< -o $@
 
 clean:
 	@rm -fv src/*.o
+	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
 	@rm -fv $(BINARY_PATH)
 	@rmdir -v $(ASSET) 2>/dev/null || true
 	@rm -fv $(BINARY).bar
