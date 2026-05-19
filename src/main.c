@@ -638,6 +638,8 @@ void handle_virtualkeyboard_event(bps_event_t *event){
 	app_handle_event(g_app, &ev);
 }
 
+static int render_ghostty(int force_full_repaint); /* defined below */
+
 void rescreen(int w, int h){
 
 	int width  = w == -1 ? screen->w : w;
@@ -657,6 +659,14 @@ void rescreen(int w, int h){
 		setup_screen_size(width, height - vkb_h);
 	}
 	mark_screen_dirty(1);
+	/* Repaint synchronously now instead of waiting for the render thread
+	 * to wake on the next event. Twice: the screen is SDL_DOUBLEBUF, so a
+	 * single full repaint refreshes only one of the two buffers and the
+	 * next flip would briefly show the stale (old-size) buffer. We hold
+	 * lock_input() in every rescreen() caller, so this cannot race the
+	 * render thread (it also renders only under that lock). */
+	render_ghostty(1);
+	render_ghostty(1);
 }
 
 /* Change the active font size at runtime. Clamps to a sane range, then reuses
@@ -718,8 +728,7 @@ static void app_reload_config(void){
 	if(renderer != NULL){
 		renderer_init_symmenus(renderer, screen, prefs);
 	}
-	rescreen(-1, -1);                    /* font/grid/PTY + redraw */
-	fprintf(stderr, "term49: reloaded %s\n", PREFS_LUA_FILE_PATH);
+	rescreen(-1, -1);                    /* font/grid/PTY + synchronous redraw */
 }
 
 void toggle_vkeymod(int mod){
@@ -1879,7 +1888,7 @@ int main(int argc, char **argv) {
 	/* Switch to our home directory */
 	char* home = getenv("HOME");
 	if(home != NULL){ chdir(home); }
-	
+
 	/* Stateless SDL/BPS platform services. The seam is frozen now; #6
 	 * replaces platform_sdl_create() with the native Screen/BPS backend. */
 	g_platform = platform_sdl_create();

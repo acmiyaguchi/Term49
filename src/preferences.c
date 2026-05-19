@@ -66,9 +66,9 @@ static const int PREFS_VERSION = 9;
                                                 {'c', "ctrl_down"}, \
                                                 {'s', "rescreen"}, \
                                                 {'v', "paste_clipboard"}, \
-                                                {'=', "font_size_increase"}, \
-                                                {'-', "font_size_decrease"}, \
-                                                {'0', "font_size_reset"}, \
+                                                {'i', "font_size_increase"}, \
+                                                {'o', "font_size_decrease"}, \
+                                                {'p', "font_size_reset"}, \
                                                 {'r', "reload_config"}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
