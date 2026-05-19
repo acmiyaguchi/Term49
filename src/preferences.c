@@ -60,11 +60,14 @@ static const int PREFS_VERSION = 9;
                                                   {'j', "kcud1"}, \
                                                   {'l', "kcuf1"}, \
                                                   {'h', "kcub1"}}
-#define DEFAULT_METAMODE_FUNC_KEYS_LEN 4
+#define DEFAULT_METAMODE_FUNC_KEYS_LEN 7
 #define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
                                                 {'c', "ctrl_down"}, \
                                                 {'s', "rescreen"}, \
-                                                {'v', "paste_clipboard"}}
+                                                {'v', "paste_clipboard"}, \
+                                                {'=', "font_size_increase"}, \
+                                                {'-', "font_size_decrease"}, \
+                                                {'0', "font_size_reset"}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
 #define DEFAULT_SYMMENU_ENTRIES (keymap_t[]) {  \
