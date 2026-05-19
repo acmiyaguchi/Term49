@@ -25,6 +25,10 @@
 
 #include <libconfig.h>
 
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
+
 #include "terminal.h"
 #include "accent_menus.h"
 #include "action.h"
@@ -650,6 +654,36 @@ static void prefs_save_scalars(config_setting_t *root, pref_t const *prefs) {
 	}
 }
 
+/* The single config_t -> pref_t population routine, shared by every
+ * loader. Driven by the scalar schema table and the validated create_*
+ * helpers, so any loader (libconfig or Lua) that builds an equivalent
+ * config_t gets identical validation, defaulting, action_parse() and
+ * (via destroy_preferences) teardown. The caller owns prefs_version and
+ * any file-format-specific upgrade handling. */
+static void prefs_populate_from_config(config_t const *config, pref_t *prefs) {
+	prefs_read_scalars(config, prefs);
+
+	prefs->text_color = create_int_array(config, "text_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_TEXT_COLOR, 0);
+	prefs->background_color = create_int_array(config, "background_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_BACKGROUND_COLOR, 0);
+	prefs->metamode_hitbox = create_hitbox(config, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
+	prefs->metamode_keys = create_keymap_array(config, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
+	prefs->metamode_sticky_keys = create_keymap_array(config, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
+	prefs->metamode_func_keys = create_keymap_array(config, "metamode_func_keys", DEFAULT_METAMODE_FUNC_KEYS_LEN, DEFAULT_METAMODE_FUNC_KEYS);
+	prefs->keyhold_actions_exempt = create_int_array(config, "keyhold_actions_exempt", DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN, DEFAULT_KEYHOLD_ACTIONS_EXEMPT, 1);
+
+	prefs->main_symmenu = create_symmenu(config, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
+	prefs->altsym_entries = create_keymap_array(config, "altsym_entries", DEFAULT_ALTSYM_ENTRIES_LEN, DEFAULT_ALTSYM_ENTRIES);
+
+	/* the accent menus are configurable, but we won't include them in the default config */
+	char am_name[] = {' ', '_', 'a', 'c', 'c', 'e', 'n', 't', 's', '\0'};
+	for (char c = 'a'; c <= 'z'; ++c) {
+		size_t idx = (size_t)(c - 'a');
+		am_name[0] = c;
+		prefs->accent_menus[idx][0] = create_symmenu(config, am_name, 1, &accent_row_lens[idx], lowercase_accent_entries[idx]);
+		prefs->accent_menus[idx][1] = create_symmenu(config, am_name, 1, &accent_row_lens[idx], uppercase_accent_entries[idx]);
+	}
+}
+
 pref_t *read_preferences(const char* filename) {
 	pref_t *prefs = calloc(1, sizeof(pref_t)); // our internal data structure
 	if (prefs == NULL) {
@@ -683,27 +717,7 @@ pref_t *read_preferences(const char* filename) {
 	
 	int default_font_columns = (atoi(getenv("WIDTH")) <= 720) ? 45 : 60;
 
-	prefs_read_scalars(config, prefs);
-
-	prefs->text_color = create_int_array(config, "text_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_TEXT_COLOR, 0);
-	prefs->background_color = create_int_array(config, "background_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_BACKGROUND_COLOR, 0);
-	prefs->metamode_hitbox = create_hitbox(config, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
-	prefs->metamode_keys = create_keymap_array(config, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
-	prefs->metamode_sticky_keys = create_keymap_array(config, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
-	prefs->metamode_func_keys = create_keymap_array(config, "metamode_func_keys", DEFAULT_METAMODE_FUNC_KEYS_LEN, DEFAULT_METAMODE_FUNC_KEYS);
-	prefs->keyhold_actions_exempt = create_int_array(config, "keyhold_actions_exempt", DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN, DEFAULT_KEYHOLD_ACTIONS_EXEMPT, 1);
-
-	prefs->main_symmenu = create_symmenu(config, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
-	prefs->altsym_entries = create_keymap_array(config, "altsym_entries", DEFAULT_ALTSYM_ENTRIES_LEN, DEFAULT_ALTSYM_ENTRIES);
-
-	/* the accent menus are configurable, but we won't include them in the default config */
-	char am_name[] = {' ', '_', 'a', 'c', 'c', 'e', 'n', 't', 's', '\0'};
-	for (char c = 'a'; c <= 'z'; ++c) {
-		size_t idx = (size_t)(c - 'a');
-		am_name[0] = c;
-		prefs->accent_menus[idx][0] = create_symmenu(config, am_name, 1, &accent_row_lens[idx], lowercase_accent_entries[idx]);
-		prefs->accent_menus[idx][1] = create_symmenu(config, am_name, 1, &accent_row_lens[idx], uppercase_accent_entries[idx]);
-	}
+	prefs_populate_from_config(config, prefs);
 
 	if (is_first_run) {
 		first_run(prefs);
@@ -846,4 +860,348 @@ static const prefs_loader_t LIBCONFIG_LOADER = {
 
 const prefs_loader_t *prefs_libconfig_loader(void) {
 	return &LIBCONFIG_LOADER;
+}
+
+/* ====================================================================
+ * Lua loader (#7). Lua is the config language; libconfig is retained
+ * only as the legacy reader for the one-time .term49rc -> .term49.lua
+ * migration. The user's .term49.lua is executed, then its globals are
+ * translated into the in-memory representation the validated builders
+ * (prefs_populate_from_config -> prefs_read_scalars / create_*) already
+ * consume. Nothing about validation, defaulting, action_parse() or
+ * teardown is reimplemented, so the two loaders cannot drift. Both
+ * parsers stay private to this single loader TU per the prefs.h
+ * contract; the lua_State is retained for scripting and never escapes.
+ * ==================================================================== */
+
+static lua_State *g_lua_state = NULL;
+
+static void cfg_add_int(config_setting_t *root, const char *k, int v) {
+	config_setting_t *s = config_setting_add(root, k, CONFIG_TYPE_INT);
+	if (s) config_setting_set_int(s, v);
+}
+static void cfg_add_bool(config_setting_t *root, const char *k, int v) {
+	config_setting_t *s = config_setting_add(root, k, CONFIG_TYPE_BOOL);
+	if (s) config_setting_set_bool(s, v ? 1 : 0);
+}
+static void cfg_add_string(config_setting_t *root, const char *k, const char *v) {
+	config_setting_t *s = config_setting_add(root, k, CONFIG_TYPE_STRING);
+	if (s) config_setting_set_string(s, v);
+}
+
+/* global `key` (a Lua sequence of numbers) -> libconfig int ARRAY, the
+ * shape create_int_array()/create_hitbox() validate. Absent/ill-typed
+ * globals are skipped so the create_ helper falls back to its default. */
+static void luaH_int_array(lua_State *L, config_setting_t *root, const char *key) {
+	lua_getglobal(L, key);
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		config_setting_t *arr = config_setting_add(root, key, CONFIG_TYPE_ARRAY);
+		int n = (int)lua_rawlen(L, -1);
+		for (int i = 1; arr && i <= n; ++i) {
+			lua_rawgeti(L, -1, i);
+			if (lua_type(L, -1) == LUA_TNUMBER) {
+				config_setting_t *e = config_setting_add(arr, NULL, CONFIG_TYPE_INT);
+				if (e) config_setting_set_int(e, (int)lua_tointeger(L, -1));
+			}
+			lua_pop(L, 1);
+		}
+	}
+	lua_pop(L, 1);
+}
+
+/* one {from, to} Lua pair (at stack top) -> a libconfig 2-string LIST
+ * appended to `lst`, matching keymap_elem_valid()'s expectations. */
+static void luaH_emit_pair(lua_State *L, config_setting_t *lst) {
+	if (lua_type(L, -1) != LUA_TTABLE) return;
+	lua_rawgeti(L, -1, 1);
+	lua_rawgeti(L, -2, 2);
+	const char *from = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : NULL;
+	const char *to   = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : NULL;
+	if (from && to && from[0]) {
+		config_setting_t *g = config_setting_add(lst, NULL, CONFIG_TYPE_LIST);
+		if (g) {
+			config_setting_t *fs = config_setting_add(g, NULL, CONFIG_TYPE_STRING);
+			if (fs) config_setting_set_string(fs, from);
+			config_setting_t *ts = config_setting_add(g, NULL, CONFIG_TYPE_STRING);
+			if (ts) config_setting_set_string(ts, to);
+		}
+	}
+	lua_pop(L, 2);
+}
+
+/* global `key` (Lua sequence of {from,to}) -> libconfig keymap LIST. */
+static void luaH_keymap(lua_State *L, config_setting_t *root, const char *key) {
+	lua_getglobal(L, key);
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		config_setting_t *lst = config_setting_add(root, key, CONFIG_TYPE_LIST);
+		int n = (int)lua_rawlen(L, -1);
+		for (int i = 1; lst && i <= n; ++i) {
+			lua_rawgeti(L, -1, i);
+			luaH_emit_pair(L, lst);
+			lua_pop(L, 1);
+		}
+	}
+	lua_pop(L, 1);
+}
+
+/* global `key` (Lua sequence of rows; each row a sequence of {from,to})
+ * -> libconfig symmenu LIST-of-LIST, the shape symmenu_rows_valid()
+ * checks and create_symmenu() consumes. */
+static void luaH_symmenu(lua_State *L, config_setting_t *root, const char *key) {
+	lua_getglobal(L, key);
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		config_setting_t *rows = config_setting_add(root, key, CONFIG_TYPE_LIST);
+		int nrows = (int)lua_rawlen(L, -1);
+		for (int r = 1; rows && r <= nrows; ++r) {
+			lua_rawgeti(L, -1, r);
+			if (lua_type(L, -1) == LUA_TTABLE) {
+				config_setting_t *col = config_setting_add(rows, NULL, CONFIG_TYPE_LIST);
+				int ncols = (int)lua_rawlen(L, -1);
+				for (int c = 1; col && c <= ncols; ++c) {
+					lua_rawgeti(L, -1, c);
+					luaH_emit_pair(L, col);
+					lua_pop(L, 1);
+				}
+			}
+			lua_pop(L, 1);
+		}
+	}
+	lua_pop(L, 1);
+}
+
+static pref_t *prefs_lua_load(const char *path) {
+	if (g_lua_state) { lua_close(g_lua_state); g_lua_state = NULL; }
+
+	pref_t *prefs = calloc(1, sizeof(pref_t));
+	if (prefs == NULL) {
+		fprintf(stderr, "fatal error: failed to calloc prefs structure\n");
+		exit(1);
+	}
+
+	config_t cfg;
+	config_init(&cfg);
+	config_setting_t *root = config_root_setting(&cfg);
+
+	lua_State *L = luaL_newstate();
+	if (L != NULL) {
+		luaL_openlibs(L);
+		if (luaL_dofile(L, path) != LUA_OK) {
+			/* missing/erroring config -> empty cfg -> all defaults */
+			fprintf(stderr, "term49: error loading %s: %s\n",
+			        path, lua_tostring(L, -1));
+			lua_pop(L, 1);
+		}
+
+		/* scalars: iterate the single schema source of truth */
+		for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
+			const prefs_scalar_desc *d = &PREFS_SCALARS[i];
+			lua_getglobal(L, d->key);
+			switch (d->type) {
+			case PS_INT:
+				if (lua_type(L, -1) == LUA_TNUMBER)
+					cfg_add_int(root, d->key, (int)lua_tointeger(L, -1));
+				break;
+			case PS_BOOL:
+				if (lua_type(L, -1) == LUA_TBOOLEAN)
+					cfg_add_bool(root, d->key, lua_toboolean(L, -1));
+				else if (lua_type(L, -1) == LUA_TNUMBER)
+					cfg_add_bool(root, d->key, lua_tointeger(L, -1) != 0);
+				break;
+			case PS_STRING:
+				if (lua_type(L, -1) == LUA_TSTRING)
+					cfg_add_string(root, d->key, lua_tostring(L, -1));
+				break;
+			}
+			lua_pop(L, 1);
+		}
+
+		luaH_int_array(L, root, "text_color");
+		luaH_int_array(L, root, "background_color");
+		luaH_int_array(L, root, "metamode_hitbox");
+		luaH_int_array(L, root, "keyhold_actions_exempt");
+		luaH_keymap(L, root, "metamode_keys");
+		luaH_keymap(L, root, "metamode_sticky_keys");
+		luaH_keymap(L, root, "metamode_func_keys");
+		luaH_keymap(L, root, "altsym_entries");
+		luaH_symmenu(L, root, "main_symmenu");
+		char am_name[] = {' ', '_', 'a', 'c', 'c', 'e', 'n', 't', 's', '\0'};
+		for (char c = 'a'; c <= 'z'; ++c) {
+			am_name[0] = c;
+			luaH_symmenu(L, root, am_name);
+		}
+	} else {
+		fprintf(stderr, "term49: luaL_newstate failed; using default config\n");
+	}
+
+	/* Lua configs are versioned by being the new format; never run the
+	 * libconfig-specific upgrade path. */
+	prefs->prefs_version = PREFS_VERSION;
+	prefs_populate_from_config(&cfg, prefs);
+	config_destroy(&cfg);
+
+	g_lua_state = L; /* retained for scripting; closed in prefs_lua_destroy */
+	return prefs;
+}
+
+/* .term49.lua is hand-authored; never silently rewritten. */
+static void prefs_lua_save(const pref_t *prefs, const char *path) {
+	(void)prefs;
+	(void)path;
+}
+
+static void prefs_lua_destroy(pref_t *pref) {
+	destroy_preferences(pref); /* format-agnostic: frees pref_t only */
+	if (g_lua_state) {
+		lua_close(g_lua_state);
+		g_lua_state = NULL;
+	}
+}
+
+int prefs_lua_invoke(const char *name) {
+	if (g_lua_state == NULL || name == NULL) {
+		return 0;
+	}
+	lua_State *L = g_lua_state;
+	lua_getglobal(L, name);
+	if (!lua_isfunction(L, -1)) {
+		lua_pop(L, 1);
+		return 0;
+	}
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		fprintf(stderr, "term49: lua error in '%s': %s\n",
+		        name, lua_tostring(L, -1));
+		lua_pop(L, 1);
+		return 0;
+	}
+	return 1;
+}
+
+static const prefs_loader_t LUA_LOADER = {
+	prefs_lua_load,
+	prefs_lua_save,
+	prefs_lua_destroy,
+};
+
+const prefs_loader_t *prefs_lua_loader(void) {
+	return &LUA_LOADER;
+}
+
+/* --- pref_t -> .term49.lua emitter (migration / first-run default) ---
+ * Emits exactly the field set save_preferences() writes, so migration
+ * fidelity equals the existing libconfig round-trip (accent menus are
+ * intentionally omitted, matching the legacy default config). */
+static void lua_emit_qstr(FILE *f, const char *s) {
+	fputc('"', f);
+	if (s) {
+		for (; *s; ++s) {
+			unsigned char c = (unsigned char)*s;
+			if (c == '"')       fputs("\\\"", f);
+			else if (c == '\\') fputs("\\\\", f);
+			else if (c >= 0x20 && c < 0x7f) fputc(c, f);
+			else fprintf(f, "\\x%02X", c); /* Lua 5.2+ hex escape */
+		}
+	}
+	fputc('"', f);
+}
+
+static void lua_emit_keymap(FILE *f, const char *key, const keymap_t *km) {
+	fprintf(f, "%s = {\n", key);
+	for (; km && km->to != NULL; ++km) {
+		char from[2] = { km->from, '\0' };
+		fputs("  { ", f);
+		lua_emit_qstr(f, from);
+		fputs(", ", f);
+		lua_emit_qstr(f, km->to);
+		fputs(" },\n", f);
+	}
+	fputs("}\n\n", f);
+}
+
+static void lua_emit_symmenu(FILE *f, const char *key, const symmenu_t *m) {
+	fprintf(f, "%s = {\n", key);
+	if (m && m->keys && m->keys[0]) {
+		int row = 0, col = 0;
+		fputs("  {", f);
+		while (1) {
+			if (m->keys[row][col].map == NULL) {
+				fputs(" },\n", f);
+				++row;
+				if (m->keys[row] == NULL) break;
+				col = 0;
+				fputs("  {", f);
+				continue;
+			}
+			char from[2] = { m->keys[row][col].map->from, '\0' };
+			fputs(" { ", f);
+			lua_emit_qstr(f, from);
+			fputs(", ", f);
+			lua_emit_qstr(f, m->keys[row][col].map->to);
+			fputs(" },", f);
+			++col;
+		}
+	}
+	fputs("}\n\n", f);
+}
+
+void prefs_emit_lua(const pref_t *prefs, const char *path) {
+	FILE *f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, "term49: cannot write %s: %s\n", path, strerror(errno));
+		return;
+	}
+
+	fputs("-- Term49 configuration (Lua). Generated automatically; safe to\n"
+	      "-- edit. This file is never rewritten by Term49.\n\n", f);
+	fprintf(f, "prefs_version = %d\n\n", PREFS_VERSION);
+
+	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
+		const prefs_scalar_desc *d = &PREFS_SCALARS[i];
+		const void *field = (const char *)prefs + d->offset;
+		switch (d->type) {
+		case PS_INT:
+			fprintf(f, "%s = %d\n", d->key, *(const int *)field);
+			break;
+		case PS_BOOL:
+			fprintf(f, "%s = %s\n", d->key,
+			        *(const int *)field ? "true" : "false");
+			break;
+		case PS_STRING:
+			fprintf(f, "%s = ", d->key);
+			lua_emit_qstr(f, *(char *const *)field);
+			fputc('\n', f);
+			break;
+		}
+	}
+	fputc('\n', f);
+
+	fprintf(f, "text_color = { %d, %d, %d }\n",
+	        prefs->text_color[0], prefs->text_color[1], prefs->text_color[2]);
+	fprintf(f, "background_color = { %d, %d, %d }\n",
+	        prefs->background_color[0], prefs->background_color[1],
+	        prefs->background_color[2]);
+	if (prefs->metamode_hitbox) {
+		fprintf(f, "metamode_hitbox = { %d, %d, %d, %d }\n",
+		        prefs->metamode_hitbox->x, prefs->metamode_hitbox->y,
+		        prefs->metamode_hitbox->w, prefs->metamode_hitbox->h);
+	}
+	fputs("keyhold_actions_exempt = {", f);
+	for (int i = 0; prefs->keyhold_actions_exempt &&
+	                prefs->keyhold_actions_exempt[i] > 0; ++i) {
+		fprintf(f, "%s %d", i ? "," : "", prefs->keyhold_actions_exempt[i]);
+	}
+	fputs(" }\n\n", f);
+
+	lua_emit_keymap(f, "metamode_keys", prefs->metamode_keys);
+	lua_emit_keymap(f, "metamode_sticky_keys", prefs->metamode_sticky_keys);
+	lua_emit_keymap(f, "metamode_func_keys", prefs->metamode_func_keys);
+	lua_emit_symmenu(f, "main_symmenu", prefs->main_symmenu);
+
+	fclose(f);
+}
+
+void prefs_migrate_libconfig_to_lua(const char *rc_path, const char *lua_path) {
+	pref_t *old = read_preferences(rc_path); /* libconfig: validates + defaults */
+	prefs_emit_lua(old, lua_path);
+	destroy_preferences(old);
+	fprintf(stderr, "term49: migrated %s -> %s\n", rc_path, lua_path);
 }

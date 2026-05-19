@@ -23,6 +23,7 @@
 #include "types.h"
 
 #define PREFS_FILE_PATH ".term49rc"
+#define PREFS_LUA_FILE_PATH ".term49.lua"
 #define TERM_DEFAULT_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
 #define TERM_DEFAULT_FONT_SIZE 24
 
@@ -44,6 +45,25 @@ typedef struct prefs_loader {
 } prefs_loader_t;
 
 const prefs_loader_t *prefs_libconfig_loader(void);
+
+/* #7: Lua is the config language. prefs_lua_loader() populates the SAME
+ * pref_t as the libconfig loader by translating the user's .term49.lua
+ * into the in-memory representation the validated builders already
+ * consume, so all validation/defaulting/teardown is reused unchanged.
+ * Both parsers stay private to preferences.c (the single loader TU).
+ * prefs_migrate_libconfig_to_lua() does a one-time import of a legacy
+ * .term49rc, writing an equivalent .term49.lua. */
+const prefs_loader_t *prefs_lua_loader(void);
+void prefs_migrate_libconfig_to_lua(const char *rc_path, const char *lua_path);
+/* Serialize pref_t to a .term49.lua (used by migration and to persist a
+ * first-run default config, analogous to the old libconfig first_run). */
+void prefs_emit_lua(const pref_t *prefs, const char *path);
+
+/* Invoke a no-argument Lua function (by global name) registered from the
+ * user's config, via lua_pcall so a Lua error cannot longjmp through C.
+ * Returns 1 on success, 0 if unavailable or the call errored. The Lua
+ * state is owned by, and stays private to, the loader TU. */
+int prefs_lua_invoke(const char *name);
 
 keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);

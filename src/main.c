@@ -1822,9 +1822,21 @@ int main(int argc, char **argv) {
 	 * replaces platform_sdl_create() with the native Screen/BPS backend. */
 	g_platform = platform_sdl_create();
 
-	/* libconfig stays behind this seam; #7 selects prefs_lua_loader() here. */
-	g_prefs_loader = prefs_libconfig_loader();
-	prefs = g_prefs_loader->load(PREFS_FILE_PATH);
+	/* #7: Lua is the config language. On first run with only a legacy
+	 * libconfig .term49rc present, import it once into an equivalent
+	 * .term49.lua; thereafter always load via the Lua loader. If neither
+	 * file exists the Lua loader yields all-defaults, which we then
+	 * persist as a default .term49.lua (analog of the old first_run()). */
+	g_prefs_loader = prefs_lua_loader();
+	if (access(PREFS_LUA_FILE_PATH, F_OK) != 0 &&
+	    access(PREFS_FILE_PATH, F_OK) == 0) {
+		prefs_migrate_libconfig_to_lua(PREFS_FILE_PATH, PREFS_LUA_FILE_PATH);
+	}
+	int lua_cfg_existed = (access(PREFS_LUA_FILE_PATH, F_OK) == 0);
+	prefs = g_prefs_loader->load(PREFS_LUA_FILE_PATH);
+	if (!lua_cfg_existed) {
+		prefs_emit_lua(prefs, PREFS_LUA_FILE_PATH);
+	}
 	if (platform_is_passport(g_platform)) {
 		prefs->auto_show_vkb = 1;
 	}
