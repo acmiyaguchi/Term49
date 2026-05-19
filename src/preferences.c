@@ -603,6 +603,47 @@ static lua_State *lua_new_state(void) {
 	return L;
 }
 
+/* Shared core for the startup loader and the live reloader. Creates a
+ * fresh lua_State (returned via *out_L; NULL only on luaL_newstate OOM),
+ * runs the file, and -- unless the file failed to parse and the caller
+ * opted out via build_on_parse_error -- builds a pref_t from it.
+ *
+ * *out_parsed is 1 iff the file parsed. On a parse failure the Lua error
+ * message is left at the top of *out_L for the caller to log; it is NOT
+ * popped here (prefs_build_from_lua is stack-neutral, so it survives a
+ * build-on-error). Return value:
+ *   - non-NULL  : built pref_t (all-defaults if !*out_parsed)
+ *   - NULL, *out_L == NULL          : luaL_newstate OOM
+ *   - NULL, *out_L != NULL, !parsed : parse error, build_on_parse_error=0
+ *                                     (no pref_t allocated)
+ *   - NULL, *out_L != NULL, parsed  : calloc OOM
+ * The caller owns *out_L: commit it to g_lua_state, or lua_close() it. */
+static pref_t *prefs_lua_try_build(const char *path, int build_on_parse_error,
+                                   lua_State **out_L, int *out_parsed) {
+	lua_State *L = lua_new_state();
+	*out_L = L;
+	*out_parsed = 0;
+	if (L == NULL) {
+		return NULL;
+	}
+	if (luaL_dofile(L, path) != LUA_OK) {
+		if (!build_on_parse_error) {
+			return NULL;  /* error message left at L's stack top */
+		}
+		/* fall through: every global absent -> all defaults */
+	} else {
+		*out_parsed = 1;
+	}
+
+	pref_t *prefs = calloc(1, sizeof(pref_t));
+	if (prefs == NULL) {
+		return NULL;
+	}
+	prefs->prefs_version = PREFS_VERSION;
+	prefs_build_from_lua(L, prefs);
+	return prefs;
+}
+
 /* Startup loader. Always returns a usable pref_t: a missing/broken
  * .term49.lua falls back to compiled defaults, which is the only
  * sensible behaviour at startup (there is no prior config to keep).
@@ -610,27 +651,20 @@ static lua_State *lua_new_state(void) {
 pref_t *prefs_lua_load(const char *path) {
 	if (g_lua_state) { lua_close(g_lua_state); g_lua_state = NULL; }
 
-	pref_t *prefs = calloc(1, sizeof(pref_t));
+	lua_State *L;
+	int parsed;
+	pref_t *prefs = prefs_lua_try_build(path, 1, &L, &parsed);
 	if (prefs == NULL) {
-		fprintf(stderr, "fatal error: failed to calloc prefs structure\n");
+		fprintf(stderr, "fatal error: %s\n",
+		        L == NULL ? "luaL_newstate failed"
+		                  : "failed to calloc prefs structure");
 		exit(1);
 	}
-
-	lua_State *L = lua_new_state();
-	if (L == NULL) {
-		fprintf(stderr, "fatal error: luaL_newstate failed\n");
-		exit(1);
-	}
-
-	if (luaL_dofile(L, path) != LUA_OK) {
-		/* missing/erroring config -> every global absent -> all defaults */
+	if (!parsed) {
 		fprintf(stderr, "term49: error loading %s: %s\n",
 		        path, lua_tostring(L, -1));
 		lua_pop(L, 1);
 	}
-
-	prefs->prefs_version = PREFS_VERSION;
-	prefs_build_from_lua(L, prefs);
 
 	g_lua_state = L; /* retained for scripting; closed in prefs_lua_destroy */
 	return prefs;
@@ -643,26 +677,21 @@ pref_t *prefs_lua_load(const char *path) {
  * new scripting state is committed and a fresh pref_t returned for the
  * caller to move into place. */
 pref_t *prefs_lua_reload(void) {
-	lua_State *L = lua_new_state();
-	if (L == NULL) {
-		fprintf(stderr, "term49: reload aborted: out of memory\n");
-		return NULL;
-	}
-
-	if (luaL_dofile(L, PREFS_LUA_FILE_PATH) != LUA_OK) {
-		fprintf(stderr, "term49: reload rejected, keeping current config: %s\n",
-		        lua_tostring(L, -1));
-		lua_close(L);
-		return NULL;
-	}
-
-	pref_t *prefs = calloc(1, sizeof(pref_t));
+	lua_State *L;
+	int parsed;
+	pref_t *prefs = prefs_lua_try_build(PREFS_LUA_FILE_PATH, 0, &L, &parsed);
 	if (prefs == NULL) {
-		lua_close(L);
+		if (L == NULL) {
+			fprintf(stderr, "term49: reload aborted: out of memory\n");
+		} else if (!parsed) {
+			fprintf(stderr, "term49: reload rejected, keeping current config: %s\n",
+			        lua_tostring(L, -1));
+			lua_close(L);
+		} else {
+			lua_close(L);  /* calloc OOM after a good parse */
+		}
 		return NULL;
 	}
-	prefs->prefs_version = PREFS_VERSION;
-	prefs_build_from_lua(L, prefs);
 
 	/* Commit the scripting state only now that the file parsed. */
 	if (g_lua_state) { lua_close(g_lua_state); }
