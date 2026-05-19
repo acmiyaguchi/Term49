@@ -44,6 +44,18 @@ static int parse_builtin(const char *value, builtin_action_t *out) {
 		*out = TERM_BUILTIN_PASTE_CLIPBOARD;
 		return 1;
 	}
+	if (strcmp(value, "font_size_increase") == 0) {
+		*out = TERM_BUILTIN_FONT_SIZE_INCREASE;
+		return 1;
+	}
+	if (strcmp(value, "font_size_decrease") == 0) {
+		*out = TERM_BUILTIN_FONT_SIZE_DECREASE;
+		return 1;
+	}
+	if (strcmp(value, "font_size_reset") == 0) {
+		*out = TERM_BUILTIN_FONT_SIZE_RESET;
+		return 1;
+	}
 	return 0;
 }
 

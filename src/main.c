@@ -655,6 +655,19 @@ void rescreen(int w, int h){
 	mark_screen_dirty(1);
 }
 
+/* Change the active font size at runtime. Clamps to a sane range, then reuses
+ * the existing rescreen() teardown/rebuild path (font_uninit -> font_init ->
+ * setup_screen_size -> ghostty/PTY resize -> redraw). Session-only: the new
+ * size is NOT written back to the config. */
+void set_font_size(int new_size){
+	int max_size = 144;
+	if(new_size < MIN_FONT_SIZE) new_size = MIN_FONT_SIZE;
+	if(new_size > max_size)      new_size = max_size;
+	if(new_size == prefs->font_size) return;
+	prefs->font_size = new_size;
+	rescreen(-1, -1);
+}
+
 void toggle_vkeymod(int mod){
 	PRINT(stderr, "Toggle modifier %d\n", mod);
 	if(vmodifiers & mod){
@@ -696,6 +709,15 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_PASTE_CLIPBOARD:
 			return session_dispatch_action(session, action);
+		case TERM_BUILTIN_FONT_SIZE_INCREASE:
+			set_font_size(prefs->font_size + 1);
+			return 1;
+		case TERM_BUILTIN_FONT_SIZE_DECREASE:
+			set_font_size(prefs->font_size - 1);
+			return 1;
+		case TERM_BUILTIN_FONT_SIZE_RESET:
+			set_font_size(TERM_DEFAULT_FONT_SIZE);
+			return 1;
 		default:
 			return 0;
 		}

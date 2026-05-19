@@ -41,6 +41,7 @@
 #define KEYCODE_BB_SYM_KEY 0xF0D3
 
 void rescreen(int w, int h);
+void set_font_size(int new_size);
 void setup_screen_size(int w, int h);
 void set_screen_cols(int cols);
 void app_shutdown(void);
