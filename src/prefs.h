@@ -34,18 +34,17 @@ void destroy_preferences(pref_t *pref);
  * borrowers (app/io/renderer) hold. */
 void destroy_preferences_members(pref_t *pref);
 
-/* Loader boundary. pref_t is the loader-agnostic plain-data contract; the
- * concrete config parser (Lua) stays PRIVATE to the loader .c file -- no
- * other translation unit includes any lua headers. */
-typedef struct prefs_loader {
-	pref_t *(*load)(const char *path);
-	void    (*save)(const pref_t *prefs, const char *path);
-	void    (*destroy)(pref_t *prefs);
-} prefs_loader_t;
+/* Loader boundary. pref_t is the loader-agnostic plain-data contract;
+ * the concrete config parser (Lua) stays PRIVATE to preferences.c -- no
+ * other translation unit includes any lua headers. Lua is the only
+ * config language, so these are called directly (no loader vtable). */
 
-/* Lua is the only config language. prefs_lua_loader() executes the
- * user's .term49.lua and builds pref_t directly from its globals. */
-const prefs_loader_t *prefs_lua_loader(void);
+/* Execute the user's .term49.lua and build pref_t from its globals. A
+ * missing/broken file falls back to compiled defaults (the only sane
+ * behaviour at startup). */
+pref_t *prefs_lua_load(const char *path);
+/* Free a pref_t from prefs_lua_load() and close the scripting state. */
+void prefs_lua_destroy(pref_t *pref);
 /* Re-run .term49.lua for a live reload. Returns a fresh pref_t on
  * success (scripting state already committed); returns NULL on a
  * parse error / OOM WITHOUT disturbing the running config or Lua

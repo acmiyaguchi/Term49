@@ -603,11 +603,11 @@ static lua_State *lua_new_state(void) {
 	return L;
 }
 
-/* Startup loader (vtable). Always returns a usable pref_t: a
- * missing/broken .term49.lua falls back to compiled defaults, which is
- * the only sensible behaviour at startup (there is no prior config to
- * keep). Destructive: commits the new lua_State unconditionally. */
-static pref_t *prefs_lua_load(const char *path) {
+/* Startup loader. Always returns a usable pref_t: a missing/broken
+ * .term49.lua falls back to compiled defaults, which is the only
+ * sensible behaviour at startup (there is no prior config to keep).
+ * Destructive: commits the new lua_State unconditionally. */
+pref_t *prefs_lua_load(const char *path) {
 	if (g_lua_state) { lua_close(g_lua_state); g_lua_state = NULL; }
 
 	pref_t *prefs = calloc(1, sizeof(pref_t));
@@ -670,13 +670,9 @@ pref_t *prefs_lua_reload(void) {
 	return prefs;
 }
 
-/* .term49.lua is hand-authored; never silently rewritten. */
-static void prefs_lua_save(const pref_t *prefs, const char *path) {
-	(void)prefs;
-	(void)path;
-}
-
-static void prefs_lua_destroy(pref_t *pref) {
+/* .term49.lua is hand-authored; Term49 never writes it back (a first-run
+ * default is emitted by prefs_emit_lua, not through this path). */
+void prefs_lua_destroy(pref_t *pref) {
 	destroy_preferences(pref); /* format-agnostic: frees pref_t only */
 	if (g_lua_state) {
 		lua_close(g_lua_state);
@@ -701,16 +697,6 @@ int prefs_lua_invoke(const char *name) {
 		return 0;
 	}
 	return 1;
-}
-
-static const prefs_loader_t LUA_LOADER = {
-	prefs_lua_load,
-	prefs_lua_save,
-	prefs_lua_destroy,
-};
-
-const prefs_loader_t *prefs_lua_loader(void) {
-	return &LUA_LOADER;
 }
 
 /* --- pref_t -> .term49.lua emitter (first-run default config) --------

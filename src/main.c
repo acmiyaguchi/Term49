@@ -122,7 +122,6 @@ static symmenu_t *current_symmenu = NULL;
 static renderer_t *renderer = NULL;
 static app_t *g_app = NULL;
 static platform_t *g_platform = NULL;
-static const prefs_loader_t *g_prefs_loader = NULL;
 /* Set by the reload_config builtin; consumed at a safe point in the main
  * loop (never inside action dispatch / a lua_pcall). Same input thread,
  * same lock as event handling, so a plain int is sufficient. */
@@ -1378,11 +1377,9 @@ void app_shutdown(void){
 	TTF_Quit();
 	SDL_Quit();
 
-	if (g_prefs_loader != NULL) {
-		g_prefs_loader->destroy(prefs);
-	} else {
-		destroy_preferences(prefs);
-	}
+	/* prefs is assigned (or the process exit(1)s) before any app_shutdown()
+	 * call site, so it is always non-NULL here. */
+	prefs_lua_destroy(prefs);
 
 	io_uninit();
 }
@@ -1919,9 +1916,8 @@ int main(int argc, char **argv) {
 	/* Lua is the only config language. On first run (no .term49.lua) the
 	 * loader yields all-defaults, which we then persist as a starter
 	 * config and link the bundled README (what the old first_run() did). */
-	g_prefs_loader = prefs_lua_loader();
 	int lua_cfg_existed = (access(PREFS_LUA_FILE_PATH, F_OK) == 0);
-	prefs = g_prefs_loader->load(PREFS_LUA_FILE_PATH);
+	prefs = prefs_lua_load(PREFS_LUA_FILE_PATH);
 	if (!lua_cfg_existed) {
 		prefs_first_run_readme();
 		prefs_emit_lua(prefs, PREFS_LUA_FILE_PATH);
