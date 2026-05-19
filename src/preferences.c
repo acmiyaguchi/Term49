@@ -219,6 +219,58 @@ static int lua_pair_at(lua_State *L, int i, const char **from, const char **to) 
 	return ok;
 }
 
+/* Validate that the table currently at stack top is a sequence of valid
+ * {from,to} string pairs. STACK: net zero -- the table stays at -1 in
+ * every path (lua_pair_at pops what it pushed; we pop each validated
+ * pair). */
+static int lua_pairs_valid(lua_State *L) {
+	size_t n = (size_t)lua_rawlen(L, -1);
+	for (size_t i = 1; i <= n; ++i) {
+		const char *f, *t;
+		if (!lua_pair_at(L, (int)i, &f, &t)) {
+			return 0;
+		}
+		lua_pop(L, 1);                       /* pop validated pair */
+	}
+	return 1;
+}
+
+/* Build a sentinel-terminated keymap_t[] from the table-of-pairs at
+ * stack top. Validate-all-then-build, so one bad entry rejects the
+ * whole table with no partial allocation. Returns NULL if any pair is
+ * invalid (no log -- the caller reports with its key name); *out_n is
+ * the entry count on success. STACK: the table stays at -1 in every
+ * path; the caller owns and pops it. */
+static keymap_t *lua_keymap_from_top(lua_State *L, size_t *out_n) {
+	if (!lua_pairs_valid(L)) {
+		return NULL;
+	}
+	size_t n = (size_t)lua_rawlen(L, -1);
+	keymap_t *result = calloc(n + 1, sizeof(keymap_t));
+	result[n] = (keymap_t){0, NULL};
+	for (size_t i = 1; i <= n; ++i) {
+		const char *f, *t;
+		lua_pair_at(L, (int)i, &f, &t);      /* validated above => succeeds */
+		result[i - 1].from = f[0];
+		keymap_set_to(&result[i - 1], t);
+		lua_pop(L, 1);                       /* pop the pair */
+	}
+	*out_n = n;
+	return result;
+}
+
+/* Allocate a sentinel-terminated keymap_t[] from a compiled default
+ * table (the shared fallback shape). */
+static keymap_t *lua_keymap_defaults(const keymap_t *def, size_t def_len) {
+	keymap_t *result = calloc(def_len + 1, sizeof(keymap_t));
+	result[def_len] = (keymap_t){0, NULL};
+	for (size_t i = 0; i < def_len; ++i) {
+		result[i].from = def[i].from;
+		keymap_set_to(&result[i], def[i].to);
+	}
+	return result;
+}
+
 static int *lua_create_int_array(lua_State *L, const char *key,
                                  size_t def_len, const int *def) {
 	int *vals = NULL;
@@ -256,6 +308,34 @@ static int *lua_create_int_array(lua_State *L, const char *key,
 	return result;
 }
 
+/* Fixed-length colour reader: always exactly PREFS_COLOR_NUM_ELEMENTS
+ * ints plus the positive-array -1 sentinel. Per-element fallback to
+ * def[i] for a missing/short/non-numeric entry; extra Lua elements are
+ * ignored. So a hand-edited {} / {1,2} / overlong colour can never make
+ * a consumer over- or under-read (lua_create_int_array rejected the
+ * whole array on any flaw; this degrades per element instead). STACK:
+ * net zero. */
+static int *lua_create_color(lua_State *L, const char *key, const int *def) {
+	int *result = calloc(PREFS_COLOR_NUM_ELEMENTS + 1, sizeof(int));
+	result[PREFS_COLOR_NUM_ELEMENTS] = -1;   /* sentinel */
+	int have = lua_get_table(L, key);
+	for (int i = 0; i < PREFS_COLOR_NUM_ELEMENTS; ++i) {
+		int v = def[i];
+		if (have) {
+			lua_rawgeti(L, -1, i + 1);
+			if (lua_type(L, -1) == LUA_TNUMBER) {
+				v = (int)lua_tointeger(L, -1);
+			}
+			lua_pop(L, 1);
+		}
+		result[i] = v;
+	}
+	if (have) {
+		lua_pop(L, 1);                       /* pop the global table */
+	}
+	return result;
+}
+
 static hitbox_t *lua_create_hitbox(lua_State *L, const char *key, hitbox_t def) {
 	hitbox_t *result = calloc(1, sizeof(hitbox_t));
 	int v[4];
@@ -290,40 +370,15 @@ static hitbox_t *lua_create_hitbox(lua_State *L, const char *key, hitbox_t def) 
 static keymap_t *lua_create_keymap_array(lua_State *L, const char *key,
                                          size_t def_len, const keymap_t *def) {
 	if (lua_get_table(L, key)) {
-		size_t n = (size_t)lua_rawlen(L, -1);
-		int good = 1;
-		for (size_t i = 1; i <= n && good; ++i) {
-			const char *f, *t;
-			if (lua_pair_at(L, (int)i, &f, &t)) {
-				lua_pop(L, 1);               /* pop validated pair */
-			} else {
-				good = 0;
-			}
-		}
-		if (good) {
-			keymap_t *result = calloc(n + 1, sizeof(keymap_t));
-			result[n] = (keymap_t){0, NULL};
-			for (size_t i = 1; i <= n; ++i) {
-				const char *f, *t;
-				lua_pair_at(L, (int)i, &f, &t);  /* good => succeeds */
-				result[i - 1].from = f[0];
-				keymap_set_to(&result[i - 1], t);
-				lua_pop(L, 1);               /* pop the pair */
-			}
-			lua_pop(L, 1);                       /* pop the global table */
+		size_t n;
+		keymap_t *result = lua_keymap_from_top(L, &n);
+		lua_pop(L, 1);                       /* pop the global table */
+		if (result != NULL) {
 			return result;
 		}
-		lua_pop(L, 1);                               /* pop the global table */
 	}
-
 	fprintf(stderr, "invalid keymap list %s, using default\n", key);
-	keymap_t *result = calloc(def_len + 1, sizeof(keymap_t));
-	result[def_len] = (keymap_t){0, NULL};
-	for (size_t i = 0; i < def_len; ++i) {
-		result[i].from = def[i].from;
-		keymap_set_to(&result[i], def[i].to);
-	}
-	return result;
+	return lua_keymap_defaults(def, def_len);
 }
 
 static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
@@ -336,18 +391,8 @@ static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
 		int valid = 1;
 		for (int r = 1; r <= nrows && valid; ++r) {
 			lua_rawgeti(L, -1, r);               /* row */
-			if (lua_type(L, -1) != LUA_TTABLE) {
+			if (lua_type(L, -1) != LUA_TTABLE || !lua_pairs_valid(L)) {
 				valid = 0;
-			} else {
-				int nc = (int)lua_rawlen(L, -1);
-				for (int c = 1; c <= nc && valid; ++c) {
-					const char *f, *t;
-					if (lua_pair_at(L, c, &f, &t)) {
-						lua_pop(L, 1);       /* pop validated pair */
-					} else {
-						valid = 0;
-					}
-				}
 			}
 			lua_pop(L, 1);                        /* pop the row */
 		}
@@ -514,8 +559,8 @@ static void lua_read_scalars(lua_State *L, pref_t *prefs) {
 static void prefs_build_from_lua(lua_State *L, pref_t *prefs) {
 	lua_read_scalars(L, prefs);
 
-	prefs->text_color = lua_create_int_array(L, "text_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_TEXT_COLOR);
-	prefs->background_color = lua_create_int_array(L, "background_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_BACKGROUND_COLOR);
+	prefs->text_color = lua_create_color(L, "text_color", DEFAULT_TEXT_COLOR);
+	prefs->background_color = lua_create_color(L, "background_color", DEFAULT_BACKGROUND_COLOR);
 	prefs->metamode_hitbox = lua_create_hitbox(L, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
 	prefs->metamode_keys = lua_create_keymap_array(L, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
 	prefs->metamode_sticky_keys = lua_create_keymap_array(L, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
