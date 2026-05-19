@@ -5,10 +5,6 @@
 [submodule "vendor/touch-control-overlay"]
 	path = vendor/touch-control-overlay
 	url = https://github.com/blackberry/TouchControlOverlay.git
-[submodule "vendor/libconfig"]
-	path = vendor/libconfig
-	url = https://github.com/hyperrealm/libconfig.git
-	tag = f9f23d7
 [submodule "vendor/libghostty-vt/vendor/ghostty"]
 	path = vendor/libghostty-vt/vendor/ghostty
 	url = https://github.com/ghostty-org/ghostty.git

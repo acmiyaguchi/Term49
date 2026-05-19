@@ -18,7 +18,7 @@ LIBPATHS += -L$(QNX_TARGET)/armle-v7/usr/lib
 
 # Include vendored BB10 prebuilt libs
 LIBPATHS += -L$(VENDOR_PREBUILT)/lib
-LIBS     += -lconfig -lSDL12 -lTouchControlOverlay
+LIBS     += -lSDL12 -lTouchControlOverlay
 
 # Term49 uses libghostty-vt as its terminal parser/state model and renderer
 # source of truth. Build the freestanding Ghostty static library on demand.

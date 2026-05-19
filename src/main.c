@@ -364,7 +364,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		}
 		// else
 		keystrokes_len = strlen(keystrokes);
-		/* libconfig will return ascii strings, but we can put utf8 in there too */
+		/* config strings are ascii, but we can put utf8 in there too */
 		ukeystrokes = (UChar*)calloc(keystrokes_len, sizeof(UChar));
 		ukeystrokes_len = io_read_utf8_string(keystrokes, keystrokes_len, ukeystrokes);
 		/* and write out to the tty whatever the keys were */
@@ -1840,19 +1840,14 @@ int main(int argc, char **argv) {
 	 * replaces platform_sdl_create() with the native Screen/BPS backend. */
 	g_platform = platform_sdl_create();
 
-	/* #7: Lua is the config language. On first run with only a legacy
-	 * libconfig .term49rc present, import it once into an equivalent
-	 * .term49.lua; thereafter always load via the Lua loader. If neither
-	 * file exists the Lua loader yields all-defaults, which we then
-	 * persist as a default .term49.lua (analog of the old first_run()). */
+	/* Lua is the only config language. On first run (no .term49.lua) the
+	 * loader yields all-defaults, which we then persist as a starter
+	 * config and link the bundled README (what the old first_run() did). */
 	g_prefs_loader = prefs_lua_loader();
-	if (access(PREFS_LUA_FILE_PATH, F_OK) != 0 &&
-	    access(PREFS_FILE_PATH, F_OK) == 0) {
-		prefs_migrate_libconfig_to_lua(PREFS_FILE_PATH, PREFS_LUA_FILE_PATH);
-	}
 	int lua_cfg_existed = (access(PREFS_LUA_FILE_PATH, F_OK) == 0);
 	prefs = g_prefs_loader->load(PREFS_LUA_FILE_PATH);
 	if (!lua_cfg_existed) {
+		prefs_first_run_readme();
 		prefs_emit_lua(prefs, PREFS_LUA_FILE_PATH);
 	}
 	if (platform_is_passport(g_platform)) {
