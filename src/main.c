@@ -674,15 +674,18 @@ void rescreen(int w, int h){
  * setup_screen_size -> ghostty/PTY resize -> redraw). Session-only: the new
  * size is NOT written back to the config. */
 void set_font_size(int new_size){
-	int max_size = 144;
-	if(new_size < MIN_FONT_SIZE) new_size = MIN_FONT_SIZE;
-	if(new_size > max_size)      new_size = max_size;
+	if(new_size < MIN_FONT_SIZE)        new_size = MIN_FONT_SIZE;
+	if(new_size > TERM_MAX_FONT_SIZE)   new_size = TERM_MAX_FONT_SIZE;
+	/* The `term` table is inert until the runtime is up: term.font_size_set
+	 * called at .term49.lua load time is a no-op, NOT a way to set the
+	 * startup size. The declarative startup size is the `font_size` scalar
+	 * global (PREFS_SCALARS -> prefs->font_size -> font_init at startup).
+	 * (At reload time the runtime IS ready, so a top-level term.* there acts
+	 * on the about-to-be-replaced prefs and self-corrects on the reload's
+	 * own rescreen -- harmless; put live tweaks in keybinding functions.) */
+	if(!term_runtime_ready()) return;
 	if(new_size == prefs->font_size) return;
 	prefs->font_size = new_size;
-	/* Safe to call before the video mode exists (e.g. term.font_size_set
-	 * from .term49.lua at config-load time): just record the size; the
-	 * startup font_init(prefs->font_size) picks it up. */
-	if(screen == NULL) return;
 	rescreen(-1, -1);
 }
 
@@ -692,8 +695,17 @@ int term_current_font_size(void){
 	return prefs ? prefs->font_size : TERM_DEFAULT_FONT_SIZE;
 }
 
+/* The runtime is "ready" once the app, video surface, and prefs all
+ * exist. Until then (notably while .term49.lua is executing inside the
+ * startup loader) the global prefs/g_app/screen are still NULL, so every
+ * term.* C entry point must bail before dereferencing them. */
+int term_runtime_ready(void){
+	return g_app != NULL && screen != NULL && prefs != NULL;
+}
+
 int app_run_action_string(const char *s){
 	action_t a;
+	if(!term_runtime_ready()) return 0;
 	if(s == NULL || !action_parse(s, &a)) return 0;
 	return app_dispatch_action(g_app, &a);
 }
@@ -721,10 +733,15 @@ static void app_reload_config(void){
 		 * is logged to stderr for dev builds. */
 		return;
 	}
-	/* drop pointers into the config we're about to free */
+	/* Drop transient UI state derived from / pointing into the config
+	 * we're about to free. Exhaustive: these are the only globals tied to
+	 * the outgoing prefs (renderer symmenu caches are rebuilt below; app/io
+	 * borrow only the stable struct pointer; event-handler menu/keymap
+	 * pointers are stack locals, gone by this deferred safe point). */
 	current_symmenu = NULL;
 	metamode = 0;
 	altsym_lock = 0;
+	symmenu_lock = 0;
 
 	destroy_preferences_members(prefs);  /* free old arrays, keep struct */
 	*prefs = *fresh;                     /* move new data into stable struct */
