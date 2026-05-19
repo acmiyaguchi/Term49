@@ -123,6 +123,10 @@ static renderer_t *renderer = NULL;
 static app_t *g_app = NULL;
 static platform_t *g_platform = NULL;
 static const prefs_loader_t *g_prefs_loader = NULL;
+/* Set by the reload_config builtin; consumed at a safe point in the main
+ * loop (never inside action dispatch / a lua_pcall). Same input thread,
+ * same lock as event handling, so a plain int is sufficient. */
+static int g_reload_pending = 0;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
@@ -684,6 +688,40 @@ int app_run_action_string(const char *s){
 	return app_dispatch_action(g_app, &a);
 }
 
+/* Re-run .term49.lua and re-apply it live. MUST be called only from the
+ * deferred safe point in the run loop (never from action dispatch / a
+ * lua_pcall): the loader closes and reopens the lua_State, and frees the
+ * old keymaps/symmenus a keypress may still be unwinding through.
+ *
+ * In-place move: the loader builds a fresh pref_t; we free the old
+ * owned members and overwrite *prefs, keeping the global `prefs`
+ * pointer stable so borrowers (app/io/renderer) stay valid. Transient
+ * UI pointers into the old prefs are reset first. tty_encoding is not
+ * re-applied (io converter is opened once at startup); changing it
+ * still needs a restart. */
+static void app_reload_config(void){
+	pref_t *fresh = g_prefs_loader->load(PREFS_LUA_FILE_PATH);
+	if(fresh == NULL){
+		fprintf(stderr, "term49: reload failed; keeping current config\n");
+		return;
+	}
+	/* drop pointers into the config we're about to free */
+	current_symmenu = NULL;
+	metamode = 0;
+	altsym_lock = 0;
+
+	destroy_preferences_members(prefs);  /* free old arrays, keep struct */
+	*prefs = *fresh;                     /* move new data into stable struct */
+	free(fresh);                         /* free only the empty container */
+
+	/* rebuild derived state from the new prefs */
+	if(renderer != NULL){
+		renderer_init_symmenus(renderer, screen, prefs);
+	}
+	rescreen(-1, -1);                    /* font/grid/PTY + redraw */
+	fprintf(stderr, "term49: reloaded %s\n", PREFS_LUA_FILE_PATH);
+}
+
 void toggle_vkeymod(int mod){
 	PRINT(stderr, "Toggle modifier %d\n", mod);
 	if(vmodifiers & mod){
@@ -736,6 +774,12 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_LUA_CALL:
 			return prefs_lua_invoke(action->as.builtin.arg);
+		case TERM_BUILTIN_RELOAD_CONFIG:
+			/* Deferred: the loader closes/reopens the lua_State and
+			 * frees keymaps this keypress may still be unwinding
+			 * through. Applied at the run-loop safe point. */
+			g_reload_pending = 1;
+			return 1;
 		default:
 			return 0;
 		}
@@ -1927,6 +1971,13 @@ int main(int argc, char **argv) {
 		lock_input();
 		if (have) {
 			app_handle_event(g_app, &event);
+		}
+		/* Safe point: the triggering event (and any lua_pcall within
+		 * it) has fully returned; still under the input lock, same
+		 * thread as rescreen. */
+		if (g_reload_pending) {
+			g_reload_pending = 0;
+			app_reload_config();
 		}
 		indicate_event_input();
 		unlock_input();

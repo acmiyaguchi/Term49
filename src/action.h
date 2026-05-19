@@ -44,6 +44,8 @@ typedef enum builtin_action {
 	TERM_BUILTIN_FONT_SIZE_RESET,
 	/* arg = name of a no-arg Lua function defined in .term49.lua */
 	TERM_BUILTIN_LUA_CALL,
+	/* re-run .term49.lua and re-apply it live (deferred to a safe point) */
+	TERM_BUILTIN_RELOAD_CONFIG,
 } builtin_action_t;
 
 typedef struct action {
