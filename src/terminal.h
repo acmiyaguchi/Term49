@@ -42,6 +42,8 @@
 
 void rescreen(int w, int h);
 void set_font_size(int new_size);
+int term_current_font_size(void);
+int app_run_action_string(const char *s);
 void setup_screen_size(int w, int h);
 void set_screen_cols(int cols);
 void app_shutdown(void);

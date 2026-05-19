@@ -665,7 +665,23 @@ void set_font_size(int new_size){
 	if(new_size > max_size)      new_size = max_size;
 	if(new_size == prefs->font_size) return;
 	prefs->font_size = new_size;
+	/* Safe to call before the video mode exists (e.g. term.font_size_set
+	 * from .term49.lua at config-load time): just record the size; the
+	 * startup font_init(prefs->font_size) picks it up. */
+	if(screen == NULL) return;
 	rescreen(-1, -1);
+}
+
+/* Narrow glue for the Lua `term` table (registered in preferences.c).
+ * Kept here so preferences.c never sees app/SDL internals. */
+int term_current_font_size(void){
+	return prefs ? prefs->font_size : TERM_DEFAULT_FONT_SIZE;
+}
+
+int app_run_action_string(const char *s){
+	action_t a;
+	if(s == NULL || !action_parse(s, &a)) return 0;
+	return app_dispatch_action(g_app, &a);
 }
 
 void toggle_vkeymod(int mod){
@@ -718,6 +734,8 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_FONT_SIZE_RESET:
 			set_font_size(TERM_DEFAULT_FONT_SIZE);
 			return 1;
+		case TERM_BUILTIN_LUA_CALL:
+			return prefs_lua_invoke(action->as.builtin.arg);
 		default:
 			return 0;
 		}

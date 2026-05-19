@@ -70,6 +70,17 @@ int action_parse(const char *value, action_t *out) {
 	 * explicitly when routing to a specific session. */
 	out->target.session = 0;
 
+	/* "lua:<fn>" binds a key to a no-arg Lua function from .term49.lua.
+	 * arg points into `value` (the keymap's heap-owned ->to string), the
+	 * same lifetime model as TERM_ACTION_SEND_BYTES below. */
+	if (strncmp(value, "lua:", 4) == 0) {
+		out->kind = TERM_ACTION_BUILTIN;
+		out->as.builtin.id = TERM_BUILTIN_LUA_CALL;
+		out->as.builtin.arg = value + 4;
+		out->as.builtin.arg_len = strlen(value + 4);
+		return 1;
+	}
+
 	if (parse_builtin(value, &builtin)) {
 		out->kind = TERM_ACTION_BUILTIN;
 		out->as.builtin.id = builtin;

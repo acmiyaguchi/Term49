@@ -969,6 +969,28 @@ static void luaH_symmenu(lua_State *L, config_setting_t *root, const char *key) 
 	lua_pop(L, 1);
 }
 
+/* Minimal Lua-callable surface. Glue functions (terminal.h) keep app/SDL
+ * internals out of this TU. Broader APIs (send bytes, terminal
+ * introspection, event hooks) are intentionally deferred. */
+static int luaC_font_size_set(lua_State *L) {
+	set_font_size((int)luaL_checkinteger(L, 1));
+	return 0;
+}
+static int luaC_font_size_get(lua_State *L) {
+	lua_pushinteger(L, term_current_font_size());
+	return 1;
+}
+static int luaC_action(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string(luaL_checkstring(L, 1)));
+	return 1;
+}
+static const luaL_Reg TERM_LUA_LIB[] = {
+	{ "font_size_set", luaC_font_size_set },
+	{ "font_size_get", luaC_font_size_get },
+	{ "action",        luaC_action },
+	{ NULL, NULL }
+};
+
 static pref_t *prefs_lua_load(const char *path) {
 	if (g_lua_state) { lua_close(g_lua_state); g_lua_state = NULL; }
 
@@ -985,6 +1007,10 @@ static pref_t *prefs_lua_load(const char *path) {
 	lua_State *L = luaL_newstate();
 	if (L != NULL) {
 		luaL_openlibs(L);
+		/* Register `term` before running the config so it can be used at
+		 * top level and by functions the config defines for keybindings. */
+		luaL_newlib(L, TERM_LUA_LIB);
+		lua_setglobal(L, "term");
 		if (luaL_dofile(L, path) != LUA_OK) {
 			/* missing/erroring config -> empty cfg -> all defaults */
 			fprintf(stderr, "term49: error loading %s: %s\n",
