@@ -53,8 +53,6 @@ void setup_screen_size(int w, int h);
 void set_screen_cols(int cols);
 void app_shutdown(void);
 int send_metamode_keystrokes(const char* keystrokes);
-int get_virtualkeyboard_height(void);
-int is_passport(void);
 
 #define TERM_COLOR_BLACK      {.r = 0,   .g = 0,   .b = 0}
 #define TERM_COLOR_RED        {.r = 205, .g = 0,   .b = 0}

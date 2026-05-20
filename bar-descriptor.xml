@@ -25,9 +25,7 @@
     <asset path="icons/term4996x96.png">term4996x96.png</asset>
     <asset path="icons/term49110x110.png">term49110x110.png</asset>
     <asset path="icons/term49144x144.png">term49144x144.png</asset>
-    
-    <asset path="vendor/prebuilt-bb10/lib/libSDL12.so" type="Qnx/Elf">lib/libSDL12.so</asset>
-    <asset path="vendor/prebuilt-bb10/lib/libTouchControlOverlay.so" type="Qnx/Elf">lib/libTouchControlOverlay.so</asset>
+
     <configuration name="Device-Debug">
        <platformArchitecture>armle-v7</platformArchitecture>
        <asset path="Device-Debug/Term49" entry="true" type="Qnx/Elf">Term49</asset>
