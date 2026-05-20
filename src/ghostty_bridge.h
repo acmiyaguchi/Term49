@@ -54,4 +54,15 @@ int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame);
 int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t visitor, void *userdata);
 int ghostty_bridge_visit_row(uint16_t target_y, ghostty_bridge_cell_visitor_t visitor, void *userdata);
 int ghostty_bridge_finish_frame(void);
+
+/* Scrollback viewport control. delta_rows follows libghostty's convention:
+ * negative scrolls up (back into history), positive scrolls down (toward live).
+ * libghostty clamps internally, so callers do not need to bound the value. */
+int ghostty_bridge_scroll_view(int delta_rows);
+int ghostty_bridge_scroll_to_bottom(void);
+
+/* 1 = alternate screen active (full-screen apps like vim/less own scrolling),
+ * 0 = primary screen. Returns 0 if the bridge is not initialized. */
+int ghostty_bridge_is_alt_screen(void);
+
 #endif /* GHOSTTY_BRIDGE_H_ */

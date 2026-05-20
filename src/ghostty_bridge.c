@@ -395,3 +395,34 @@ int ghostty_bridge_finish_frame(void) {
     &clean) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
+int ghostty_bridge_scroll_view(int delta_rows) {
+  GhosttyTerminalScrollViewport behavior = {
+    .tag = GHOSTTY_SCROLL_VIEWPORT_DELTA,
+    .value = { .delta = (intptr_t)delta_rows },
+  };
+  if (!gb.initialized || delta_rows == 0) { return 0; }
+  ghostty_terminal_scroll_viewport(gb.terminal, behavior);
+  return 0;
+}
+
+int ghostty_bridge_scroll_to_bottom(void) {
+  GhosttyTerminalScrollViewport behavior = {
+    .tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
+    .value = { .delta = 0 },
+  };
+  if (!gb.initialized) { return 0; }
+  ghostty_terminal_scroll_viewport(gb.terminal, behavior);
+  return 0;
+}
+
+int ghostty_bridge_is_alt_screen(void) {
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (!gb.initialized) { return 0; }
+  if (ghostty_terminal_get(gb.terminal,
+        GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+        &screen) != GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
+}
+

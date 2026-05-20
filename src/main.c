@@ -552,6 +552,15 @@ void handle_activeevent(int gain, int state){
 	}
 }
 
+static void maybe_show_vkb(void) {
+	/* On a Passport the system gesture for the VKB doesn't work, so we
+	 * reveal it on a screen tap. Triggered from TOUCH_UP rather than
+	 * TOUCH_DOWN so a drag-to-scroll gesture doesn't pop the keyboard. */
+	if (prefs->auto_show_vkb) {
+		platform_vkb_show(g_platform);
+	}
+}
+
 void handle_mousedown(uint16_t x, uint16_t y){
 	/* check for hits in the metamode_hitbox */
 	if((x >= prefs->metamode_hitbox->x) &&
@@ -561,11 +570,6 @@ void handle_mousedown(uint16_t x, uint16_t y){
 		/* hit in the box */
 		metamode_toggle();
 	}
-	/* touching the screen will reveal the keyboard on a Passport,
-	 * since the system wide gesture doesn't work to reveal. */
-	if (prefs->auto_show_vkb){
-		platform_vkb_show(g_platform);
-	}
 
 	/* check for symmenu touches */
 	if(current_symmenu != NULL){
@@ -574,6 +578,29 @@ void handle_mousedown(uint16_t x, uint16_t y){
 			app_dispatch_action(g_app, &entry->action);
 		}
 	}
+}
+
+/* Single-finger drag-scrollback state. libghostty owns the viewport
+ * offset; we only convert pixel drag into a row delta and call
+ * ghostty_bridge_scroll_view. `locked` is latched at TOUCH_DOWN so a
+ * symmenu tap whose press dismisses the menu can't then scroll if the
+ * finger keeps moving before release. */
+static struct {
+	int     active;
+	int     committed;
+	int     locked;
+	int16_t start_y;
+	int16_t last_y;
+	int     accum_dy;
+} g_drag;
+
+static void drag_reset(void) {
+	g_drag.active    = 0;
+	g_drag.committed = 0;
+	g_drag.locked    = 0;
+	g_drag.start_y   = 0;
+	g_drag.last_y    = 0;
+	g_drag.accum_dy  = 0;
 }
 
 static int render_ghostty(int force_full_repaint); /* defined below */
@@ -1648,11 +1675,59 @@ int app_handle_event(app_t *app, const event_t *event) {
 		mark_screen_dirty(1);
 		return 1;
 	case TERM_EVENT_KEY:
+		if (event->as.key.pressed) {
+			/* Any keypress snaps the viewport back to the live bottom
+			 * so the keystroke isn't typed into history. libghostty
+			 * no-ops when already at bottom. */
+			ghostty_bridge_scroll_to_bottom();
+		}
 		app_handle_key(app, &event->as.key);
 		return 1;
 	case TERM_EVENT_TOUCH_DOWN:
+		drag_reset();
+		g_drag.active  = 1;
+		g_drag.start_y = (int16_t)event->as.touch.y;
+		g_drag.last_y  = (int16_t)event->as.touch.y;
+		/* Lock the gesture out of scroll mode if a symmenu is already
+		 * open or we're in alt-screen (vim/less own scrolling). The
+		 * latch persists across the gesture so a symmenu tap that
+		 * dismisses the menu can't then scroll mid-finger-stroke. */
+		if (current_symmenu != NULL || ghostty_bridge_is_alt_screen()) {
+			g_drag.locked = 1;
+		}
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
+		return 1;
+	case TERM_EVENT_TOUCH_MOVE: {
+		if (!g_drag.active || g_drag.locked) {
+			return 1;
+		}
+		int16_t y = (int16_t)event->as.touch.y;
+		int dy = (int)y - (int)g_drag.last_y;
+		g_drag.last_y = y;
+		if (!g_drag.committed) {
+			if (abs((int)y - (int)g_drag.start_y) < text_height / 2) {
+				return 1;
+			}
+			g_drag.committed = 1;
+		}
+		g_drag.accum_dy += dy;
+		int rows = g_drag.accum_dy / text_height;
+		if (rows != 0) {
+			g_drag.accum_dy -= rows * text_height;
+			/* Natural / iOS-style: finger-down (rows > 0) reveals older
+			 * content. libghostty uses "up is negative" for its scroll
+			 * delta, so we negate to go into history on finger-down. */
+			ghostty_bridge_scroll_view(-rows);
+			mark_screen_dirty(1);
+		}
+		return 1;
+	}
+	case TERM_EVENT_TOUCH_UP:
+		if (g_drag.active && !g_drag.committed && !g_drag.locked) {
+			maybe_show_vkb();
+		}
+		drag_reset();
 		return 1;
 	case TERM_EVENT_ACTIVATE:
 		handle_activeevent(event->as.activate.active, event->as.activate.state);
@@ -1677,8 +1752,6 @@ int app_handle_event(app_t *app, const event_t *event) {
 		}
 		return 1;
 	case TERM_EVENT_NONE:
-	case TERM_EVENT_TOUCH_MOVE:
-	case TERM_EVENT_TOUCH_UP:
 	default:
 		return 0;
 	}
