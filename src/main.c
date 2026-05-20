@@ -621,7 +621,7 @@ void set_font_size(int new_size){
 }
 
 /* Narrow glue for the Lua `term` table (registered in preferences.c).
- * Kept here so preferences.c never sees app/SDL internals. */
+ * Kept here so preferences.c never sees app/renderer internals. */
 int term_current_font_size(void){
 	return prefs ? prefs->font_size : TERM_DEFAULT_FONT_SIZE;
 }
@@ -658,8 +658,8 @@ static void app_reload_config(void){
 		/* Parse error / OOM: prefs_lua_reload() left the running config
 		 * and scripting state fully intact, so a broken edit can't wipe
 		 * a working setup to defaults. No transient on-screen cue: this
-		 * BB10 SDL backend only composites on the next event pump, so a
-		 * flash would not show until an unrelated tap (confusing). The
+		 * backend only composites on the next event pump, so a flash
+		 * would not show until an unrelated tap (confusing). The
 		 * feedback is simply that nothing changes -- the rejected edit
 		 * is logged to stderr for dev builds. */
 		return;
@@ -1567,9 +1567,9 @@ void *run_render(void *data){
 			}
 		}
 		/* Only repaint when something visible actually changed. The pipe
-		 * poke wakes us for every SDL event, but inert system events
-		 * (SYSWMEVENT/ACTIVEEVENT/unknown) leave screen_dirty clear, so
-		 * we skip the full-screen FillRect + page-flip that was causing
+		 * poke wakes us for every platform event, but inert events
+		 * (orientation check, ignored touch, unknown) leave screen_dirty
+		 * clear, so we skip the full-screen clear + post that was causing
 		 * the white-flash storm. */
 		lock_input();
 		int do_render = screen_dirty;
@@ -1730,8 +1730,8 @@ int main(int argc, char **argv) {
 	pthread_t render_thread;
 	pthread_create(&render_thread, NULL, run_render, NULL);
 	/* screen_dirty starts set for the first frame, but the render thread
-	 * blocks in select() until either pty output or an SDL event arrives.
-	 * Poke it once so launch never sits on an undrawn black backbuffer. */
+	 * blocks in select() until either pty output or a platform event
+	 * arrives. Poke it once so launch never sits on an undrawn buffer. */
 	indicate_event_input();
 	while (!exit_application) {
 

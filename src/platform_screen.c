@@ -284,9 +284,9 @@ platform_t *platform_screen_create(void) {
 	self->last_w = w;
 	self->last_h = h;
 
-	/* IDLE_MODE mirrors what the vendored SDL did: SCREEN_IDLE_NORMAL env
-	 * present => standard timeout; absent => keep the screen awake. The
-	 * env is set elsewhere (sdl_init today) from prefs->screen_idle_awake. */
+	/* IDLE_MODE: SCREEN_IDLE_NORMAL env present => standard timeout;
+	 * absent => keep the screen awake. main() sets the env from
+	 * prefs->screen_idle_awake before calling platform_screen_create. */
 	int idle_mode = (getenv("SCREEN_IDLE_NORMAL") != NULL)
 	              ? SCREEN_IDLE_MODE_NORMAL
 	              : SCREEN_IDLE_MODE_KEEP_AWAKE;

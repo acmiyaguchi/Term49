@@ -1,8 +1,8 @@
 /*
  * Backend-agnostic app events.
  *
- * Platform implementations translate SDL_Event, BB10 screen_event_t, and BPS
- * events into this representation before app-level handling.
+ * The platform backend translates raw BB10 screen_event_t and BPS events into
+ * this representation before app-level handling.
  */
 
 #ifndef EVENT_H_
@@ -29,9 +29,9 @@ typedef struct key_event {
 	int pressed;
 	int repeat;
 	/* Rich screen-key fields (BB10 screen_event_t SCREEN_PROPERTY_KEY_*).
-	 * sym mirrors keycode for the plain SDL path; alternate_sym is
-	 * informational. The raw KEY_DOWN/KEY_REPEAT bits are decoded into
-	 * pressed/repeat at the platform boundary and never cross this contract. */
+	 * sym mirrors keycode; alternate_sym is informational. The raw
+	 * KEY_DOWN/KEY_REPEAT bits are decoded into pressed/repeat at the
+	 * platform boundary and never cross this contract. */
 	int sym;
 	int alternate_sym;
 } key_event_t;
