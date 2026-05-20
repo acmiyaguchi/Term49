@@ -552,6 +552,14 @@ void handle_activeevent(int gain, int state){
 	}
 }
 
+static void maybe_show_vkb(void) {
+	/* Passport's system gesture for the VKB doesn't work; auto-reveal
+	 * when the user opts in. */
+	if (prefs->auto_show_vkb) {
+		platform_vkb_show(g_platform);
+	}
+}
+
 void handle_mousedown(uint16_t x, uint16_t y){
 	/* check for hits in the metamode_hitbox */
 	if((x >= prefs->metamode_hitbox->x) &&
@@ -561,11 +569,6 @@ void handle_mousedown(uint16_t x, uint16_t y){
 		/* hit in the box */
 		metamode_toggle();
 	}
-	/* touching the screen will reveal the keyboard on a Passport,
-	 * since the system wide gesture doesn't work to reveal. */
-	if (prefs->auto_show_vkb){
-		platform_vkb_show(g_platform);
-	}
 
 	/* check for symmenu touches */
 	if(current_symmenu != NULL){
@@ -573,6 +576,57 @@ void handle_mousedown(uint16_t x, uint16_t y){
 		if (entry != NULL) {
 			app_dispatch_action(g_app, &entry->action);
 		}
+	}
+}
+
+/* Single-finger drag state. Mode is latched at TOUCH_DOWN:
+ *   SCROLL = primary screen, move libghostty's viewport into history.
+ *   WHEEL  = alt-screen with SGR mouse reporting enabled, forward each
+ *            row of drag as an xterm wheel event to the running TUI.
+ *   LOCKED = gesture started while a symmenu was open, or in alt-screen
+ *            without mouse reporting; consume the touch without action. */
+enum drag_mode {
+	DRAG_IDLE = 0,
+	DRAG_SCROLL,
+	DRAG_WHEEL,
+	DRAG_LOCKED,
+};
+static struct {
+	enum drag_mode mode;
+	int committed;
+	int start_y;
+	int last_y;
+	int accum_dy;
+} g_drag;
+
+static void drag_reset(void) {
+	memset(&g_drag, 0, sizeof(g_drag));
+}
+
+enum {
+	SGR_WHEEL_UP = 64,
+	SGR_WHEEL_DOWN = 65,
+};
+
+/* Batch `ticks` xterm SGR (mode 1006) wheel events at (col, row) into a
+ * single write to the pty master. A fast drag can accumulate several
+ * rows per MOVE event; one write() beats N. */
+static void emit_wheels(int col, int row, int up, int ticks) {
+	char buf[256];
+	int cb = up ? SGR_WHEEL_UP : SGR_WHEEL_DOWN;
+	size_t off = 0;
+	while (ticks > 0) {
+		int n = snprintf(buf + off, sizeof(buf) - off,
+		                 "\x1b[<%d;%d;%dM", cb, col, row);
+		if (n <= 0 || (size_t)n >= sizeof(buf) - off) { break; }
+		off += (size_t)n;
+		--ticks;
+	}
+	if (off > 0) {
+		io_write_master_char(buf, off);
+	}
+	if (ticks > 0) {
+		emit_wheels(col, row, up, ticks);
 	}
 }
 
@@ -1648,11 +1702,68 @@ int app_handle_event(app_t *app, const event_t *event) {
 		mark_screen_dirty(1);
 		return 1;
 	case TERM_EVENT_KEY:
+		if (event->as.key.pressed) {
+			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
+			ghostty_bridge_scroll_to_bottom();
+		}
 		app_handle_key(app, &event->as.key);
 		return 1;
 	case TERM_EVENT_TOUCH_DOWN:
+		drag_reset();
+		g_drag.start_y = event->as.touch.y;
+		g_drag.last_y  = event->as.touch.y;
+		/* Latch the mode for the whole gesture so e.g. a symmenu tap
+		 * that dismisses the menu mid-stroke can't start scrolling. */
+		if (current_symmenu != NULL) {
+			g_drag.mode = DRAG_LOCKED;
+		} else if (ghostty_bridge_mouse_wheel_ready()) {
+			g_drag.mode = DRAG_WHEEL;
+		} else if (ghostty_bridge_is_alt_screen()) {
+			g_drag.mode = DRAG_LOCKED;
+		} else {
+			g_drag.mode = DRAG_SCROLL;
+		}
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
+		return 1;
+	case TERM_EVENT_TOUCH_MOVE: {
+		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
+			return 1;
+		}
+		int y = event->as.touch.y;
+		int x = event->as.touch.x;
+		int dy = y - g_drag.last_y;
+		g_drag.last_y = y;
+		if (!g_drag.committed) {
+			if (abs(y - g_drag.start_y) < text_height / 2) {
+				return 1;
+			}
+			g_drag.committed = 1;
+		}
+		g_drag.accum_dy += dy;
+		int rows = g_drag.accum_dy / text_height;
+		if (rows == 0) {
+			return 1;
+		}
+		g_drag.accum_dy -= rows * text_height;
+		/* Natural / iOS-style scrolling: content follows the finger.
+		 * Finger DOWN (rows > 0) reveals older content. */
+		if (g_drag.mode == DRAG_WHEEL) {
+			int col  = (text_width  > 0) ? (x / text_width)  + 1 : 1;
+			int rrow = (text_height > 0) ? (y / text_height) + 1 : 1;
+			emit_wheels(col, rrow, rows > 0, abs(rows));
+		} else {
+			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
+			ghostty_bridge_scroll_view(-rows);
+			mark_screen_dirty(1);
+		}
+		return 1;
+	}
+	case TERM_EVENT_TOUCH_UP:
+		if (g_drag.mode != DRAG_IDLE && !g_drag.committed && g_drag.mode != DRAG_LOCKED) {
+			maybe_show_vkb();
+		}
+		drag_reset();
 		return 1;
 	case TERM_EVENT_ACTIVATE:
 		handle_activeevent(event->as.activate.active, event->as.activate.state);
@@ -1677,8 +1788,6 @@ int app_handle_event(app_t *app, const event_t *event) {
 		}
 		return 1;
 	case TERM_EVENT_NONE:
-	case TERM_EVENT_TOUCH_MOVE:
-	case TERM_EVENT_TOUCH_UP:
 	default:
 		return 0;
 	}
@@ -1772,9 +1881,7 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	if (prefs->auto_show_vkb) {
-		platform_vkb_show(g_platform);
-	}
+	maybe_show_vkb();
 
 	/* start up main event loop */
 	pthread_t render_thread;

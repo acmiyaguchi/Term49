@@ -395,3 +395,50 @@ int ghostty_bridge_finish_frame(void) {
     &clean) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
+static void gb_scroll_viewport(GhosttyTerminalScrollViewportTag tag, int delta_rows) {
+  if (!gb.initialized) { return; }
+  if (tag == GHOSTTY_SCROLL_VIEWPORT_DELTA && delta_rows == 0) { return; }
+  GhosttyTerminalScrollViewport behavior = {
+    .tag = tag,
+    .value = { .delta = (intptr_t)delta_rows },
+  };
+  ghostty_terminal_scroll_viewport(gb.terminal, behavior);
+}
+
+int ghostty_bridge_scroll_view(int delta_rows) {
+  gb_scroll_viewport(GHOSTTY_SCROLL_VIEWPORT_DELTA, delta_rows);
+  return 0;
+}
+
+int ghostty_bridge_scroll_to_bottom(void) {
+  gb_scroll_viewport(GHOSTTY_SCROLL_VIEWPORT_BOTTOM, 0);
+  return 0;
+}
+
+int ghostty_bridge_is_alt_screen(void) {
+  GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
+  if (!gb.initialized) { return 0; }
+  if (ghostty_terminal_get(gb.terminal,
+        GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
+        &screen) != GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
+}
+
+static int gb_mode_on(GhosttyMode mode) {
+  bool v = false;
+  if (ghostty_terminal_mode_get(gb.terminal, mode, &v) != GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return v ? 1 : 0;
+}
+
+int ghostty_bridge_mouse_wheel_ready(void) {
+  if (!gb.initialized) { return 0; }
+  if (!ghostty_bridge_is_alt_screen()) { return 0; }
+  if (!gb_mode_on(GHOSTTY_MODE_SGR_MOUSE)) { return 0; }
+  return gb_mode_on(GHOSTTY_MODE_NORMAL_MOUSE) ||
+         gb_mode_on(GHOSTTY_MODE_BUTTON_MOUSE) ||
+         gb_mode_on(GHOSTTY_MODE_ANY_MOUSE);
+}

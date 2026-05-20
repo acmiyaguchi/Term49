@@ -84,7 +84,9 @@ static int translate_screen(platform_screen_t *self, bps_event_t *event, event_t
 		out->as.key.repeat        = (screen_flags & KEY_REPEAT) ? 1 : 0;
 		return 1;
 	}
-	case SCREEN_EVENT_MTOUCH_TOUCH: {
+	case SCREEN_EVENT_MTOUCH_TOUCH:
+	case SCREEN_EVENT_MTOUCH_MOVE:
+	case SCREEN_EVENT_MTOUCH_RELEASE: {
 		int pos[2] = {0, 0};
 		if (screen_get_event_property_iv(se, SCREEN_PROPERTY_SOURCE_POSITION, pos) != 0) {
 			/* Drop touches whose position we couldn't read — otherwise the
@@ -98,7 +100,11 @@ static int translate_screen(platform_screen_t *self, bps_event_t *event, event_t
 			return 0;
 		}
 		memset(out, 0, sizeof(*out));
-		out->type = TERM_EVENT_TOUCH_DOWN;
+		switch (type) {
+		case SCREEN_EVENT_MTOUCH_TOUCH:   out->type = TERM_EVENT_TOUCH_DOWN; break;
+		case SCREEN_EVENT_MTOUCH_MOVE:    out->type = TERM_EVENT_TOUCH_MOVE; break;
+		case SCREEN_EVENT_MTOUCH_RELEASE: out->type = TERM_EVENT_TOUCH_UP;   break;
+		}
 		out->as.touch.x = pos[0];
 		out->as.touch.y = pos[1];
 		return 1;
