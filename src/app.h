@@ -10,6 +10,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "action.h"
 #include "event.h"
@@ -27,6 +28,7 @@ void app_shutdown_state(app_t *app);
 /* Session registry. Single session today; signatures are stable for #4. */
 session_t *app_active_session(app_t *app);
 session_t *app_session_by_id(app_t *app, session_id_t id); /* 0 => active */
+session_t *app_session_by_child_pid(app_t *app, pid_t pid); /* NULL if none */
 unsigned       app_session_count(const app_t *app);
 
 #endif /* APP_H_ */

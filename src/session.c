@@ -16,6 +16,9 @@ struct session {
 	session_id_t id;
 	ghostty_bridge_t *bridge;
 	int master_fd;          /* -1 until session_set_master_fd() runs */
+	pid_t child_pid;        /* 0 until session_set_child_pid() runs */
+	int exited;             /* set by session_mark_exited via SIGCHLD reaper */
+	int exit_status;        /* raw waitpid() status; valid when exited */
 };
 
 int session_create(session_t **out, session_id_t id,
@@ -67,6 +70,41 @@ void session_set_master_fd(session_t *s, int fd) {
 		return;
 	}
 	s->master_fd = fd;
+}
+
+pid_t session_child_pid(const session_t *s) {
+	return s ? s->child_pid : 0;
+}
+
+void session_set_child_pid(session_t *s, pid_t pid) {
+	if (s == NULL) {
+		return;
+	}
+	s->child_pid = pid;
+}
+
+int session_is_exited(const session_t *s) {
+	return s ? s->exited : 0;
+}
+
+int session_exit_status(const session_t *s) {
+	return s ? s->exit_status : 0;
+}
+
+void session_mark_exited(session_t *s, int status) {
+	if (s == NULL || s->exited) {
+		return;
+	}
+	s->exited = 1;
+	s->exit_status = status;
+	/* The shell is gone; close the master so select() stops waking on the
+	 * fd's EOF. session_master_fd() now returns -1 and FD_SET will skip it.
+	 * Scrollback in the bridge persists so the user can read the final
+	 * output until they dismiss the [exited] tab. */
+	if (s->master_fd >= 0) {
+		close(s->master_fd);
+		s->master_fd = -1;
+	}
 }
 
 ssize_t session_write_text(session_t *s, const UChar *buf, size_t n) {

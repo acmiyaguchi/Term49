@@ -165,8 +165,6 @@ static bitmap_t *alt_key_indicator;
 static bitmap_t *shift_key_indicator;
 static bitmap_t *altsym_indicator;
 
-static pid_t child_pid = -1;
-
 static char virtualkeyboard_visible = 0;
 static char key_repeat_done = 0;
 
@@ -1146,12 +1144,13 @@ void set_tty_window_size(){
 	 * causes broken prompt/readline wrapping until something like tmux fixes
 	 * the size for its inner pty. */
 	int pgrp;
+	pid_t cpid = session_child_pid(app_active_session(g_app));
 	if(ioctl(master, TIOCGPGRP, &pgrp) != -1){
 		killpg(pgrp, SIGWINCH);
-	} else if(child_pid > 0){
-		PRINT(stderr, "Could not get pgrp of tty: %s; using child pgid %d\n", strerror(errno), child_pid);
-		if(killpg(child_pid, SIGWINCH) < 0){
-			kill(child_pid, SIGWINCH);
+	} else if(cpid > 0){
+		PRINT(stderr, "Could not get pgrp of tty: %s; using child pgid %d\n", strerror(errno), (int)cpid);
+		if(killpg(cpid, SIGWINCH) < 0){
+			kill(cpid, SIGWINCH);
 		}
 	} else {
 		PRINT(stderr, "Could not get pgrp of tty and no child exists: %s\n", strerror(errno));
@@ -1523,7 +1522,7 @@ static int pty_init(session_t *session) {
 	session_set_master_fd(session, master_fd);
 
 	// fork and exec
-	child_pid = fork();
+	pid_t child_pid = fork();
 
 	if (child_pid == 0) {
 		// Child
@@ -1600,38 +1599,55 @@ static int pty_init(session_t *session) {
 	}
 	if (child_pid == -1){
 		PRINT(stderr, "fork returned: %s\n", strerror(errno));
+		close(master_fd);
+		session_set_master_fd(session, -1);
 		return TERM_FAILURE;
 	}
+
+	session_set_child_pid(session, child_pid);
 
 	// close the slave_fd, not needed anymore
 	close(slave_fd);
 	return TERM_SUCCESS;
 }
 
+/* Async-signal-safe SIGCHLD handler: must not touch the session registry
+ * (`input_mutex` is not signal-safe) or call any non-AS-safe libc routine.
+ * Just poke the self-pipe with a 'c' so the render thread can reap and
+ * mark the owning session exited under the lock. */
 void sig_child(int signo){
-	int status;
-
+	(void)signo;
 	int old_errno = errno;
-
-	if(waitpid(child_pid, &status, WNOHANG)){
-		if(WIFEXITED(status)){
-			PRINT(stderr, "Child %d exited normally with status %d\n", child_pid, WEXITSTATUS(status));
-		} else {
-			PRINT(stderr, "Child %d exited abnormally\n", child_pid);
-		}
-		exit_application = 1;
-		/* Poke the event pipe so the render thread's select() unblocks and
-		 * sees exit_application set. The main run loop is woken by the next
-		 * BPS event; for a faster shutdown a follow-up could push a user
-		 * BPS event here, but the existing flow is correct. */
-		if (event_pipe[1] >= 0) {
-			char w = 'q';
-			(void)write(event_pipe[1], &w, 1);
-		}
-	} else {
-		PRINT(stderr, "Got SIGCHILD for process other than %d\n", child_pid);
+	if (event_pipe[1] >= 0) {
+		char w = 'c';
+		(void)write(event_pipe[1], &w, 1);
 	}
 	errno = old_errno;
+}
+
+/* Drains pending children. Must be called with input_mutex held — looks up
+ * sessions in the registry and mutates them. SIGCHLDs coalesce, so the
+ * loop is mandatory: a single wake may correspond to multiple reapable
+ * children. */
+static void reap_exited_children(void){
+	int status;
+	pid_t pid;
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		session_t *s = app_session_by_child_pid(g_app, pid);
+		if (s == NULL) {
+			PRINT(stderr, "Got SIGCHLD for unknown pid %d\n", (int)pid);
+			continue;
+		}
+		if (WIFEXITED(status)) {
+			PRINT(stderr, "Child %d (session %u) exited normally with status %d\n",
+			      (int)pid, session_id(s), WEXITSTATUS(status));
+		} else {
+			PRINT(stderr, "Child %d (session %u) exited abnormally\n",
+			      (int)pid, session_id(s));
+		}
+		session_mark_exited(s, status);
+		mark_screen_dirty(1);
+	}
 }
 
 /* Runs in a dedicated pthread. Blocks in select() on the pty master and
@@ -1673,8 +1689,16 @@ void *run_render(void *data){
 				unlock_input();
 			}
 			if(FD_ISSET(event_pipe[0], &fds)){
-				// Just read the stuff and throw it away
-				read(event_pipe[0], (void*)ev_buf, 99);
+				int reap_needed = 0;
+				ssize_t got = read(event_pipe[0], (void*)ev_buf, sizeof(ev_buf));
+				for (ssize_t i = 0; i < got; ++i) {
+					if (ev_buf[i] == 'c') { reap_needed = 1; break; }
+				}
+				if (reap_needed) {
+					lock_input();
+					reap_exited_children();
+					unlock_input();
+				}
 			}
 		}
 		/* Only repaint when something visible actually changed. The pipe

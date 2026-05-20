@@ -79,6 +79,18 @@ session_t *app_session_by_id(app_t *app, session_id_t id) {
 	return NULL;
 }
 
+session_t *app_session_by_child_pid(app_t *app, pid_t pid) {
+	if (app == NULL || pid <= 0) {
+		return NULL;
+	}
+	for (unsigned i = 0; i < app->count; ++i) {
+		if (session_child_pid(app->sessions[i]) == pid) {
+			return app->sessions[i];
+		}
+	}
+	return NULL;
+}
+
 unsigned app_session_count(const app_t *app) {
 	return app ? app->count : 0;
 }
