@@ -426,3 +426,20 @@ int ghostty_bridge_is_alt_screen(void) {
   return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
 }
 
+static int gb_mode_on(GhosttyMode mode) {
+  bool v = false;
+  if (ghostty_terminal_mode_get(gb.terminal, mode, &v) != GHOSTTY_SUCCESS) {
+    return 0;
+  }
+  return v ? 1 : 0;
+}
+
+int ghostty_bridge_mouse_wheel_ready(void) {
+  if (!gb.initialized) { return 0; }
+  if (!ghostty_bridge_is_alt_screen()) { return 0; }
+  if (!gb_mode_on(GHOSTTY_MODE_SGR_MOUSE)) { return 0; }
+  return gb_mode_on(GHOSTTY_MODE_NORMAL_MOUSE) ||
+         gb_mode_on(GHOSTTY_MODE_BUTTON_MOUSE) ||
+         gb_mode_on(GHOSTTY_MODE_ANY_MOUSE);
+}
+

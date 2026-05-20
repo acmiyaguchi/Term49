@@ -580,27 +580,50 @@ void handle_mousedown(uint16_t x, uint16_t y){
 	}
 }
 
-/* Single-finger drag-scrollback state. libghostty owns the viewport
- * offset; we only convert pixel drag into a row delta and call
- * ghostty_bridge_scroll_view. `locked` is latched at TOUCH_DOWN so a
- * symmenu tap whose press dismisses the menu can't then scroll if the
- * finger keeps moving before release. */
+/* Single-finger drag state. Mode is latched at TOUCH_DOWN:
+ *   SCROLL = primary screen, move libghostty's viewport into history.
+ *   WHEEL  = alt-screen with SGR mouse reporting enabled, forward each
+ *            row of drag as an xterm wheel event to the running TUI.
+ *   LOCKED = gesture started while a symmenu was open, or in alt-screen
+ *            without mouse reporting; consume the touch without action.
+ *   IDLE   = no touch is active. */
+enum drag_mode {
+	DRAG_IDLE = 0,
+	DRAG_SCROLL,
+	DRAG_WHEEL,
+	DRAG_LOCKED,
+};
 static struct {
+	enum drag_mode mode;
 	int     active;
 	int     committed;
-	int     locked;
 	int16_t start_y;
 	int16_t last_y;
+	int16_t last_x;
 	int     accum_dy;
 } g_drag;
 
 static void drag_reset(void) {
+	g_drag.mode      = DRAG_IDLE;
 	g_drag.active    = 0;
 	g_drag.committed = 0;
-	g_drag.locked    = 0;
 	g_drag.start_y   = 0;
 	g_drag.last_y    = 0;
+	g_drag.last_x    = 0;
 	g_drag.accum_dy  = 0;
+}
+
+/* Emit one xterm SGR (mode 1006) wheel event at (col, row) — both
+ * 1-indexed cell coords. up=1 → wheel up (button 64), up=0 → wheel
+ * down (button 65). Bytes go straight back through the pty so the
+ * running TUI consumes them as if a real wheel had been spun. */
+static void emit_wheel(int col, int row, int up) {
+	char buf[32];
+	int cb = up ? 64 : 65;
+	int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%dM", cb, col, row);
+	if (n > 0 && n < (int)sizeof(buf)) {
+		io_write_master_char(buf, (size_t)n);
+	}
 }
 
 static int render_ghostty(int force_full_repaint); /* defined below */
@@ -1688,23 +1711,32 @@ int app_handle_event(app_t *app, const event_t *event) {
 		g_drag.active  = 1;
 		g_drag.start_y = (int16_t)event->as.touch.y;
 		g_drag.last_y  = (int16_t)event->as.touch.y;
-		/* Lock the gesture out of scroll mode if a symmenu is already
-		 * open or we're in alt-screen (vim/less own scrolling). The
-		 * latch persists across the gesture so a symmenu tap that
-		 * dismisses the menu can't then scroll mid-finger-stroke. */
-		if (current_symmenu != NULL || ghostty_bridge_is_alt_screen()) {
-			g_drag.locked = 1;
+		g_drag.last_x  = (int16_t)event->as.touch.x;
+		/* Decide gesture intent once, here. The mode latches for the
+		 * whole gesture so e.g. a symmenu tap that dismisses the menu
+		 * mid-stroke can't suddenly start scrolling. */
+		if (current_symmenu != NULL) {
+			g_drag.mode = DRAG_LOCKED;
+		} else if (ghostty_bridge_mouse_wheel_ready()) {
+			g_drag.mode = DRAG_WHEEL;
+		} else if (ghostty_bridge_is_alt_screen()) {
+			g_drag.mode = DRAG_LOCKED;
+		} else {
+			g_drag.mode = DRAG_SCROLL;
 		}
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
 		return 1;
 	case TERM_EVENT_TOUCH_MOVE: {
-		if (!g_drag.active || g_drag.locked) {
+		if (!g_drag.active ||
+		    g_drag.mode == DRAG_LOCKED || g_drag.mode == DRAG_IDLE) {
 			return 1;
 		}
 		int16_t y = (int16_t)event->as.touch.y;
+		int16_t x = (int16_t)event->as.touch.x;
 		int dy = (int)y - (int)g_drag.last_y;
 		g_drag.last_y = y;
+		g_drag.last_x = x;
 		if (!g_drag.committed) {
 			if (abs((int)y - (int)g_drag.start_y) < text_height / 2) {
 				return 1;
@@ -1713,18 +1745,32 @@ int app_handle_event(app_t *app, const event_t *event) {
 		}
 		g_drag.accum_dy += dy;
 		int rows = g_drag.accum_dy / text_height;
-		if (rows != 0) {
-			g_drag.accum_dy -= rows * text_height;
-			/* Natural / iOS-style: finger-down (rows > 0) reveals older
-			 * content. libghostty uses "up is negative" for its scroll
-			 * delta, so we negate to go into history on finger-down. */
+		if (rows == 0) {
+			return 1;
+		}
+		g_drag.accum_dy -= rows * text_height;
+		/* Natural / iOS-style scrolling: the content follows the finger.
+		 * Finger DOWN (rows > 0) reveals older content (history / scroll
+		 * up); finger UP (rows < 0) reveals newer content (toward live). */
+		if (g_drag.mode == DRAG_WHEEL) {
+			int ticks = abs(rows);
+			/* finger-down → wheel-up (older content); finger-up → wheel-down. */
+			int up = rows > 0;
+			int col = (text_width  > 0) ? (x / text_width)  + 1 : 1;
+			int rrow= (text_height > 0) ? (y / text_height) + 1 : 1;
+			for (int i = 0; i < ticks; ++i) {
+				emit_wheel(col, rrow, up);
+			}
+		} else {
+			/* DRAG_SCROLL — libghostty uses "up is negative" for delta,
+			 * so to scroll into history on finger-down we negate. */
 			ghostty_bridge_scroll_view(-rows);
 			mark_screen_dirty(1);
 		}
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_UP:
-		if (g_drag.active && !g_drag.committed && !g_drag.locked) {
+		if (g_drag.active && !g_drag.committed && g_drag.mode != DRAG_LOCKED) {
 			maybe_show_vkb();
 		}
 		drag_reset();

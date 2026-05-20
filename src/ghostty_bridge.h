@@ -65,4 +65,11 @@ int ghostty_bridge_scroll_to_bottom(void);
  * 0 = primary screen. Returns 0 if the bridge is not initialized. */
 int ghostty_bridge_is_alt_screen(void);
 
+/* 1 iff alt-screen is active AND any of ?1000/?1002/?1003 (mouse tracking)
+ * is on AND ?1006 (SGR encoding) is on. Gates whether touch drag should
+ * be translated into xterm wheel events for the running TUI. We never
+ * emit legacy non-SGR mouse encoding. Returns 0 if the bridge is not
+ * initialized. */
+int ghostty_bridge_mouse_wheel_ready(void);
+
 #endif /* GHOSTTY_BRIDGE_H_ */
