@@ -362,6 +362,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 	size_t keystrokes_len;
 	int terminfo_key = 0;
 	UChar terminfo_keystrokes[CHARACTER_BUFFER];
+	session_t *s = app_active_session(g_app);
 
 	if(keystrokes){
 		terminfo_key = is_terminfo_keystrokes(keystrokes);
@@ -370,7 +371,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		if(terminfo_key){
 			ukeystrokes_len = terminal_key_sequence(terminfo_key, 0, terminfo_keystrokes);
 			/* and write out to the tty whatever the keys were */
-			io_write_master(terminfo_keystrokes, ukeystrokes_len);
+			session_write_text(s, terminfo_keystrokes, ukeystrokes_len);
 			return 1;
 		}
 		// else
@@ -379,7 +380,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		ukeystrokes = (UChar*)calloc(keystrokes_len, sizeof(UChar));
 		ukeystrokes_len = io_read_utf8_string(keystrokes, keystrokes_len, ukeystrokes);
 		/* and write out to the tty whatever the keys were */
-		io_write_master(ukeystrokes, ukeystrokes_len);
+		session_write_text(s, ukeystrokes, ukeystrokes_len);
 		free(ukeystrokes);
 		return 1;
 	}
@@ -610,7 +611,7 @@ enum {
 /* Batch `ticks` xterm SGR (mode 1006) wheel events at (col, row) into a
  * single write to the pty master. A fast drag can accumulate several
  * rows per MOVE event; one write() beats N. */
-static void emit_wheels(int col, int row, int up, int ticks) {
+static void emit_wheels(session_t *session, int col, int row, int up, int ticks) {
 	char buf[256];
 	int cb = up ? SGR_WHEEL_UP : SGR_WHEEL_DOWN;
 	size_t off = 0;
@@ -622,10 +623,10 @@ static void emit_wheels(int col, int row, int up, int ticks) {
 		--ticks;
 	}
 	if (off > 0) {
-		io_write_master_char(buf, off);
+		session_write_bytes(session, buf, off);
 	}
 	if (ticks > 0) {
-		emit_wheels(col, row, up, ticks);
+		emit_wheels(session, col, row, up, ticks);
 	}
 }
 
@@ -1117,8 +1118,13 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 }
 
 void set_tty_window_size(){
-	int master = io_get_master();
+	int master = session_master_fd(app_active_session(g_app));
 	struct winsize ws;
+
+	if (master < 0) {
+		/* Pre-pty_init or post-shutdown — no fd to resize yet. */
+		return;
+	}
 
 	memset(&ws, 0, sizeof(ws));
 	ws.ws_row = rows;
@@ -1479,7 +1485,7 @@ static void terminal_setenv(void) {
 	}
 }
 
-static int pty_init() {
+static int pty_init(session_t *session) {
 	// Set up the ttys and fork
 
 	struct winsize winp;
@@ -1513,8 +1519,8 @@ static int pty_init() {
 	// turn off blocking on the master pty
 	fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL) | O_NONBLOCK);
 
-	// store the master_fd in IO
-	io_set_master(master_fd);
+	// store the master_fd on the session (#4 step 1.5)
+	session_set_master_fd(session, master_fd);
 
 	// fork and exec
 	child_pid = fork();
@@ -1639,21 +1645,26 @@ void *run_render(void *data){
 	int n = 0;
 	char rawbuf[READ_BUFFER_SIZE];
 	ssize_t num_bytes = 0;
-	int master = io_get_master();
+	/* Snapshot the active session's master once per loop iteration. Step 3
+	 * replaces this with a fan-out across every live session's master fd. */
+	session_t *active;
+	int master;
 	while(!exit_application){
+		active = app_active_session(g_app);
+		master = session_master_fd(active);
 		FD_ZERO(&fds);
-		FD_SET(master, &fds);
+		if (master >= 0) {
+			FD_SET(master, &fds);
+		}
 		FD_SET(event_pipe[0], &fds);
 		n = select(1+max(master, event_pipe[0]), &fds, NULL, NULL, NULL);
 		if(n < 0){
 			printf("Error calling select on inputs: %d\n", errno);
 		} else {
-			if(FD_ISSET(master, &fds)){
+			if(master >= 0 && FD_ISSET(master, &fds)){
 				lock_input();
-				// Feed raw VT bytes directly to the active session's bridge.
-				// Step 3 fans this out across every live session's master fd.
-				ghostty_bridge_t *bridge = session_bridge(app_active_session(g_app));
-				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
+				ghostty_bridge_t *bridge = session_bridge(active);
+				while ((num_bytes = session_read_bytes(active, rawbuf, READ_BUFFER_SIZE)) > 0){
 					ghostty_bridge_write(bridge, (const uint8_t*)rawbuf, (size_t)num_bytes);
 				}
 				/* child produced output -> terminal rows changed; let Ghostty's
@@ -1759,7 +1770,7 @@ int app_handle_event(app_t *app, const event_t *event) {
 		if (g_drag.mode == DRAG_WHEEL) {
 			int col  = (text_width  > 0) ? (x / text_width)  + 1 : 1;
 			int rrow = (text_height > 0) ? (y / text_height) + 1 : 1;
-			emit_wheels(col, rrow, rows > 0, abs(rows));
+			emit_wheels(app_active_session(app), col, rrow, rows > 0, abs(rows));
 		} else {
 			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
 			ghostty_bridge_scroll_view(session_bridge(app_active_session(app)), -rows);
@@ -1847,27 +1858,9 @@ int main(int argc, char **argv) {
 		app_shutdown();
 		return TERM_FAILURE;
 	}
-	
-	/* Initialize pty */
-	if (TERM_SUCCESS != pty_init()) {
-		PRINT(stderr, "Unable to initialize pty/tty\n");
-		app_shutdown();
-		return TERM_FAILURE;
-	}
 
-	/* Install signal handler for SIGCHILD */
-	struct sigaction act;
-	act.sa_handler = &sig_child;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = SA_NOCLDSTOP;
-	if (sigaction(SIGCHLD, &act, NULL) < 0) {
-		PRINT(stderr, "sigaction failed\n");
-		app_shutdown();
-		return TERM_FAILURE;
-	}
-
-	/* initialize FreeType, font, renderer, ghostty bridge. The native
-	 * Screen window was already created by platform_screen_create above. */
+	/* initialize FreeType, font, renderer. The native Screen window was
+	 * already created by platform_screen_create above. */
 	if (TERM_SUCCESS != startup_init()) {
 		PRINT(stderr, "Unable to initialize startup state\n");
 		app_shutdown();
@@ -1880,20 +1873,40 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	/* App state owns the (single) session. Created after pty_init() (the
-	 * session still borrows the io master fd this stage) and after
-	 * startup_init() has computed the cell grid (cols/rows) so the
-	 * session's ghostty bridge can be constructed at the right size. */
+	/* App state owns the session. Created after startup_init() so the
+	 * session's ghostty bridge can be built at the final cell grid (cols/
+	 * rows); pty_init() below adopts the master fd onto the session, so
+	 * app_init() must precede pty_init(). */
 	if (app_init(&g_app, prefs, (uint16_t)cols, (uint16_t)rows, 1000) != 0) {
 		PRINT(stderr, "Unable to initialize app state\n");
 		app_shutdown();
 		return TERM_FAILURE;
 	}
-	/* Hand the just-constructed bridge its pixel cell dimensions. The
-	 * constructor only takes cell counts; pixel sizes flow through resize. */
-	ghostty_bridge_resize(session_bridge(app_active_session(g_app)),
-	                      (uint16_t)cols, (uint16_t)rows,
-	                      (uint32_t)advance, (uint32_t)text_height);
+
+	/* Initialize pty — opens the master, forks the shell, parks the fd on
+	 * the active session. */
+	if (TERM_SUCCESS != pty_init(app_active_session(g_app))) {
+		PRINT(stderr, "Unable to initialize pty/tty\n");
+		app_shutdown();
+		return TERM_FAILURE;
+	}
+
+	/* Install signal handler for SIGCHILD. Must come after pty_init: the
+	 * handler reads child_pid, which pty_init wrote. */
+	struct sigaction act;
+	act.sa_handler = &sig_child;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = SA_NOCLDSTOP;
+	if (sigaction(SIGCHLD, &act, NULL) < 0) {
+		PRINT(stderr, "sigaction failed\n");
+		app_shutdown();
+		return TERM_FAILURE;
+	}
+
+	/* Apply final geometry now that both bridge AND pty exist: bridge gets
+	 * its pixel cell dimensions (constructor only took cell counts), and
+	 * the pty gets the same size via TIOCSWINSZ. */
+	setup_screen_size(fb_w, fb_h);
 
 	maybe_show_vkb();
 

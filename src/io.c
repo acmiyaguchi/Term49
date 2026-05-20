@@ -28,13 +28,15 @@
 
 #include "io.h"
 
-static int master_fd;
 static UConverter* tty_conv;
 static UErrorCode  tty_conv_err = U_ZERO_ERROR;
 
 static UConverter* utf8_conv;
 static UErrorCode  utf8_conv_err = U_ZERO_ERROR;
 
+/* Holds the last bytes io_write_master() encoded so io_upcase_last_write()
+ * can re-decode them. Implicitly scoped to the active session's keyboard
+ * write path — only the active session can be receiving keystrokes. */
 static char writebuf[CHARACTER_BUFFER * U8_MAX_LENGTH];
 static char* writebufLimit;
 
@@ -51,15 +53,6 @@ void io_uninit(void){
 	// free converts
 	ucnv_close(tty_conv);
 	ucnv_close(utf8_conv);
-  close(master_fd);
-}
-
-void io_set_master(int fd){
-	master_fd = fd;
-}
-
-int io_get_master(void){
-	return master_fd;
 }
 
 /* The last thing we wrote is still in writebuf.
@@ -106,7 +99,7 @@ int32_t io_upcase_last_write(UChar **buf, int32_t nUChar){
 	return 0;
 }
 
-ssize_t io_write_master(const UChar *buf, size_t nUChar){
+ssize_t io_write_master(int fd, const UChar *buf, size_t nUChar){
 
 	char* target = writebuf;
 	char* targetLimit = writebuf + (CHARACTER_BUFFER * U8_MAX_LENGTH);
@@ -121,15 +114,15 @@ ssize_t io_write_master(const UChar *buf, size_t nUChar){
   }
 
   writebufLimit = target;
-	return write(master_fd, writebuf, (size_t)(target - writebuf));
+	return write(fd, writebuf, (size_t)(target - writebuf));
 }
 
-ssize_t io_write_master_char(const char *buf, size_t n){
-  return write(master_fd, buf, n);
+ssize_t io_write_master_char(int fd, const char *buf, size_t n){
+  return write(fd, buf, n);
 }
 
-ssize_t io_read_master_raw(char *buf, size_t nbytes){
-  return read(master_fd, buf, nbytes);
+ssize_t io_read_master_raw(int fd, char *buf, size_t nbytes){
+  return read(fd, buf, nbytes);
 }
 
 ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf){
@@ -156,7 +149,7 @@ ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf){
   return (ssize_t)(target - buf);
 }
 
-void io_paste_from_clipboard(void){
+void io_paste_from_clipboard(int fd){
   char* buffer = NULL;
   int ret;
   if(is_clipboard_format_present("text/plain") == 0){
@@ -165,7 +158,7 @@ void io_paste_from_clipboard(void){
     	/* Paste and Pray. The encoding of the byte stream will be whatever
     	 * the copied source was - hopefully tty_encoding..
     	 */
-      write(master_fd, buffer, ret * sizeof(char));
+      write(fd, buffer, ret * sizeof(char));
       free(buffer);
     }
   }

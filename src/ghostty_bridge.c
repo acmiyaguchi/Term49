@@ -7,13 +7,12 @@
 
 #include <ghostty/vt.h>
 
-#include "io.h"
+#include "session.h"
 
 struct ghostty_bridge {
   GhosttyTerminal terminal;
   GhosttyRenderState render_state;
   GhosttyRenderStateColors colors;
-  void *userdata;
   int prev_write_was_cr;
 };
 
@@ -75,18 +74,15 @@ static ghostty_bridge_rgb_t gb_rgb(GhosttyColorRgb color) {
   return rgb;
 }
 
-/* Signature must match GhosttyTerminalWritePtyFn exactly: userdata comes
- * BEFORE data/len. The previous version had userdata last; that happened to
- * be invisible because userdata was always NULL and Ghostty's only callers
- * here are VT query responses (DA1, OSC color, etc.) that no smoke test
- * exercised. Step 1.5 routes this through session_write_bytes. */
+/* Signature must match GhosttyTerminalWritePtyFn exactly: userdata is the
+ * second arg. The session_t pointer flows through here from
+ * ghostty_bridge_create so query responses (DA1, OSC color, etc.) reach the
+ * correct pty even with multiple tabs (#4 step 3). */
 static void gb_write_pty(GhosttyTerminal terminal, void *userdata,
                          const uint8_t *data, size_t len) {
   (void)terminal;
-  (void)userdata;
-  if (data != NULL && len > 0) {
-    io_write_master_char((const char *)data, len);
-  }
+  if (data == NULL || len == 0) { return; }
+  session_write_bytes((session_t *)userdata, (const char *)data, len);
 }
 
 int ghostty_bridge_create(ghostty_bridge_t **out, uint16_t cols, uint16_t rows,
@@ -113,7 +109,6 @@ int ghostty_bridge_create(ghostty_bridge_t **out, uint16_t cols, uint16_t rows,
     free(b);
     return -1;
   }
-  b->userdata = userdata;
   ghostty_terminal_set(b->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata);
   ghostty_terminal_set(b->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, gb_write_pty);
 

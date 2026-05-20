@@ -23,16 +23,18 @@
 
 #include "types.h"
 
+/* Process-scoped converters + the keyboard-write upcase buffer. The pty
+ * master fd lives on session_t now; callers thread it through here. The
+ * upcase buffer stays global: it tracks "the last keystroke we wrote",
+ * which is by construction the active session's write path. */
 int io_init(pref_t *prefs);
 void io_uninit(void);
-void io_set_master(int master_fd);
-int  io_get_master(void);
 int32_t io_upcase_last_write(UChar **buf, int32_t nUChar);
-ssize_t io_write_master(const UChar *buf, size_t nUChar);
-ssize_t io_write_master_char(const char *buf, size_t n);
-ssize_t io_read_master_raw(char *buf, size_t nbytes);
+ssize_t io_write_master(int fd, const UChar *buf, size_t nUChar);
+ssize_t io_write_master_char(int fd, const char *buf, size_t n);
+ssize_t io_read_master_raw(int fd, char *buf, size_t nbytes);
 /* output is stored in the UChar buf, which must be of size utf8len */
 ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf);
-void io_paste_from_clipboard(void);
+void io_paste_from_clipboard(int fd);
 
 #endif /* IO_H_ */
