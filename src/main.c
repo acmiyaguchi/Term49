@@ -629,6 +629,9 @@ static void emit_wheels(session_t *session, int col, int row, int up, int ticks)
 }
 
 static int render_ghostty(int force_full_repaint); /* defined below */
+static int pty_init(session_t *session);            /* defined below */
+void set_tty_window_size(void);                     /* defined below */
+void indicate_event_input(void);                    /* defined below */
 
 void rescreen(int w, int h){
 
@@ -795,6 +798,62 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_FONT_SIZE_RESET:
 			set_font_size(TERM_DEFAULT_FONT_SIZE);
 			return 1;
+		case TERM_BUILTIN_TAB_NEW: {
+			session_t *new_s = NULL;
+			if (app_session_open(app, (uint16_t)cols, (uint16_t)rows, 1000, &new_s) != 0) {
+				PRINT(stderr, "tab_new: registry full or alloc failed\n");
+				return 0;
+			}
+			if (pty_init(new_s) != TERM_SUCCESS) {
+				PRINT(stderr, "tab_new: pty_init failed; rolling back\n");
+				app_session_close_index(app, app_session_count(app) - 1);
+				return 0;
+			}
+			/* Hand the new bridge its pixel cell dimensions + push
+			 * TIOCSWINSZ to the just-spawned child. */
+			ghostty_bridge_resize(session_bridge(new_s),
+			                      (uint16_t)cols, (uint16_t)rows,
+			                      (uint32_t)advance, (uint32_t)text_height);
+			set_tty_window_size();
+			mark_screen_dirty(1);
+			return 1;
+		}
+		case TERM_BUILTIN_TAB_NEXT:
+			if (app_session_count(app) > 1) {
+				app_session_select_next(app);
+				mark_screen_dirty(1);
+			}
+			return 1;
+		case TERM_BUILTIN_TAB_PREV:
+			if (app_session_count(app) > 1) {
+				app_session_select_prev(app);
+				mark_screen_dirty(1);
+			}
+			return 1;
+		case TERM_BUILTIN_TAB_CLOSE: {
+			session_t *s = app_active_session(app);
+			if (s == NULL) {
+				return 0;
+			}
+			/* If the shell is still alive, ask it to leave; the reaper
+			 * will mark exited and a subsequent close drops the tab. If
+			 * already exited, drop the tab right away. */
+			if (!session_is_exited(s)) {
+				pid_t cpid = session_child_pid(s);
+				if (cpid > 0) {
+					kill(cpid, SIGHUP);
+				}
+				return 1;
+			}
+			app_session_close_index(app, app_active_index(app));
+			if (app_session_count(app) == 0) {
+				exit_application = 1;
+				indicate_event_input();
+			} else {
+				mark_screen_dirty(1);
+			}
+			return 1;
+		}
 		case TERM_BUILTIN_LUA_CALL:
 			return prefs_lua_invoke(action->as.builtin.arg);
 		case TERM_BUILTIN_RELOAD_CONFIG:
@@ -1115,12 +1174,12 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 	}
 }
 
-void set_tty_window_size(){
-	int master = session_master_fd(app_active_session(g_app));
+/* Push the current cell grid into one session's pty + child shell. */
+static void apply_winsize_to(session_t *s){
 	struct winsize ws;
+	int master = session_master_fd(s);
 
 	if (master < 0) {
-		/* Pre-pty_init or post-shutdown — no fd to resize yet. */
 		return;
 	}
 
@@ -1131,29 +1190,31 @@ void set_tty_window_size(){
 	ws.ws_ypixel = fb_h;
 
 	if(tcsetsize(master, rows, cols) < 0){
-		PRINT(stderr, "ERROR: tcsetsize() returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
+		PRINT(stderr, "ERROR: tcsetsize() returned <0 (%s).\n", strerror(errno));
 	}
 	if(ioctl(master, TIOCSWINSZ, &ws) < 0){
-		PRINT(stderr, "ERROR: TIOCSWINSZ returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
+		PRINT(stderr, "ERROR: TIOCSWINSZ returned <0 (%s).\n", strerror(errno));
 	}
 
 	/* Send SIGWINCH to the shell's process group. TIOCGPGRP on the pty
 	 * master fails on BB10/QNX, so fall back to the child process group
 	 * created by setsid() in pty_init(). Sending SIGWINCH to our own app
-	 * process group leaves mksh thinking it is still 80 columns wide, which
-	 * causes broken prompt/readline wrapping until something like tmux fixes
-	 * the size for its inner pty. */
+	 * process group leaves mksh thinking it is still 80 columns wide. */
 	int pgrp;
-	pid_t cpid = session_child_pid(app_active_session(g_app));
+	pid_t cpid = session_child_pid(s);
 	if(ioctl(master, TIOCGPGRP, &pgrp) != -1){
 		killpg(pgrp, SIGWINCH);
 	} else if(cpid > 0){
-		PRINT(stderr, "Could not get pgrp of tty: %s; using child pgid %d\n", strerror(errno), (int)cpid);
 		if(killpg(cpid, SIGWINCH) < 0){
 			kill(cpid, SIGWINCH);
 		}
-	} else {
-		PRINT(stderr, "Could not get pgrp of tty and no child exists: %s\n", strerror(errno));
+	}
+}
+
+void set_tty_window_size(){
+	unsigned count = app_session_count(g_app);
+	for (unsigned i = 0; i < count; ++i) {
+		apply_winsize_to(app_session_at(g_app, i));
 	}
 }
 
@@ -1169,14 +1230,17 @@ void setup_screen_size(int s_w, int s_h){
 	cols = s_w / text_width;
 	PRINT(stderr, "Rows: %d Cols: %d\n", rows, cols);
 
+	/* Fan out to every live session: pty TIOCSWINSZ + SIGWINCH AND each
+	 * bridge's ghostty_terminal_resize. Every session reflows so background
+	 * tabs don't desync from their child's idea of the geometry. */
 	set_tty_window_size();
-	/* NULL-safe before app_init has constructed the session/bridge — the
-	 * very first call lands inside startup_init() before app_init() runs,
-	 * and the initial pixel-dim resize is reissued from main() once g_app
-	 * exists. After that, every call here applies. */
-	ghostty_bridge_resize(session_bridge(app_active_session(g_app)),
-	                      (uint16_t)cols, (uint16_t)rows,
-	                      (uint32_t)advance, (uint32_t)text_height);
+	unsigned count = app_session_count(g_app);
+	for (unsigned i = 0; i < count; ++i) {
+		session_t *s = app_session_at(g_app, i);
+		ghostty_bridge_resize(session_bridge(s),
+		                      (uint16_t)cols, (uint16_t)rows,
+		                      (uint32_t)advance, (uint32_t)text_height);
+	}
 }
 
 void lock_input(){
@@ -1208,12 +1272,16 @@ void set_screen_cols(int ncols){
 			exit_application = 1;
 		} else {
 			setup_screen_size(fb_w, fb_h);
-			/* and force the number of columns */
+			/* and force the number of columns; fan the override out to
+			 * every session so background tabs reflow too. */
 			cols = ncols;
 			set_tty_window_size();
-			ghostty_bridge_resize(session_bridge(app_active_session(g_app)),
-			                      (uint16_t)cols, (uint16_t)rows,
-			                      (uint32_t)advance, (uint32_t)text_height);
+			unsigned count = app_session_count(g_app);
+			for (unsigned i = 0; i < count; ++i) {
+				ghostty_bridge_resize(session_bridge(app_session_at(g_app, i)),
+				                      (uint16_t)cols, (uint16_t)rows,
+				                      (uint32_t)advance, (uint32_t)text_height);
+			}
 			mark_screen_dirty(1);
 		}
 	}
@@ -1661,33 +1729,45 @@ void *run_render(void *data){
 	int n = 0;
 	char rawbuf[READ_BUFFER_SIZE];
 	ssize_t num_bytes = 0;
-	/* Snapshot the active session's master once per loop iteration. Step 3
-	 * replaces this with a fan-out across every live session's master fd. */
-	session_t *active;
-	int master;
 	while(!exit_application){
-		active = app_active_session(g_app);
-		master = session_master_fd(active);
 		FD_ZERO(&fds);
-		if (master >= 0) {
-			FD_SET(master, &fds);
-		}
+		int maxfd = event_pipe[0];
 		FD_SET(event_pipe[0], &fds);
-		n = select(1+max(master, event_pipe[0]), &fds, NULL, NULL, NULL);
+		/* Build the fd set fresh each iteration: TAB_NEW/CLOSE in
+		 * app_dispatch_action and session_mark_exited from the reaper
+		 * mutate the live-master set between iterations. */
+		unsigned count = app_session_count(g_app);
+		for (unsigned i = 0; i < count; ++i) {
+			int fd = session_master_fd(app_session_at(g_app, i));
+			if (fd >= 0) {
+				FD_SET(fd, &fds);
+				if (fd > maxfd) { maxfd = fd; }
+			}
+		}
+		n = select(maxfd + 1, &fds, NULL, NULL, NULL);
 		if(n < 0){
 			printf("Error calling select on inputs: %d\n", errno);
 		} else {
-			if(master >= 0 && FD_ISSET(master, &fds)){
-				lock_input();
-				ghostty_bridge_t *bridge = session_bridge(active);
-				while ((num_bytes = session_read_bytes(active, rawbuf, READ_BUFFER_SIZE)) > 0){
+			/* Drain every readable session's pty into its OWN bridge so
+			 * background tabs still grow their scrollback. */
+			int any_session_data = 0;
+			lock_input();
+			count = app_session_count(g_app);
+			for (unsigned i = 0; i < count; ++i) {
+				session_t *s = app_session_at(g_app, i);
+				int fd = session_master_fd(s);
+				if (fd < 0 || !FD_ISSET(fd, &fds)) { continue; }
+				ghostty_bridge_t *bridge = session_bridge(s);
+				while ((num_bytes = session_read_bytes(s, rawbuf, READ_BUFFER_SIZE)) > 0){
 					ghostty_bridge_write(bridge, (const uint8_t*)rawbuf, (size_t)num_bytes);
 				}
-				/* child produced output -> terminal rows changed; let Ghostty's
-				 * render-state dirty map decide whether this is full or partial. */
-				mark_screen_dirty(0);
-				unlock_input();
+				any_session_data = 1;
 			}
+			if (any_session_data) {
+				/* let Ghostty's render-state dirty map decide partial vs full */
+				mark_screen_dirty(0);
+			}
+			unlock_input();
 			if(FD_ISSET(event_pipe[0], &fds)){
 				int reap_needed = 0;
 				ssize_t got = read(event_pipe[0], (void*)ev_buf, sizeof(ev_buf));
