@@ -185,7 +185,6 @@ static int input_mutex_inited;
 static int event_pipe_open;
 static int font_library_inited;
 static int font_inited;
-static int ghostty_inited;
 
 
 int is_terminfo_keystrokes(const char* keystrokes){
@@ -1166,7 +1165,12 @@ void setup_screen_size(int s_w, int s_h){
 	PRINT(stderr, "Rows: %d Cols: %d\n", rows, cols);
 
 	set_tty_window_size();
-	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
+	/* NULL-safe before app_init has constructed the session/bridge — the
+	 * very first call lands inside startup_init() before app_init() runs,
+	 * and the initial pixel-dim resize is reissued from main() once g_app
+	 * exists. After that, every call here applies. */
+	ghostty_bridge_resize(session_bridge(app_active_session(g_app)),
+	                      (uint16_t)cols, (uint16_t)rows,
 	                      (uint32_t)advance, (uint32_t)text_height);
 }
 
@@ -1202,7 +1206,8 @@ void set_screen_cols(int ncols){
 			/* and force the number of columns */
 			cols = ncols;
 			set_tty_window_size();
-			ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
+			ghostty_bridge_resize(session_bridge(app_active_session(g_app)),
+			                      (uint16_t)cols, (uint16_t)rows,
 			                      (uint32_t)advance, (uint32_t)text_height);
 			mark_screen_dirty(1);
 		}
@@ -1249,13 +1254,9 @@ static int startup_init() {
 
 	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
 
-	if(ghostty_bridge_init((uint16_t)cols, (uint16_t)rows, 1000) != 0){
-		fprintf(stderr, "Unable to initialize libghostty-vt terminal\n");
-		return TERM_FAILURE;
-	}
-	ghostty_inited = 1;
-	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
-	                      (uint32_t)advance, (uint32_t)text_height);
+	/* The ghostty bridge is now owned by the session; it is constructed in
+	 * app_init() (which runs after startup_init() returns) and resized for
+	 * pixel dimensions in main() once the session exists. */
 
 	return TERM_SUCCESS;
 }
@@ -1271,9 +1272,10 @@ void app_shutdown(void){
 		input_mutex_inited = 0;
 	}
 
-	/* Tear down session state before ghostty_bridge_uninit()/io_uninit()
-	 * below, since the single session borrows both. NULL-safe on the
-	 * pre-renderer early-exit paths where g_app was never created. */
+	/* Tear down session state before io_uninit() below: the session owns
+	 * the ghostty bridge (freed here) and still borrows the io master fd
+	 * in this stage. NULL-safe on the pre-app_init early-exit paths where
+	 * g_app was never created. */
 	app_shutdown_state(g_app);
 	g_app = NULL;
 
@@ -1294,11 +1296,6 @@ void app_shutdown(void){
 
 	platform_destroy(g_platform);
 	g_platform = NULL;
-
-	if (ghostty_inited) {
-		ghostty_bridge_uninit();
-		ghostty_inited = 0;
-	}
 
 	if (event_pipe_open) {
 		close(event_pipe[0]);
@@ -1374,10 +1371,17 @@ static int render_ghostty(int force_full_repaint) {
 	static uint16_t prev_cursor_x = 0;
 	static uint16_t prev_cursor_y = 0;
 	struct ghostty_render_context ctx;
+	ghostty_bridge_t *bridge;
 	int cursor_visible;
 	int cursor_changed;
 
-	if (ghostty_bridge_begin_frame(&ctx.frame) != 0) {
+	bridge = session_bridge(app_active_session(g_app));
+	if (bridge == NULL) {
+		/* Pre-app_init or post-shutdown: nothing to paint yet. */
+		return 0;
+	}
+
+	if (ghostty_bridge_begin_frame(bridge, &ctx.frame) != 0) {
 		fprintf(stderr, "ghostty render: begin_frame failed\n");
 		return 0;
 	}
@@ -1407,7 +1411,7 @@ static int render_ghostty(int force_full_repaint) {
 		renderer_clear(renderer, bg);
 	}
 	if (force_full_repaint || ctx.frame.dirty != 0) {
-		if (ghostty_bridge_visit_cells(!force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
+		if (ghostty_bridge_visit_cells(bridge, !force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
 			fprintf(stderr, "ghostty render: visit_cells failed\n");
 			renderer_end_frame(renderer);
 			return 0;
@@ -1415,14 +1419,14 @@ static int render_ghostty(int force_full_repaint) {
 	}
 	if (!force_full_repaint && cursor_changed) {
 		if (prev_cursor_visible && prev_cursor_y < rows &&
-		    ghostty_bridge_visit_row(prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
+		    ghostty_bridge_visit_row(bridge, prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit old cursor row failed\n");
 			renderer_end_frame(renderer);
 			return 0;
 		}
 		if (cursor_visible && ctx.frame.cursor_y < rows &&
 		    (!prev_cursor_visible || prev_cursor_y != ctx.frame.cursor_y) &&
-		    ghostty_bridge_visit_row(ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
+		    ghostty_bridge_visit_row(bridge, ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit new cursor row failed\n");
 			renderer_end_frame(renderer);
 			return 0;
@@ -1454,7 +1458,7 @@ static int render_ghostty(int force_full_repaint) {
 		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
 	}
 
-	ghostty_bridge_finish_frame();
+	ghostty_bridge_finish_frame(bridge);
 	renderer_end_frame(renderer);
 
 	if(flash){
@@ -1646,9 +1650,11 @@ void *run_render(void *data){
 		} else {
 			if(FD_ISSET(master, &fds)){
 				lock_input();
-				// Feed raw VT bytes directly to libghostty-vt.
+				// Feed raw VT bytes directly to the active session's bridge.
+				// Step 3 fans this out across every live session's master fd.
+				ghostty_bridge_t *bridge = session_bridge(app_active_session(g_app));
 				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
-					ghostty_bridge_write((const uint8_t*)rawbuf, (size_t)num_bytes);
+					ghostty_bridge_write(bridge, (const uint8_t*)rawbuf, (size_t)num_bytes);
 				}
 				/* child produced output -> terminal rows changed; let Ghostty's
 				 * render-state dirty map decide whether this is full or partial. */
@@ -1704,11 +1710,12 @@ int app_handle_event(app_t *app, const event_t *event) {
 	case TERM_EVENT_KEY:
 		if (event->as.key.pressed) {
 			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
-			ghostty_bridge_scroll_to_bottom();
+			ghostty_bridge_scroll_to_bottom(session_bridge(app_active_session(app)));
 		}
 		app_handle_key(app, &event->as.key);
 		return 1;
-	case TERM_EVENT_TOUCH_DOWN:
+	case TERM_EVENT_TOUCH_DOWN: {
+		ghostty_bridge_t *bridge = session_bridge(app_active_session(app));
 		drag_reset();
 		g_drag.start_y = event->as.touch.y;
 		g_drag.last_y  = event->as.touch.y;
@@ -1716,9 +1723,9 @@ int app_handle_event(app_t *app, const event_t *event) {
 		 * that dismisses the menu mid-stroke can't start scrolling. */
 		if (current_symmenu != NULL) {
 			g_drag.mode = DRAG_LOCKED;
-		} else if (ghostty_bridge_mouse_wheel_ready()) {
+		} else if (ghostty_bridge_mouse_wheel_ready(bridge)) {
 			g_drag.mode = DRAG_WHEEL;
-		} else if (ghostty_bridge_is_alt_screen()) {
+		} else if (ghostty_bridge_is_alt_screen(bridge)) {
 			g_drag.mode = DRAG_LOCKED;
 		} else {
 			g_drag.mode = DRAG_SCROLL;
@@ -1726,6 +1733,7 @@ int app_handle_event(app_t *app, const event_t *event) {
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
 		return 1;
+	}
 	case TERM_EVENT_TOUCH_MOVE: {
 		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
 			return 1;
@@ -1754,7 +1762,7 @@ int app_handle_event(app_t *app, const event_t *event) {
 			emit_wheels(col, rrow, rows > 0, abs(rows));
 		} else {
 			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
-			ghostty_bridge_scroll_view(-rows);
+			ghostty_bridge_scroll_view(session_bridge(app_active_session(app)), -rows);
 			mark_screen_dirty(1);
 		}
 		return 1;
@@ -1872,14 +1880,20 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	/* App state owns the (single) session. Created after pty_init() and
-	 * ghostty_bridge_init() (inside startup_init) so the session can adopt
-	 * the io master fd + ghostty singleton. */
-	if (app_init(&g_app, prefs) != 0) {
+	/* App state owns the (single) session. Created after pty_init() (the
+	 * session still borrows the io master fd this stage) and after
+	 * startup_init() has computed the cell grid (cols/rows) so the
+	 * session's ghostty bridge can be constructed at the right size. */
+	if (app_init(&g_app, prefs, (uint16_t)cols, (uint16_t)rows, 1000) != 0) {
 		PRINT(stderr, "Unable to initialize app state\n");
 		app_shutdown();
 		return TERM_FAILURE;
 	}
+	/* Hand the just-constructed bridge its pixel cell dimensions. The
+	 * constructor only takes cell counts; pixel sizes flow through resize. */
+	ghostty_bridge_resize(session_bridge(app_active_session(g_app)),
+	                      (uint16_t)cols, (uint16_t)rows,
+	                      (uint32_t)advance, (uint32_t)text_height);
 
 	maybe_show_vkb();
 

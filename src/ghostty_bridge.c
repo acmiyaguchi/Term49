@@ -9,15 +9,13 @@
 
 #include "io.h"
 
-struct ghostty_bridge_state {
+struct ghostty_bridge {
   GhosttyTerminal terminal;
   GhosttyRenderState render_state;
   GhosttyRenderStateColors colors;
+  void *userdata;
   int prev_write_was_cr;
-  int initialized;
 };
-
-static struct ghostty_bridge_state gb;
 
 static void *gb_alloc(void *ctx, size_t len, uint8_t alignment, uintptr_t ra) {
   (void)ctx;
@@ -77,8 +75,13 @@ static ghostty_bridge_rgb_t gb_rgb(GhosttyColorRgb color) {
   return rgb;
 }
 
-static void gb_write_pty(GhosttyTerminal terminal, const uint8_t *data,
-                         size_t len, void *userdata) {
+/* Signature must match GhosttyTerminalWritePtyFn exactly: userdata comes
+ * BEFORE data/len. The previous version had userdata last; that happened to
+ * be invisible because userdata was always NULL and Ghostty's only callers
+ * here are VT query responses (DA1, OSC color, etc.) that no smoke test
+ * exercised. Step 1.5 routes this through session_write_bytes. */
+static void gb_write_pty(GhosttyTerminal terminal, void *userdata,
+                         const uint8_t *data, size_t len) {
   (void)terminal;
   (void)userdata;
   if (data != NULL && len > 0) {
@@ -86,8 +89,14 @@ static void gb_write_pty(GhosttyTerminal terminal, const uint8_t *data,
   }
 }
 
-int ghostty_bridge_init(uint16_t cols, uint16_t rows, size_t max_scrollback) {
-  if (gb.initialized) { return 0; }
+int ghostty_bridge_create(ghostty_bridge_t **out, uint16_t cols, uint16_t rows,
+                          size_t max_scrollback, void *userdata) {
+  ghostty_bridge_t *b;
+
+  if (out == NULL) { return -1; }
+
+  b = calloc(1, sizeof(*b));
+  if (b == NULL) { return -1; }
 
   GhosttyTerminalOptions opts = {
     .cols = cols,
@@ -95,99 +104,100 @@ int ghostty_bridge_init(uint16_t cols, uint16_t rows, size_t max_scrollback) {
     .max_scrollback = max_scrollback,
   };
 
-  if (ghostty_terminal_new(&GB_ALLOC, &gb.terminal, opts) != GHOSTTY_SUCCESS) {
+  if (ghostty_terminal_new(&GB_ALLOC, &b->terminal, opts) != GHOSTTY_SUCCESS) {
+    free(b);
     return -1;
   }
-  if (ghostty_render_state_new(&GB_ALLOC, &gb.render_state) != GHOSTTY_SUCCESS) {
-    ghostty_terminal_free(gb.terminal);
-    gb.terminal = NULL;
+  if (ghostty_render_state_new(&GB_ALLOC, &b->render_state) != GHOSTTY_SUCCESS) {
+    ghostty_terminal_free(b->terminal);
+    free(b);
     return -1;
   }
-  ghostty_terminal_set(gb.terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, gb_write_pty);
-  gb.initialized = 1;
+  b->userdata = userdata;
+  ghostty_terminal_set(b->terminal, GHOSTTY_TERMINAL_OPT_USERDATA, userdata);
+  ghostty_terminal_set(b->terminal, GHOSTTY_TERMINAL_OPT_WRITE_PTY, gb_write_pty);
+
+  *out = b;
   return 0;
 }
 
-void ghostty_bridge_uninit(void) {
-  if (!gb.initialized) { return; }
-  ghostty_render_state_free(gb.render_state);
-  ghostty_terminal_free(gb.terminal);
-  gb.render_state = NULL;
-  gb.terminal = NULL;
-  gb.initialized = 0;
+void ghostty_bridge_destroy(ghostty_bridge_t *b) {
+  if (b == NULL) { return; }
+  ghostty_render_state_free(b->render_state);
+  ghostty_terminal_free(b->terminal);
+  free(b);
 }
 
-void ghostty_bridge_write(const uint8_t *data, size_t len) {
+void ghostty_bridge_write(ghostty_bridge_t *b, const uint8_t *data, size_t len) {
   size_t run_start = 0;
   size_t i;
 
-  if (!gb.initialized || data == NULL || len == 0) { return; }
+  if (b == NULL || data == NULL || len == 0) { return; }
 
   /* BB10's pty output can contain bare LF. A terminal LF moves down without
    * carriage-returning, creating staircase newlines. Normalize bare LF to
    * CRLF before handing bytes to Ghostty, while tracking CR across chunks so
    * real CRLF streams are not doubled. */
   for (i = 0; i < len; ++i) {
-    if (data[i] == '\n' && !gb.prev_write_was_cr) {
+    if (data[i] == '\n' && !b->prev_write_was_cr) {
       static const uint8_t crlf[2] = { '\r', '\n' };
       if (i > run_start) {
-        ghostty_terminal_vt_write(gb.terminal, data + run_start, i - run_start);
+        ghostty_terminal_vt_write(b->terminal, data + run_start, i - run_start);
       }
-      ghostty_terminal_vt_write(gb.terminal, crlf, sizeof(crlf));
+      ghostty_terminal_vt_write(b->terminal, crlf, sizeof(crlf));
       run_start = i + 1;
     }
-    gb.prev_write_was_cr = data[i] == '\r';
+    b->prev_write_was_cr = data[i] == '\r';
   }
 
   if (run_start < len) {
-    ghostty_terminal_vt_write(gb.terminal, data + run_start, len - run_start);
+    ghostty_terminal_vt_write(b->terminal, data + run_start, len - run_start);
   }
 }
 
-int ghostty_bridge_resize(uint16_t cols, uint16_t rows,
+int ghostty_bridge_resize(ghostty_bridge_t *b, uint16_t cols, uint16_t rows,
                           uint32_t cell_width_px, uint32_t cell_height_px) {
-  if (!gb.initialized) { return -1; }
-  return ghostty_terminal_resize(gb.terminal, cols, rows,
+  if (b == NULL) { return -1; }
+  return ghostty_terminal_resize(b->terminal, cols, rows,
                                  cell_width_px, cell_height_px) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
-static int gb_update_render_state(void) {
-  if (!gb.initialized) { return -1; }
-  return ghostty_render_state_update(gb.render_state, gb.terminal) == GHOSTTY_SUCCESS ? 0 : -1;
+static int gb_update_render_state(ghostty_bridge_t *b) {
+  return ghostty_render_state_update(b->render_state, b->terminal) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
-int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame) {
+int ghostty_bridge_begin_frame(ghostty_bridge_t *b, ghostty_bridge_frame_t *frame) {
   bool cursor_has_value = false;
 
-  if (!gb.initialized || frame == NULL) { return -1; }
-  if (gb_update_render_state() != 0) { return -1; }
+  if (b == NULL || frame == NULL) { return -1; }
+  if (gb_update_render_state(b) != 0) { return -1; }
 
-  gb.colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
-  if (ghostty_render_state_colors_get(gb.render_state, &gb.colors) != GHOSTTY_SUCCESS) {
+  b->colors = GHOSTTY_INIT_SIZED(GhosttyRenderStateColors);
+  if (ghostty_render_state_colors_get(b->render_state, &b->colors) != GHOSTTY_SUCCESS) {
     return -1;
   }
 
   frame->cols = 0;
   frame->rows = 0;
-  frame->default_fg = gb_rgb(gb.colors.foreground);
-  frame->default_bg = gb_rgb(gb.colors.background);
+  frame->default_fg = gb_rgb(b->colors.foreground);
+  frame->default_bg = gb_rgb(b->colors.background);
   frame->cursor_visible = 0;
   frame->cursor_x = 0;
   frame->cursor_y = 0;
   frame->cursor_wide_tail = 0;
   frame->dirty = GHOSTTY_RENDER_STATE_DIRTY_FULL;
 
-  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &frame->dirty);
-  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_COLS, &frame->cols);
-  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_ROWS, &frame->rows);
-  ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursor_has_value);
+  ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_DIRTY, &frame->dirty);
+  ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_COLS, &frame->cols);
+  ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_ROWS, &frame->rows);
+  ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_HAS_VALUE, &cursor_has_value);
   if (cursor_has_value) {
     bool cursor_visible = false;
     bool cursor_wide_tail = false;
-    ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursor_visible);
-    ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &frame->cursor_x);
-    ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &frame->cursor_y);
-    ghostty_render_state_get(gb.render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL, &cursor_wide_tail);
+    ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VISIBLE, &cursor_visible);
+    ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_X, &frame->cursor_x);
+    ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_Y, &frame->cursor_y);
+    ghostty_render_state_get(b->render_state, GHOSTTY_RENDER_STATE_DATA_CURSOR_VIEWPORT_WIDE_TAIL, &cursor_wide_tail);
     frame->cursor_visible = cursor_visible ? 1 : 0;
     frame->cursor_wide_tail = cursor_wide_tail ? 1 : 0;
   }
@@ -195,11 +205,12 @@ int ghostty_bridge_begin_frame(ghostty_bridge_frame_t *frame) {
   return 0;
 }
 
-static int gb_resolve_style_color(GhosttyStyleColor color, ghostty_bridge_rgb_t *out) {
+static int gb_resolve_style_color(ghostty_bridge_t *b, GhosttyStyleColor color,
+                                  ghostty_bridge_rgb_t *out) {
   if (out == NULL) { return 0; }
   switch (color.tag) {
   case GHOSTTY_STYLE_COLOR_PALETTE:
-    *out = gb_rgb(gb.colors.palette[color.value.palette]);
+    *out = gb_rgb(b->colors.palette[color.value.palette]);
     return 1;
   case GHOSTTY_STYLE_COLOR_RGB:
     *out = gb_rgb(color.value.rgb);
@@ -225,7 +236,8 @@ static void gb_init_cell(ghostty_bridge_cell_t *cell) {
   cell->wide_tail = 0;
 }
 
-static void gb_read_render_cell(GhosttyRenderStateRowCells cells,
+static void gb_read_render_cell(ghostty_bridge_t *b,
+                                GhosttyRenderStateRowCells cells,
                                 ghostty_bridge_cell_t *cell) {
   GhosttyStyle style = GHOSTTY_INIT_SIZED(GhosttyStyle);
   GhosttyCell raw = 0;
@@ -279,7 +291,7 @@ static void gb_read_render_cell(GhosttyRenderStateRowCells cells,
         &color) == GHOSTTY_SUCCESS) {
     cell->has_fg = 1;
     cell->fg = gb_rgb(color);
-  } else if (gb_resolve_style_color(style.fg_color, &cell->fg)) {
+  } else if (gb_resolve_style_color(b, style.fg_color, &cell->fg)) {
     cell->has_fg = 1;
   }
 
@@ -288,21 +300,22 @@ static void gb_read_render_cell(GhosttyRenderStateRowCells cells,
         &color) == GHOSTTY_SUCCESS) {
     cell->has_bg = 1;
     cell->bg = gb_rgb(color);
-  } else if (gb_resolve_style_color(style.bg_color, &cell->bg)) {
+  } else if (gb_resolve_style_color(b, style.bg_color, &cell->bg)) {
     cell->has_bg = 1;
   }
 }
 
-int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t visitor, void *userdata) {
+int ghostty_bridge_visit_cells(ghostty_bridge_t *b, int dirty_only,
+                               ghostty_bridge_cell_visitor_t visitor, void *userdata) {
   GhosttyRenderStateRowIterator row_iter = NULL;
   GhosttyRenderStateRowCells cells = NULL;
   uint16_t y = 0;
   int rc = -1;
 
-  if (!gb.initialized || visitor == NULL) { return -1; }
+  if (b == NULL || visitor == NULL) { return -1; }
   if (ghostty_render_state_row_iterator_new(&GB_ALLOC, &row_iter) != GHOSTTY_SUCCESS) { return -1; }
   if (ghostty_render_state_row_cells_new(&GB_ALLOC, &cells) != GHOSTTY_SUCCESS) { goto done; }
-  if (ghostty_render_state_get(gb.render_state,
+  if (ghostty_render_state_get(b->render_state,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
         &row_iter) != GHOSTTY_SUCCESS) { goto done; }
 
@@ -327,7 +340,7 @@ int ghostty_bridge_visit_cells(int dirty_only, ghostty_bridge_cell_visitor_t vis
 
     while (ghostty_render_state_row_cells_next(cells)) {
       ghostty_bridge_cell_t cell;
-      gb_read_render_cell(cells, &cell);
+      gb_read_render_cell(b, cells, &cell);
       visitor(x, y, &cell, userdata);
       ++x;
     }
@@ -346,16 +359,17 @@ done:
   return rc;
 }
 
-int ghostty_bridge_visit_row(uint16_t target_y, ghostty_bridge_cell_visitor_t visitor, void *userdata) {
+int ghostty_bridge_visit_row(ghostty_bridge_t *b, uint16_t target_y,
+                             ghostty_bridge_cell_visitor_t visitor, void *userdata) {
   GhosttyRenderStateRowIterator row_iter = NULL;
   GhosttyRenderStateRowCells cells = NULL;
   uint16_t y = 0;
   int rc = -1;
 
-  if (!gb.initialized || visitor == NULL) { return -1; }
+  if (b == NULL || visitor == NULL) { return -1; }
   if (ghostty_render_state_row_iterator_new(&GB_ALLOC, &row_iter) != GHOSTTY_SUCCESS) { return -1; }
   if (ghostty_render_state_row_cells_new(&GB_ALLOC, &cells) != GHOSTTY_SUCCESS) { goto done; }
-  if (ghostty_render_state_get(gb.render_state,
+  if (ghostty_render_state_get(b->render_state,
         GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR,
         &row_iter) != GHOSTTY_SUCCESS) { goto done; }
 
@@ -368,7 +382,7 @@ int ghostty_bridge_visit_row(uint16_t target_y, ghostty_bridge_cell_visitor_t vi
 
       while (ghostty_render_state_row_cells_next(cells)) {
         ghostty_bridge_cell_t cell;
-        gb_read_render_cell(cells, &cell);
+        gb_read_render_cell(b, cells, &cell);
         visitor(x, y, &cell, userdata);
         ++x;
       }
@@ -387,38 +401,40 @@ done:
   return rc;
 }
 
-int ghostty_bridge_finish_frame(void) {
+int ghostty_bridge_finish_frame(ghostty_bridge_t *b) {
   GhosttyRenderStateDirty clean = GHOSTTY_RENDER_STATE_DIRTY_FALSE;
-  if (!gb.initialized) { return -1; }
-  return ghostty_render_state_set(gb.render_state,
+  if (b == NULL) { return -1; }
+  return ghostty_render_state_set(b->render_state,
     GHOSTTY_RENDER_STATE_OPTION_DIRTY,
     &clean) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
-static void gb_scroll_viewport(GhosttyTerminalScrollViewportTag tag, int delta_rows) {
-  if (!gb.initialized) { return; }
+static void gb_scroll_viewport(ghostty_bridge_t *b,
+                               GhosttyTerminalScrollViewportTag tag,
+                               int delta_rows) {
+  if (b == NULL) { return; }
   if (tag == GHOSTTY_SCROLL_VIEWPORT_DELTA && delta_rows == 0) { return; }
   GhosttyTerminalScrollViewport behavior = {
     .tag = tag,
     .value = { .delta = (intptr_t)delta_rows },
   };
-  ghostty_terminal_scroll_viewport(gb.terminal, behavior);
+  ghostty_terminal_scroll_viewport(b->terminal, behavior);
 }
 
-int ghostty_bridge_scroll_view(int delta_rows) {
-  gb_scroll_viewport(GHOSTTY_SCROLL_VIEWPORT_DELTA, delta_rows);
+int ghostty_bridge_scroll_view(ghostty_bridge_t *b, int delta_rows) {
+  gb_scroll_viewport(b, GHOSTTY_SCROLL_VIEWPORT_DELTA, delta_rows);
   return 0;
 }
 
-int ghostty_bridge_scroll_to_bottom(void) {
-  gb_scroll_viewport(GHOSTTY_SCROLL_VIEWPORT_BOTTOM, 0);
+int ghostty_bridge_scroll_to_bottom(ghostty_bridge_t *b) {
+  gb_scroll_viewport(b, GHOSTTY_SCROLL_VIEWPORT_BOTTOM, 0);
   return 0;
 }
 
-int ghostty_bridge_is_alt_screen(void) {
+int ghostty_bridge_is_alt_screen(ghostty_bridge_t *b) {
   GhosttyTerminalScreen screen = GHOSTTY_TERMINAL_SCREEN_PRIMARY;
-  if (!gb.initialized) { return 0; }
-  if (ghostty_terminal_get(gb.terminal,
+  if (b == NULL) { return 0; }
+  if (ghostty_terminal_get(b->terminal,
         GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN,
         &screen) != GHOSTTY_SUCCESS) {
     return 0;
@@ -426,19 +442,19 @@ int ghostty_bridge_is_alt_screen(void) {
   return screen == GHOSTTY_TERMINAL_SCREEN_ALTERNATE ? 1 : 0;
 }
 
-static int gb_mode_on(GhosttyMode mode) {
+static int gb_mode_on(ghostty_bridge_t *b, GhosttyMode mode) {
   bool v = false;
-  if (ghostty_terminal_mode_get(gb.terminal, mode, &v) != GHOSTTY_SUCCESS) {
+  if (ghostty_terminal_mode_get(b->terminal, mode, &v) != GHOSTTY_SUCCESS) {
     return 0;
   }
   return v ? 1 : 0;
 }
 
-int ghostty_bridge_mouse_wheel_ready(void) {
-  if (!gb.initialized) { return 0; }
-  if (!ghostty_bridge_is_alt_screen()) { return 0; }
-  if (!gb_mode_on(GHOSTTY_MODE_SGR_MOUSE)) { return 0; }
-  return gb_mode_on(GHOSTTY_MODE_NORMAL_MOUSE) ||
-         gb_mode_on(GHOSTTY_MODE_BUTTON_MOUSE) ||
-         gb_mode_on(GHOSTTY_MODE_ANY_MOUSE);
+int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b) {
+  if (b == NULL) { return 0; }
+  if (!ghostty_bridge_is_alt_screen(b)) { return 0; }
+  if (!gb_mode_on(b, GHOSTTY_MODE_SGR_MOUSE)) { return 0; }
+  return gb_mode_on(b, GHOSTTY_MODE_NORMAL_MOUSE) ||
+         gb_mode_on(b, GHOSTTY_MODE_BUTTON_MOUSE) ||
+         gb_mode_on(b, GHOSTTY_MODE_ANY_MOUSE);
 }

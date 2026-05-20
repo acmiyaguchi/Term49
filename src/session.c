@@ -1,21 +1,24 @@
 /*
- * Single-session implementation. Every entry point is a 1:1 forwarder over
- * the existing io_* singletons so behavior is byte-identical to the pre-seam
- * code. Multi-session (#4) replaces these bodies with per-session pty/bridge
- * ownership without changing the session.h contract or its callers.
+ * Single-session implementation. The session now owns its own
+ * ghostty_bridge_t (constructed at create time). The pty master fd and
+ * child_pid still live in main.c / io.c globals at this stage; step 1.5 and
+ * step 2 of #4 move them into the session and finish closing this seam.
  */
 
 #include <stdlib.h>
 
 #include "session.h"
+#include "ghostty_bridge.h"
 #include "io.h"
 #include "terminal.h"
 
 struct session {
 	session_id_t id;
+	ghostty_bridge_t *bridge;
 };
 
-int session_create(session_t **out, session_id_t id) {
+int session_create(session_t **out, session_id_t id,
+                   uint16_t cols, uint16_t rows, size_t max_scrollback) {
 	session_t *s;
 	if (out == NULL) {
 		return -1;
@@ -25,19 +28,28 @@ int session_create(session_t **out, session_id_t id) {
 		return -1;
 	}
 	s->id = id;
+	if (ghostty_bridge_create(&s->bridge, cols, rows, max_scrollback, s) != 0) {
+		free(s);
+		return -1;
+	}
 	*out = s;
 	return 0;
 }
 
 void session_destroy(session_t *s) {
-	/* This stage owns nothing: the io master fd and ghostty bridge are torn
-	 * down by app_shutdown() after this returns. #4 moves per-session
-	 * pty/bridge teardown here. */
+	if (s == NULL) {
+		return;
+	}
+	ghostty_bridge_destroy(s->bridge);
 	free(s);
 }
 
 session_id_t session_id(const session_t *s) {
 	return s ? s->id : 0;
+}
+
+ghostty_bridge_t *session_bridge(session_t *s) {
+	return s ? s->bridge : NULL;
 }
 
 int session_master_fd(const session_t *s) {

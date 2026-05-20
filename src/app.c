@@ -21,7 +21,8 @@ struct app {
 	session_id_t active;    /* id of the active session */
 };
 
-int app_init(app_t **out, const pref_t *prefs) {
+int app_init(app_t **out, const pref_t *prefs,
+             uint16_t cols, uint16_t rows, size_t max_scrollback) {
 	app_t *app;
 	session_t *s = NULL;
 
@@ -36,7 +37,7 @@ int app_init(app_t **out, const pref_t *prefs) {
 
 	app->prefs = prefs;
 
-	if (session_create(&s, 1) != 0) {
+	if (session_create(&s, 1, cols, rows, max_scrollback) != 0) {
 		free(app);
 		return -1;
 	}
@@ -53,8 +54,10 @@ void app_shutdown_state(app_t *app) {
 	if (app == NULL) {
 		return;
 	}
-	/* Must run before ghostty_bridge_uninit()/io_uninit() in app_shutdown(),
-	 * since the single session borrows both. */
+	/* Must run before io_uninit() in app_shutdown(): the session owns its
+	 * ghostty bridge (freed here) but still borrows the io master fd in
+	 * this stage. Step 1.5 moves the fd into the session and tightens
+	 * this ordering further. */
 	session_destroy(app->sessions[0]);
 	free(app);
 }

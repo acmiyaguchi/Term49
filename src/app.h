@@ -8,6 +8,9 @@
 #ifndef APP_H_
 #define APP_H_
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "action.h"
 #include "event.h"
 #include "prefs.h"
@@ -15,7 +18,8 @@
 
 typedef struct app app_t;
 
-int app_init(app_t **out, const pref_t *prefs);
+int app_init(app_t **out, const pref_t *prefs,
+             uint16_t cols, uint16_t rows, size_t max_scrollback);
 int app_handle_event(app_t *app, const event_t *event);
 int app_dispatch_action(app_t *app, const action_t *action);
 void app_shutdown_state(app_t *app);
