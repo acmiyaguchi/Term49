@@ -31,6 +31,11 @@ and off. The default metamode keys are:
   c: control
   a: alt
   v: paste
+  s: rescreen
+  i: font size increase
+  o: font size decrease
+  p: font size reset
+  r: reload ~/.term49.lua
 
 After pressing a key in metamode you will be returned to
 normal input, excepting the arrow keys, which leave you in
@@ -64,209 +69,222 @@ The metamode keys are all configurable, as described below.
 
 2. PREFERENCES
 
-Preferences are read from the .term49rc file in $HOME. If
-this file does not exist at startup it will be created at
-launch time with the default settings (along with this
-README). Term49 uses libconfig for preferences, so the
-syntax of the .term49rc file is as per libconfig. If there
-is an error reading the preference file it will be ignored
-and Term49 will launch with the defaults.
+Preferences are read from the .term49.lua file in $HOME.
+If this file does not exist at startup it will be created
+at launch time with the default settings (along with this
+README). The file is a Lua 5.4 script: Term49 executes it
+and then reads the resulting global variables (font_size,
+metamode_keys, ...) to populate preferences. Any global
+that is missing or has the wrong type falls back to the
+compiled default, so a partial config is fine. If the
+script fails to parse or run, Term49 keeps the previous
+config (or compiled defaults at startup) and logs the
+error.
+
+SECURITY: .term49.lua runs as a full Lua program with the
+standard library (including os and io). Treat it like a
+shell rc -- only run a .term49.lua you wrote or trust.
+
+Term49 never rewrites .term49.lua, so your comments and
+formatting survive. To re-apply a saved file at runtime,
+press metamode 'r' (the default reload_config binding).
+Font-size changes from metamode i/o/p are session-only
+and are not written back to the file.
 
 Each of the preference options and their default is shown
-below:
+below.
 
-font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf";
-/* The path to the Unicode TTF font file to use in the
- * shell. This can be an absolute or relative path. */
+font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
+-- The path to the Unicode TTF font file to use in the
+-- shell. This can be an absolute or relative path.
 
-font_size = 16;
-/* The font size for the shell. Term49 will try to guess a
- * reasonable size for your screen, but otherwise
- * defaults to this value. */
+font_size = 16
+-- The font size for the shell. Term49 will try to guess
+-- a reasonable size for your screen, but otherwise
+-- defaults to this value. Metamode i / o / p change this
+-- at runtime (increase / decrease / reset).
 
-text_color = [255, 255, 255];
-/* The color for text, in RGB format. If you would like
- * classic green text on black background, you can change
- * this to [0, 255, 0]. */
+text_color = { 255, 255, 255 }
+-- The color for text as { r, g, b }. For classic green
+-- text on black, use { 0, 255, 0 }.
 
-background_color = [0, 0, 0];
-/* The background color, in RGB format. */
+background_color = { 0, 0, 0 }
+-- The background color as { r, g, b }.
 
-screen_idle_awake = false;
-/* If set to true, Term49 will force the screen to stay
- * awake when idle instead of dimming and eventually
- * turning off as usual. */
+screen_idle_awake = false
+-- If true, Term49 will force the screen to stay awake
+-- when idle instead of dimming and eventually turning
+-- off as usual.
 
-auto_show_vkb = true;
-/* When set to true, will automatically display the virtual
- * keyboard at launch time unless you have a Bluetooth
- * keyboard. Set to false to disable. On a Passport, this
- * is always true so the symbol keys can be accessed. */
+auto_show_vkb = true
+-- If true, automatically display the virtual keyboard at
+-- launch time unless you have a Bluetooth keyboard. Set
+-- to false to disable. On a Passport this is always true
+-- so the symbol keys can be accessed.
 
-metamode_doubletap_key = 61666;
-/* Which key to double tap in order to toggle metamode on
- * and off. This is an integer corresponding to the key
- * symbol and defaults to KEYCODE_RIGHT_SHIFT.  */
+metamode_doubletap_key = 61666
+-- Which key to double tap in order to toggle metamode on
+-- and off. This is an integer corresponding to the key
+-- symbol and defaults to KEYCODE_RIGHT_SHIFT.
 
-metamode_doubletap_delay = 500000000;
-/* When double tapping to invoke metamode, the time in
- * which to double tap, in nanoseconds. Defaults to 0.5
- * seconds. */
+metamode_doubletap_delay = 500000000
+-- When double tapping to invoke metamode, the time in
+-- which to double tap, in nanoseconds. Defaults to 0.5
+-- seconds.
 
-keyhold_actions = true;
-/* Enables special actions when holding down a key. By
- * default, Term49 will upcase letters if you hold them, and
- * will toggle metamode on if you hold space. */
+keyhold_actions = true
+-- Enables special actions when holding down a key. By
+-- default Term49 will upcase letters if you hold them,
+-- and will toggle metamode on if you hold space.
 
-keyhold_actions_exempt = [KEYCODE_BACKSPACE,KEYCODE_RETURN];
-/* These keys do not trigger special handling when held
- * down, so they will repeat as usual. */
+keyhold_actions_exempt = { 8, 13 }
+-- These keycodes do not trigger special handling when
+-- held down, so they will repeat as usual. Defaults to
+-- { KEYCODE_BACKSPACE, KEYCODE_RETURN }.
 
-metamode_hold_key = 32;
-/* If keyhold_actions is true, then holding this key will
- * toggle metamode on. Defaults to KEYCODE_SPACE. */
+metamode_hold_key = 32
+-- If keyhold_actions is true, holding this key toggles
+-- metamode on. Defaults to KEYCODE_SPACE.
 
-tty_encoding = "UTF-8";
-/* Term49 uses 16 bit Unicode internally, but when doing IO
- * with the tty / shell, will convert between Unicode and
- * the tty_encoding. Defaults to UTF-8, but can be any
- * encoding that the International Components for Unicode
- * (ICU) understands. */
+keyhold_accents = true
+-- If true, holding an accentable letter pops an accent
+-- chooser (for example holding 'e' offers e/é/è/ê/ë).
 
-metamode_hitbox : { x = 0; y = 0; w = 100; h = 100; };
-/* This is the area of the screen that you touch to toggle
- * metamode on and off, specified from the top left corner
- * of the screen. Defaults to a 100x100 pixel box in the
- * top left corner, but you can move it somewhere else if
- * you like by specifying the top left corner of the box (x
- * from the left, y from the top) and the witdh (w) and
- * height (h) in pixels. */
+tty_encoding = "UTF-8"
+-- Term49 uses 16 bit Unicode internally, but when doing
+-- IO with the tty / shell, will convert between Unicode
+-- and the tty_encoding. Defaults to UTF-8, but can be
+-- any encoding that the International Components for
+-- Unicode (ICU) understands. Changes to tty_encoding
+-- need a restart to take effect (reload_config does not
+-- re-open the converter).
 
-metamode_keys : (
-    ("e", "\x1B"),
-    ("t", "\t")
-  );
-/* When in metamode, pressing the given key will send the
- * specified string into the shell and then turn off
- * metamode. Strings are read according to the rules for
- * string parsing in libconfig. You can specify hex
- * characters using \x and exactly two characters. Term49
- * uses this mechanism to send control sequences into the
- * shell, but you could specify any character string you
- * want, including UTF-8 sequences.
- *
- * Term49 supports terminfo aliases for some common escape
- * sequences. Specifically, if a metamode key is set to
- * one of kcuu1, kcud1, kcuf1, kcub1, khome, kend, or
- * kf1 through kf12, then the correct escape sequence will
- * be sent for cursor up, down, right, left, home, end or
- * the corresponding function key. */
+metamode_hitbox = { 0, 0, 100, 100 }
+-- The area of the screen that you touch to toggle
+-- metamode, as { x, y, w, h } in pixels measured from
+-- the top left corner. Defaults to a 100x100 box in the
+-- top left.
 
-metamode_sticky_keys : (
-    ("k", "kcuu1"),
-    ("j", "kcud1"),
-    ("l", "kcuf1"),
-    ("h", "kcub1")
-  );
-/* Like metamode_keys above, but leaves metamode on
- * afterwards, so you can press another metamode key
- * immediately. */
+metamode_keys = {
+  { "e", "\x1B" },
+  { "t", "\t" },
+}
+-- When in metamode, pressing the given key will send the
+-- specified string into the shell and then turn off
+-- metamode. Lua string escapes apply: "\x1B" is ESC and
+-- "\t" is TAB. You can use any character string here,
+-- including UTF-8 sequences.
+--
+-- Term49 supports terminfo aliases for some common escape
+-- sequences. If a metamode key's value is one of kcuu1,
+-- kcud1, kcuf1, kcub1, khome, kend, or kf1 through kf12,
+-- the correct escape sequence will be sent for cursor up,
+-- down, right, left, home, end, or the corresponding
+-- function key.
 
-metamode_func_keys : (
-    ("a", "alt_down"),
-    ("c", "ctrl_down"),
-    ("s", "rescreen"),
-    ("v", "paste_clipboard")
-  );
-/* These keys map to special functions in Term49:
+metamode_sticky_keys = {
+  { "k", "kcuu1" },
+  { "j", "kcud1" },
+  { "l", "kcuf1" },
+  { "h", "kcub1" },
+}
+-- Like metamode_keys above, but leaves metamode on
+-- afterwards, so you can press another metamode key
+-- immediately.
 
-  alt_down: Will 'hold down' the alt key and send it as a
-  modifier with the next keypress.
+metamode_func_keys = {
+  { "a", "alt_down" },
+  { "c", "ctrl_down" },
+  { "s", "rescreen" },
+  { "v", "paste_clipboard" },
+  { "i", "font_size_increase" },
+  { "o", "font_size_decrease" },
+  { "p", "font_size_reset" },
+  { "r", "reload_config" },
+}
+-- These keys map to built-in functions in Term49:
+--
+--   alt_down            Hold the alt key, applied to the
+--                       next keypress.
+--   ctrl_down           Hold the ctrl key.
+--   rescreen            Reinitialize the screen surface
+--                       and fonts, including font size.
+--   paste_clipboard     Paste the system clipboard. No
+--                       character conversion is done.
+--   font_size_increase  Bump font_size by one (session
+--                       only; not written to disk).
+--   font_size_decrease  Drop font_size by one.
+--   font_size_reset     Restore font_size to the value
+--                       in .term49.lua (or the compiled
+--                       default).
+--   reload_config       Re-run ~/.term49.lua and apply
+--                       the new values live.
+--
+-- A value of the form "lua:<name>" calls the Lua
+-- function `<name>` defined in .term49.lua. The function
+-- runs under pcall, so a Lua error logs but does not
+-- crash Term49. Two helpers are exposed in the `term`
+-- table:
+--
+--   term.font_size_get()        current font_size
+--   term.font_size_set(n)       set font_size (session)
+--   term.action("<builtin>")    invoke any builtin name
+--                               from the list above
+--
+-- Example: to bind metamode 'z' to a custom zoom-in:
+--   function zoom_in()
+--     term.font_size_set(term.font_size_get() + 3)
+--   end
+-- and add  { "z", "lua:zoom_in" }  above.
 
-  ctrl_down: Will 'hold down' the ctrl key.
+rescreen_for_symmenu = true
+-- If true, opening a symbol menu causes the screen to
+-- readjust to the new visible dimensions.
 
-  rescreen: Will reinitialize the screen surface and fonts,
-  including font size. You may want this is you have
-  allow_resize_columns = true.
+main_symmenu = {
+  { { "a", "=" }, { "s", "-" }, { "d", "*" },
+    { "f", "/" }, { "g", "\\" }, { "h", "|" },
+    { "j", "&" }, { "k", "'" }, { "l", "\"" } },
+  { { "q", "~" }, { "w", "`" }, { "e", "{" },
+    { "r", "}" }, { "t", "[" }, { "y", "]" },
+    { "u", "<" }, { "i", ">" }, { "o", "^" },
+    { "p", "%" } },
+}
+-- For devices with a Sym key, this controls the contents
+-- of the symbol menu.
+--
+-- main_symmenu is a list of rows; each row is a list of
+-- { key, symbol } pairs. Keys are keyboard shortcuts,
+-- symbols can be any string (including UTF-8). The menu
+-- is drawn from the bottom of the screen upward, so the
+-- first row is drawn at the bottom. The menu is scaled
+-- to fit the widest row across the screen width. There
+-- is no limit on the number of items, but all shortcut
+-- keys must be unique.
 
-  paste_clipboard: Will paste the contents of the system
-  keyboard. Handy for pasting URLs into the shell. Note
-  that no character encoding or conversion will be done.
-*/
+sticky_sym_key = false
+-- For devices with a Sym key, controls whether the Sym
+-- menu stays open after hitting a key.
 
-rescreen_on_symmenu = true;
-/* If rescreen_on_symmenu is true, then opening a symbol
-  menu will cause the screen to readjust to new dimensions
-*/
+sticky_shift_key = true
+-- For devices with physical shift keys, this setting
+-- controls whether the shift key 'sticks' after being
+-- pressed, and applies to the next keypress.
 
-main_symmenu : ( (
-    ("a", "="),
-    ("s", "-"),
-    ("d", "*"),
-    ("f", "/"),
-    ("g", "\\"),
-    ("h", "|"),
-    ("j", "&"),
-    ("k", "'"),
-    ("l", "\"")
-  ),
-  (
-    ("q", "~"),
-    ("w", "`"),
-    ("e", "{"),
-    ("r", "}"),
-    ("t", "["),
-    ("y", "]"),
-    ("u", "<"),
-    ("i", ">"),
-    ("o", "^"),
-    ("p", "%")
-  ) );
-/* For devices with a Sym key, this preference controls the
- * contents of the symbol menu.
- *
- * The sym_keys preference is a list of key -> symbol
- * groups, one group per row in the symbol menu. Keys
- * indicate keyboard shortcuts, and symbols can be any
- * character string, including UTF-8 strings. Hex
- * characters can be represented with a \x and exactly two
- * hexadecimal digits.
- *
- * The symbol menu is drawn from the bottom of the screen
- * to the top, so the first group in sym_keys is drawn at
- * the bottom, the second is drawn above it, and so on. The
- * size of the symbol menu is scaled with the number of
- * items in the largest group in order to fit in the screen
- * width. Users who prefer to use the keyboard shortcuts
- * instead of the touchscreen may want to collapse the
- * symbol menu into one large group, which will result in a
- * small symbol menu along the bottom of the screen. There
- * is no limit on the number of items in the symbol menu,
- * but all keys must be unique and only one key can be
- * bound to a keyboard shortcut. */
+sticky_alt_key = true
+-- Same idea as sticky_shift_key, for the alt key.
 
-sticky_sym_key = false;
-/* For devices with a Sym key, controls whether the Sym
- * menu stays open after hitting a key. */
+allow_resize_columns = false
+-- This setting controls whether a program can change the
+-- number of columns on the screen. Defaults to false (no
+-- resizing). When set to true, programs can set the
+-- number of columns (80 or 132), but this may make the
+-- text really small. Use the metamode 'rescreen'
+-- function to reset the font size to your preference.
 
-sticky_shift_key = false;
-/* For devices with physical shift keys, this setting
- * controls whether the shift key 'sticks' after being
- * pressed, and applies to the next keypress. */
-
-allow_resize_columns = false;
-/* This setting controls whether a program can change the
- * number of columns on the screen. Defaults to false (no
- * resizing). When set to true, programs can set the number
- * of columns (80 or 132), but this may make the text
- * really small. Use the metamode 'rescreen' function to
- * reset the font size to your preference. */
-
-prefs_version = <int>
-/* This is the current version of the preferences file,
- * according to Term49. If it is different than the app
- * version, then Term49 will update the preferences file to
- * the new version. You don't need to worry about this. */
+prefs_version = 4
+-- The schema version of .term49.lua, written by Term49
+-- on first run. You don't need to set this by hand.
 
 ===========================================================
 
@@ -297,13 +315,13 @@ Term49 is Open Source
 
 Term49 is a 'from scratch' terminal emulator in that it is
 not a port of another program. It uses SDL to draw to the
-screen, freetype to render fonts, libconfig to manage
-preferences, ICU to convert between character encodings,
-and implements (parts of) the xterm specification. It is
-not by any means perfect, and will certainly have bugs or
-missing features. Because the author enjoyed access to so
-many high quality libraries that made the development of
-Term49 significantly easier, Term49 is open source:
+screen, freetype to render fonts, Lua for configuration
+and scripting, ICU to convert between character encodings,
+and libghostty-vt as its terminal parser/state model. It
+is not by any means perfect, and will certainly have bugs
+or missing features. Because the author enjoyed access to
+so many high quality libraries that made the development
+of Term49 significantly easier, Term49 is open source:
 
 https://github.com/mordak/Term49
 

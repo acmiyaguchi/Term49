@@ -13,7 +13,6 @@ party libraries in `vendor/prebuilt-bb10/lib`:
 
 * [libSDL][libsdl]
 * [Touch Control Overlay][tco]
-* [libconfig][libconfig]
 
 Third-party source checkouts and BB10 prebuilt binaries live under `vendor/`.
 After cloning, run `git submodule update --init --recursive`. See
@@ -21,7 +20,10 @@ After cloning, run `git submodule update --init --recursive`. See
 prebuilt hashes, and upgrade notes.
 The Ghostty VT core is vendored under `vendor/libghostty-vt/`. The top-level
 Makefile builds `vendor/libghostty-vt/build/ghostty/lib/libghostty-vt.a` on
-demand before linking Term49.
+demand before linking Term49. Lua 5.4 is vendored under `vendor/lua/` and
+compiled into a static `liblua.a` by the Makefile; Term49 uses it as the
+config language (`~/.term49.lua`) and as the scripting runtime for
+`lua:<fn>` keybindings.
 
 Typical local build inside the BBNDK shell:
 
@@ -70,4 +72,3 @@ after configuring `signing/bbpass`.
 
 [libsdl]: https://github.com/mordak/SDL/tree/term48
 [tco]: https://github.com/blackberry/TouchControlOverlay
-[libconfig]: http://www.hyperrealm.com/libconfig/
