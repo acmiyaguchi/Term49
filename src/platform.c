@@ -1,7 +1,7 @@
 /*
  * Backend-agnostic platform wrapper. Holds the vtable + the backend's
  * opaque impl pointer and forwards each operation. The concrete backend
- * (platform_sdl.c today; platform_screen.c in #6) only implements the ops
+ * (platform_screen.c) only implements the ops
  * and a factory; no caller dereferences this struct.
  */
 
@@ -86,4 +86,10 @@ int platform_open_url(platform_t *p, const char *url) {
 		return -1;
 	}
 	return p->ops->open_url(p, url);
+}
+
+void platform_apply_pending_resize(platform_t *p) {
+	if (p != NULL && p->ops->apply_pending_resize != NULL) {
+		p->ops->apply_pending_resize(p);
+	}
 }

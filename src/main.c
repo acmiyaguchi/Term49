@@ -33,11 +33,11 @@
 #include <bps/deviceinfo.h>
 #include <unicode/utf.h>
 
-#include "SDL.h"
-#include "SDL_ttf.h"
-#include "SDL_syswm.h"
-#include "SDL_thread.h"
+#include <pthread.h>
+#include <stdint.h>
 
+#include "bitmap.h"
+#include "font.h"
 #include "types.h"
 #include "terminal.h"
 #include "action.h"
@@ -45,8 +45,9 @@
 #include "prefs.h"
 #include "symmenu.h"
 #include "renderer.h"
+#include "renderer_screen.h"
 #include "platform.h"
-#include "platform_sdl.h"
+#include "platform_screen.h"
 #include "io.h"
 #include "ghostty_bridge.h"
 
@@ -133,16 +134,18 @@ static char altsym_lock = 0;
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
 static struct timespec metamode_last;
-static SDL_Color metamode_cursor_fg = TERM_COLOR_BLACK;
-static SDL_Color metamode_cursor_bg = TERM_COLOR_GREEN;
-static SDL_Surface* metamode_cursor;
+static rgb_t metamode_cursor_fg = TERM_COLOR_BLACK;
+static rgb_t metamode_cursor_bg = TERM_COLOR_GREEN;
+static bitmap_t *metamode_cursor;
 static int vmodifiers = 0;
 
-static TTF_Font* font;
+static font_t *font;
 static int text_width;
 static int text_height;
 static int text_height_padding;
 static int advance;
+static int fb_w;
+static int fb_h;
 
 /* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
@@ -157,27 +160,33 @@ static void mark_screen_dirty(int full_repaint) {
 	}
 }
 
-static SDL_Surface* screen;
-static SDL_Surface* ctrl_key_indicator;
-static SDL_Surface* alt_key_indicator;
-static SDL_Surface* shift_key_indicator;
-static SDL_Surface* altsym_indicator;
+static bitmap_t *ctrl_key_indicator;
+static bitmap_t *alt_key_indicator;
+static bitmap_t *shift_key_indicator;
+static bitmap_t *altsym_indicator;
 
 static pid_t child_pid = -1;
 
 static char virtualkeyboard_visible = 0;
 static char key_repeat_done = 0;
 
-static SDL_mutex *input_mutex = NULL;
+static pthread_mutex_t input_mutex;
 
 static int event_pipe[2];
 
 static int rows;
 static int cols;
 
-static void glyph_cache_clear(void);
+/* Init flags guard app_shutdown against the early-exit paths in main() that
+ * fire before startup_init() has set up the corresponding resources.
+ * Destroying an uninitialized mutex, closing an unopened pipe, or
+ * FT_Done_FreeType on a never-initialized library is undefined behaviour. */
+static int input_mutex_inited;
+static int event_pipe_open;
+static int font_library_inited;
+static int font_inited;
+static int ghostty_inited;
 
-#define PB_D_PIXELS 32
 
 int is_terminfo_keystrokes(const char* keystrokes){
 	if(keystrokes[0] == 'k'){
@@ -379,48 +388,11 @@ int send_metamode_keystrokes(const char* keystrokes){
 	return 0;
 }
 
-int get_virtualkeyboard_height(){
-	int rc, vkb_h;
-	rc = virtualkeyboard_get_height(&vkb_h);
-	if(rc != BPS_SUCCESS){
-		fprintf(stderr, "Could not get virtual keyboard height\n");
-		vkb_h = 0; // assume zero?
-	}
-	return vkb_h;
-}
-
-int is_passport() {
-	deviceinfo_details_t *di_t = NULL;
-	int rc = deviceinfo_get_details(&di_t);
-	if(rc != BPS_SUCCESS){
-		fprintf(stderr, "Could not get device info");
-		return 0;
-	}
-	
-	int passport = 0;
-	if(strncmp("Passport", deviceinfo_details_get_model_name(di_t), 8) == 0){
-		passport = 1;
-	}
-	deviceinfo_free_details(&di_t);
-
-	return passport;
-}
-
-int get_wm_info(SDL_SysWMinfo* info){
-	SDL_version version;
-	SDL_VERSION(&version);
-	info->version = version;
-	return SDL_GetWMInfo(info);
-}
-
 /* These local-UI mutators are the funnel for keyboard/touch-driven
  * screen changes that never round-trip the pty (metamode cursor,
- * symmenu overlay, modifier indicators, font reflow). They are reached
- * both from handle_mousedown (SDL main loop) and from handleKeyboardEvent
- * (called directly by the vendored libSDL12 on a screen key event, which
- * the main loop only sees as an inert "Unhandled SYSWMEVENT"). Marking
- * dirty here, at the mutation, is what makes the render gate correct
- * regardless of which SDL event delivered the input. */
+ * symmenu overlay, modifier indicators, font reflow). Marking dirty
+ * here, at the mutation, is what makes the render gate correct
+ * regardless of which event source delivered the input. */
 void metamode_toggle(){
 	metamode = metamode ? 0 : 1;
 	mark_screen_dirty(1);
@@ -446,7 +418,7 @@ void symmenu_toggle(symmenu_t *target){
 		current_symmenu = target;
 		// resize to show menu
 		if (prefs->rescreen_for_symmenu) {
-			setup_screen_size(screen->w, screen->h - symmenu_height);
+			setup_screen_size(fb_w, fb_h - symmenu_height);
 		}
 		if (prefs->sticky_sym_key) {
 			symmenu_stick();
@@ -455,14 +427,14 @@ void symmenu_toggle(symmenu_t *target){
 		current_symmenu = NULL;
 		if (prefs->rescreen_for_symmenu) {
 			// resize to take full screen
-			setup_screen_size(screen->w, screen->h);
+			setup_screen_size(fb_w, fb_h);
 		}
 		symmenu_lock = 0;
 	}
 	mark_screen_dirty(1);
 }
 
-static keymap_t* symkey_for_mousedown(symmenu_t *menu, Uint16 x, Uint16 y) {
+static keymap_t* symkey_for_mousedown(symmenu_t *menu, uint16_t x, uint16_t y) {
 	for (int row = 0; menu->keys[row] != NULL; ++row) {
 		for (int col = 0; menu->keys[row][col].map != NULL; ++col) {
 			symkey_t *key = &menu->keys[row][col];
@@ -492,85 +464,84 @@ int font_init(int font_size){
 	}
 
 	/* Load the font */
-	font = TTF_OpenFont(prefs->font_path, font_size);
+	font = font_open(prefs->font_path, font_size);
 	if ( font == NULL ) {
-		/* try opening the default stuff */
-		fprintf(stderr, "Couldn't load %d pt font from %s: %s\n", font_size, prefs->font_path, SDL_GetError());
-		font = TTF_OpenFont(TERM_DEFAULT_FONT_PATH, TERM_DEFAULT_FONT_SIZE);
+		fprintf(stderr, "Couldn't load %d pt font from %s\n", font_size, prefs->font_path);
+		font = font_open(TERM_DEFAULT_FONT_PATH, TERM_DEFAULT_FONT_SIZE);
 		if(font == NULL){
-			fprintf(stderr, "Could not open default font %s: %s\n", TERM_DEFAULT_FONT_PATH, SDL_GetError());
+			fprintf(stderr, "Could not open default font %s\n", TERM_DEFAULT_FONT_PATH);
 			return TERM_FAILURE;
 		}
 	}
-	PRINT(stderr, "Font is Fixed Width: %d\n", TTF_FontFaceIsFixedWidth(font));
-
-	/* Set default options */
-	TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
-	TTF_SetFontOutline(font, 0);
-	TTF_SetFontKerning(font, 0);
-	TTF_SetFontHinting(font, TTF_HINTING_NORMAL);
+	PRINT(stderr, "Font is Fixed Width: %d\n", font_is_fixed_width(font));
 
 	/* initialize modifier indicator glyphs */
-	UChar str[2] = {'A', 0};
-	alt_key_indicator = TTF_RenderUNICODE_Shaded(font, str, metamode_cursor_fg, metamode_cursor_bg);
+	alt_key_indicator = font_render_glyph_shaded(font, 'A', FONT_STYLE_NORMAL,
+	                                             metamode_cursor_fg, metamode_cursor_bg);
 	if (alt_key_indicator == NULL){
-		PRINT(stderr, "Couldn't render alt_key_indicator surface: %s\n", TTF_GetError());
+		PRINT(stderr, "Couldn't render alt_key_indicator\n");
 		return TERM_FAILURE;
 	}
 
-	str[0] = 'C';
-	ctrl_key_indicator = TTF_RenderUNICODE_Shaded(font, str, metamode_cursor_fg, metamode_cursor_bg);
+	ctrl_key_indicator = font_render_glyph_shaded(font, 'C', FONT_STYLE_NORMAL,
+	                                              metamode_cursor_fg, metamode_cursor_bg);
 	if (ctrl_key_indicator == NULL){
-		PRINT(stderr, "Couldn't render ctrl_key_indicator surface: %s\n", TTF_GetError());
+		PRINT(stderr, "Couldn't render ctrl_key_indicator\n");
 		return TERM_FAILURE;
 	}
 
-	str[0] = 0x2191;
-	shift_key_indicator = TTF_RenderUNICODE_Shaded(font, str, metamode_cursor_fg, metamode_cursor_bg);
+	shift_key_indicator = font_render_glyph_shaded(font, 0x2191, FONT_STYLE_NORMAL,
+	                                               metamode_cursor_fg, metamode_cursor_bg);
 	if (shift_key_indicator == NULL){
-		PRINT(stderr, "Couldn't render shift_key_indicator surface: %s\n", TTF_GetError());
+		PRINT(stderr, "Couldn't render shift_key_indicator\n");
 		return TERM_FAILURE;
 	}
 
-	str[0] = 'a';
-	altsym_indicator = TTF_RenderUNICODE_Shaded(font, str, metamode_cursor_fg, metamode_cursor_bg);
-	if (shift_key_indicator == NULL){
-		PRINT(stderr, "Couldn't render altsym_indicator surface: %s\n", TTF_GetError());
+	altsym_indicator = font_render_glyph_shaded(font, 'a', FONT_STYLE_NORMAL,
+	                                            metamode_cursor_fg, metamode_cursor_bg);
+	if (altsym_indicator == NULL){
+		PRINT(stderr, "Couldn't render altsym_indicator\n");
 		return TERM_FAILURE;
 	}
 
-	str[0] = 'M';
-	metamode_cursor = TTF_RenderUNICODE_Shaded(font, str, metamode_cursor_fg, metamode_cursor_bg);
+	metamode_cursor = font_render_glyph_shaded(font, 'M', FONT_STYLE_NORMAL,
+	                                           metamode_cursor_fg, metamode_cursor_bg);
 	if (metamode_cursor == NULL){
-		PRINT(stderr, "Couldn't render metamode_cursor surface: %s\n", TTF_GetError());
+		PRINT(stderr, "Couldn't render metamode_cursor\n");
 		return TERM_FAILURE;
 	}
 
 	/* Get the size of the font */
 	int minx, maxx, miny, maxy;
-	if(TTF_GlyphMetrics(font, (Uint16)'X', &minx, &maxx, &miny, &maxy, &advance) != 0){
-		PRINT(stderr, "Could not get Glyph Metrics: %s\n", TTF_GetError());
+	if(font_glyph_metrics(font, 'X', &minx, &maxx, &miny, &maxy, &advance) != 0){
+		PRINT(stderr, "Could not get Glyph Metrics for 'X'\n");
 		return TERM_FAILURE;
 	}
 
 	text_width = advance;
 	text_height = maxy - miny;
-	text_height_padding = TTF_FontLineSkip(font) - text_height;
+	text_height_padding = font_line_skip(font) - text_height;
 	text_height += text_height_padding;
 	PRINT(stderr, "Character h: %d w:%d (h padding: %d) advance: %d\n", text_height, text_width, text_height_padding, advance);
 
+	if (renderer != NULL) {
+		renderer_set_font(renderer, font);
+	}
 	return TERM_SUCCESS;
 }
 
 void font_uninit(){
 
-	glyph_cache_clear();
-	SDL_FreeSurface(metamode_cursor);
-	SDL_FreeSurface(ctrl_key_indicator);
-	SDL_FreeSurface(alt_key_indicator);
-	SDL_FreeSurface(shift_key_indicator);
+	if (renderer != NULL) {
+		renderer_set_font(renderer, NULL);
+	}
+	bitmap_free(metamode_cursor);     metamode_cursor     = NULL;
+	bitmap_free(ctrl_key_indicator);  ctrl_key_indicator  = NULL;
+	bitmap_free(alt_key_indicator);   alt_key_indicator   = NULL;
+	bitmap_free(shift_key_indicator); shift_key_indicator = NULL;
+	bitmap_free(altsym_indicator);    altsym_indicator    = NULL;
 	if(font != NULL){
-		TTF_CloseFont(font);
+		font_close(font);
 	}
 }
 
@@ -581,7 +552,7 @@ void handle_activeevent(int gain, int state){
 	}
 }
 
-void handle_mousedown(Uint16 x, Uint16 y){
+void handle_mousedown(uint16_t x, uint16_t y){
 	/* check for hits in the metamode_hitbox */
 	if((x >= prefs->metamode_hitbox->x) &&
 	   (x <= prefs->metamode_hitbox->x + prefs->metamode_hitbox->w) &&
@@ -605,46 +576,15 @@ void handle_mousedown(Uint16 x, Uint16 y){
 	}
 }
 
-/* SDL->app ABI: the prebuilt libSDL12.so calls this directly with the raw
- * BPS virtual-keyboard event. It is now a thin platform adapter: decode the
- * BPS event into a backend-agnostic event_t and route it through the app
- * boundary. The reflow itself lives in app_handle_event()'s TERM_EVENT_VKB
- * case, which the native Screen/BPS event source (#6) will feed the same way.
- * Agnostic VKB encoding (see event.h): visible 1/0 = explicit show/hide;
- * visible == -1 = height-only INFO update (keep current visibility). */
-void handle_virtualkeyboard_event(bps_event_t *event){
-	event_t ev;
-	int event_code = bps_event_get_code(event);
-
-	ev.type = TERM_EVENT_VKB;
-	switch (event_code){
-	case VIRTUALKEYBOARD_EVENT_VISIBLE:
-		ev.as.vkb.visible = 1;
-		ev.as.vkb.height = 0;
-		break;
-	case VIRTUALKEYBOARD_EVENT_HIDDEN:
-		ev.as.vkb.visible = 0;
-		ev.as.vkb.height = 0;
-		break;
-	case VIRTUALKEYBOARD_EVENT_INFO:
-		ev.as.vkb.visible = -1;
-		ev.as.vkb.height = (int)virtualkeyboard_event_get_height(event);
-		break;
-	default:
-		fprintf(stderr, "Unknown keyboard event code %d\n", event_code);
-		return;
-	}
-	app_handle_event(g_app, &ev);
-}
-
 static int render_ghostty(int force_full_repaint); /* defined below */
 
 void rescreen(int w, int h){
 
-	int width  = w == -1 ? screen->w : w;
-	int height = h == -1 ? screen->h : h;
+	int width  = w == -1 ? fb_w : w;
+	int height = h == -1 ? fb_h : h;
 	int vkb_h = 0;
-	screen = SDL_SetVideoMode(width, height, PB_D_PIXELS, SDL_HWSURFACE | SDL_DOUBLEBUF);
+	fb_w = width;
+	fb_h = height;
 	/* reset the font size as well */
 	font_uninit();
 	if(font_init(prefs->font_size) == TERM_FAILURE){
@@ -659,9 +599,9 @@ void rescreen(int w, int h){
 	}
 	mark_screen_dirty(1);
 	/* Repaint synchronously now instead of waiting for the render thread
-	 * to wake on the next event. Twice: the screen is SDL_DOUBLEBUF, so a
+	 * to wake on the next event. Twice: the window is double-buffered, so a
 	 * single full repaint refreshes only one of the two buffers and the
-	 * next flip would briefly show the stale (old-size) buffer. We hold
+	 * next post would briefly show the stale (old-size) buffer. We hold
 	 * lock_input() in every rescreen() caller, so this cannot race the
 	 * render thread (it also renders only under that lock). */
 	render_ghostty(1);
@@ -689,7 +629,7 @@ void set_font_size(int new_size){
 }
 
 /* Narrow glue for the Lua `term` table (registered in preferences.c).
- * Kept here so preferences.c never sees app/SDL internals. */
+ * Kept here so preferences.c never sees app/renderer internals. */
 int term_current_font_size(void){
 	return prefs ? prefs->font_size : TERM_DEFAULT_FONT_SIZE;
 }
@@ -699,7 +639,7 @@ int term_current_font_size(void){
  * startup loader) the global prefs/g_app/screen are still NULL, so every
  * term.* C entry point must bail before dereferencing them. */
 int term_runtime_ready(void){
-	return g_app != NULL && screen != NULL && prefs != NULL;
+	return g_app != NULL && renderer != NULL && prefs != NULL;
 }
 
 int app_run_action_string(const char *s){
@@ -726,8 +666,8 @@ static void app_reload_config(void){
 		/* Parse error / OOM: prefs_lua_reload() left the running config
 		 * and scripting state fully intact, so a broken edit can't wipe
 		 * a working setup to defaults. No transient on-screen cue: this
-		 * BB10 SDL backend only composites on the next event pump, so a
-		 * flash would not show until an unrelated tap (confusing). The
+		 * backend only composites on the next event pump, so a flash
+		 * would not show until an unrelated tap (confusing). The
 		 * feedback is simply that nothing changes -- the rejected edit
 		 * is logged to stderr for dev builds. */
 		return;
@@ -748,7 +688,7 @@ static void app_reload_config(void){
 
 	/* rebuild derived state from the new prefs */
 	if(renderer != NULL){
-		renderer_init_symmenus(renderer, screen, prefs);
+		renderer_init_symmenus(renderer, prefs);
 	}
 	rescreen(-1, -1);                    /* font/grid/PTY + synchronous redraw */
 }
@@ -1123,36 +1063,6 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 	}
 }
 
-/* SDL->app ABI: the prebuilt libSDL12.so calls this directly on a BB10
- * screen key event (the SDL run loop only sees an inert SYSWMEVENT for the
- * same key -- see the metamode_toggle comment). Thin platform adapter:
- * decode the screen_event_t into a backend-agnostic rich event_t and
- * route it through the app boundary. The native Screen/BPS event source
- * (#6) feeds the same TERM_EVENT_KEY. */
-void handleKeyboardEvent(screen_event_t screen_event)
-{
-	int screen_val, screen_flags, screen_alt_val, modifiers;
-	event_t ev;
-
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_FLAGS, &screen_flags);
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_SYM, &screen_val);
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_ALTERNATE_SYM, &screen_alt_val);
-	screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_MODIFIERS, &modifiers);
-	//screen_get_event_property_iv(screen_event, SCREEN_PROPERTY_KEY_CAP, &cap);
-
-	memset(&ev, 0, sizeof(ev));
-	ev.type = TERM_EVENT_KEY;
-	ev.as.key.sym = screen_val;
-	ev.as.key.keycode = screen_val;
-	ev.as.key.unicode = screen_val;
-	ev.as.key.alternate_sym = screen_alt_val;
-	ev.as.key.modifiers = modifiers;
-	ev.as.key.pressed = (screen_flags & KEY_DOWN) ? 1 : 0;
-	ev.as.key.repeat = (screen_flags & KEY_REPEAT) ? 1 : 0;
-
-	app_handle_event(g_app, &ev);
-}
-
 void set_tty_window_size(){
 	int master = io_get_master();
 	struct winsize ws;
@@ -1160,8 +1070,8 @@ void set_tty_window_size(){
 	memset(&ws, 0, sizeof(ws));
 	ws.ws_row = rows;
 	ws.ws_col = cols;
-	ws.ws_xpixel = screen ? screen->w : 0;
-	ws.ws_ypixel = screen ? screen->h : 0;
+	ws.ws_xpixel = fb_w;
+	ws.ws_ypixel = fb_h;
 
 	if(tcsetsize(master, rows, cols) < 0){
 		PRINT(stderr, "ERROR: tcsetsize() returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
@@ -1207,16 +1117,10 @@ void setup_screen_size(int s_w, int s_h){
 }
 
 void lock_input(){
-	if(SDL_LockMutex(input_mutex) == -1){
-		fprintf(stderr, "Couldn't lock input mutex - exiting\n");
-		exit_application = 1;
-	}
+	pthread_mutex_lock(&input_mutex);
 }
 void unlock_input(){
-	if(SDL_UnlockMutex(input_mutex) == -1){
-		fprintf(stderr, "Couldn't unlock input mutex - exiting\n");
-		exit_application = 1;
-	}
+	pthread_mutex_unlock(&input_mutex);
 }
 
 void indicate_event_input(){
@@ -1240,7 +1144,7 @@ void set_screen_cols(int ncols){
 			fprintf(stderr, "Error setting new font size\n");
 			exit_application = 1;
 		} else {
-			setup_screen_size(screen->w, screen->h);
+			setup_screen_size(fb_w, fb_h);
 			/* and force the number of columns */
 			cols = ncols;
 			set_tty_window_size();
@@ -1251,102 +1155,51 @@ void set_screen_cols(int ncols){
 	}
 }
 
-static int sdl_init() {
-	/* init the input mutex */
-	input_mutex = SDL_CreateMutex();
-	
-	/* init the event input pipe */
+static int startup_init() {
+	pthread_mutex_init(&input_mutex, NULL);
+	input_mutex_inited = 1;
+
 	if(pipe(event_pipe) == -1){
 		fprintf(stderr, "Couldn't create event pipe\n");
 		return TERM_FAILURE;
 	}
+	event_pipe_open = 1;
 
-	/* Initialize SDL */
-	if (SDL_Init(SDL_INIT_VIDEO) < 0 ) {
-		PRINT(stderr, "Couldn't initialize SDL: %s\n",SDL_GetError());
+	if(font_library_init() != 0){
+		fprintf(stderr, "Couldn't initialize FreeType\n");
 		return TERM_FAILURE;
 	}
-	PRINT(stderr, "Post SDL_Init()\n");
-
-	SDL_EventState(SDL_SYSWMEVENT, SDL_ENABLE);
-	
-	// We get keyboard events from the SysWMEvents
-	SDL_EventState(SDL_KEYDOWN, SDL_IGNORE);
-	SDL_EventState(SDL_KEYUP, SDL_IGNORE);
-
-	screen_window_t window;
-	screen_context_t context;
-
-	SDL_SysWMinfo info;
-	if(get_wm_info(&info) != 1){
-		fprintf(stderr, "Couldn't get WM Info: %s\n",SDL_GetError());
-		return TERM_FAILURE;
-	}
-
-	/* grab the orientation and resolution so we can start up that way */
-	window = info.mainWindow;
-	context = info.context;
-	int wm_size[2] = {0,0};
-
-	if (screen_get_window_property_iv(window, SCREEN_PROPERTY_SIZE, wm_size)) {
-		fprintf(stderr, "Cannot get resolution: %s", strerror(errno));
-		return TERM_FAILURE;
-	}
-	PRINT(stderr, "wm size returned: w:%d, h:%d\n", wm_size[0], wm_size[1]);
-
-	/* Initialize the TTF library */
-	if ( TTF_Init() < 0 ) {
-		PRINT(stderr, "Couldn't initialize TTF: %s\n",SDL_GetError());
-		SDL_Quit();
-		return TERM_FAILURE;
-	}
-
-	/* set screen idle mode */
-	if(!prefs->screen_idle_awake){
-		setenv("SCREEN_IDLE_NORMAL", "1", 0);
-	}
-
-	/* check to verify if the wm returned the native resolution */
-	if (getenv("WIDTH") != NULL && getenv("HEIGHT") != NULL) {
-		if(wm_size[0] != atoi(getenv("WIDTH")) || wm_size[1] != atoi(getenv("HEIGHT"))){
-			fprintf(stderr, "SDL_WMInfo returned non-native screen resolution - forcing\n");
-			wm_size[0] = atoi(getenv("WIDTH"));
-			wm_size[1] = atoi(getenv("HEIGHT"));
-		}
-	}
-
-	screen = SDL_SetVideoMode(wm_size[0], wm_size[1], PB_D_PIXELS, SDL_HWSURFACE | SDL_DOUBLEBUF);
-	if ( screen == NULL ) {
-		PRINT(stderr, "Couldn't set %d x %d x %d video mode: %s\n", wm_size[0], wm_size[1], PB_D_PIXELS, SDL_GetError());
-		TTF_Quit();
-		SDL_Quit();
-		return TERM_FAILURE;
-	}
+	font_library_inited = 1;
 
 	if(font_init(prefs->font_size) == TERM_FAILURE){
 		PRINT(stderr, "Couldn't initialize font\n");
-		TTF_Quit();
-		SDL_Quit();
+		return TERM_FAILURE;
+	}
+	font_inited = 1;
+
+	renderer = renderer_screen_create(g_platform, font);
+	if (renderer == NULL) {
+		fprintf(stderr, "Couldn't create renderer\n");
 		return TERM_FAILURE;
 	}
 
-	/* Don't show the mouse icon */
-	SDL_ShowCursor(SDL_DISABLE);
+	if(renderer_framebuffer_size(renderer, &fb_w, &fb_h) != 0 || fb_w <= 0 || fb_h <= 0){
+		fprintf(stderr, "Couldn't determine framebuffer size\n");
+		return TERM_FAILURE;
+	}
 
-	/* initialize the number of rows and columns */
-	rows = screen->h / text_height;
-	cols = screen->w / text_width;
+	rows = fb_h / text_height;
+	cols = fb_w / text_width;
 
+	setup_screen_size(fb_w, fb_h);
 
-	setup_screen_size(screen->w, screen->h);
-	
-	/* and set the last 'press' */
 	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
 
 	if(ghostty_bridge_init((uint16_t)cols, (uint16_t)rows, 1000) != 0){
 		fprintf(stderr, "Unable to initialize libghostty-vt terminal\n");
 		return TERM_FAILURE;
 	}
+	ghostty_inited = 1;
 	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
 	                      (uint32_t)advance, (uint32_t)text_height);
 
@@ -1355,7 +1208,14 @@ static int sdl_init() {
 
 void app_shutdown(void){
 
-	SDL_DestroyMutex(input_mutex);
+	/* Every cleanup below is gated on the matching init flag so the
+	 * early-exit paths in main() (io_init / pty_init / sigaction / startup_init
+	 * failures) don't call destructors on resources that were never set up. */
+
+	if (input_mutex_inited) {
+		pthread_mutex_destroy(&input_mutex);
+		input_mutex_inited = 0;
+	}
 
 	/* Tear down session state before ghostty_bridge_uninit()/io_uninit()
 	 * below, since the single session borrows both. NULL-safe on the
@@ -1363,19 +1223,34 @@ void app_shutdown(void){
 	app_shutdown_state(g_app);
 	g_app = NULL;
 
-	platform_destroy(g_platform);
-	g_platform = NULL;
-
+	/* Order matters: free the renderer first so its glyph cache (which
+	 * borrows the font) drops before font_uninit closes the font. Then
+	 * tear down the font and the FreeType library, then the platform. */
 	renderer_destroy(renderer);
 	renderer = NULL;
 
-	font_uninit();
-	SDL_FreeSurface(screen);
+	if (font_inited) {
+		font_uninit();
+		font_inited = 0;
+	}
+	if (font_library_inited) {
+		font_library_quit();
+		font_library_inited = 0;
+	}
 
-	ghostty_bridge_uninit();
+	platform_destroy(g_platform);
+	g_platform = NULL;
 
-	TTF_Quit();
-	SDL_Quit();
+	if (ghostty_inited) {
+		ghostty_bridge_uninit();
+		ghostty_inited = 0;
+	}
+
+	if (event_pipe_open) {
+		close(event_pipe[0]);
+		close(event_pipe[1]);
+		event_pipe_open = 0;
+	}
 
 	/* prefs is assigned (or the process exit(1)s) before any app_shutdown()
 	 * call site, so it is always non-NULL here. */
@@ -1384,78 +1259,12 @@ void app_shutdown(void){
 	io_uninit();
 }
 
-static SDL_Color ghostty_sdl_color(ghostty_bridge_rgb_t rgb) {
-	SDL_Color out;
-	out.r = rgb.r;
-	out.g = rgb.g;
-	out.b = rgb.b;
-	out.unused = 0;
+static rgb_t to_rgb(ghostty_bridge_rgb_t c) {
+	rgb_t out;
+	out.r = c.r;
+	out.g = c.g;
+	out.b = c.b;
 	return out;
-}
-
-#define GLYPH_CACHE_SIZE 2048
-
-typedef struct glyph_cache_entry {
-	uint32_t codepoint;
-	uint32_t fg;
-	uint32_t bg;
-	int style;
-	SDL_Surface *surface;
-} glyph_cache_entry_t;
-
-static glyph_cache_entry_t glyph_cache[GLYPH_CACHE_SIZE];
-
-static uint32_t color_key(SDL_Color c) {
-	return ((uint32_t)c.r << 16) | ((uint32_t)c.g << 8) | (uint32_t)c.b;
-}
-
-static unsigned glyph_cache_hash(uint32_t codepoint, int style, uint32_t fg, uint32_t bg) {
-	uint32_t h = codepoint * 2654435761u;
-	h ^= fg * 2246822519u;
-	h ^= bg * 3266489917u;
-	h ^= (uint32_t)style * 668265263u;
-	return (unsigned)(h & (GLYPH_CACHE_SIZE - 1));
-}
-
-static void glyph_cache_clear(void) {
-	int i;
-	for (i = 0; i < GLYPH_CACHE_SIZE; ++i) {
-		if (glyph_cache[i].surface != NULL) {
-			SDL_FreeSurface(glyph_cache[i].surface);
-			glyph_cache[i].surface = NULL;
-		}
-	}
-}
-
-static SDL_Surface *glyph_cache_lookup(uint32_t codepoint, int style,
-                                       SDL_Color fg, SDL_Color bg) {
-	uint32_t fg_key = color_key(fg);
-	uint32_t bg_key = color_key(bg);
-	unsigned idx = glyph_cache_hash(codepoint, style, fg_key, bg_key);
-	glyph_cache_entry_t *entry = &glyph_cache[idx];
-	UChar str[3] = {0, 0, 0};
-
-	if (entry->surface != NULL && entry->codepoint == codepoint &&
-	    entry->style == style && entry->fg == fg_key && entry->bg == bg_key) {
-		return entry->surface;
-	}
-
-	if (entry->surface != NULL) {
-		SDL_FreeSurface(entry->surface);
-		entry->surface = NULL;
-	}
-
-	str[0] = (codepoint <= 0xffff) ? (UChar)codepoint : (UChar)0xfffd;
-	TTF_SetFontStyle(font, style);
-	entry->surface = TTF_RenderUNICODE_Shaded(font, str, fg, bg);
-	if (entry->surface == NULL) {
-		return NULL;
-	}
-	entry->codepoint = codepoint;
-	entry->style = style;
-	entry->fg = fg_key;
-	entry->bg = bg_key;
-	return entry->surface;
 }
 
 struct ghostty_render_context {
@@ -1467,48 +1276,40 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
                                 const ghostty_bridge_cell_t *cell,
                                 void *userdata) {
 	struct ghostty_render_context *ctx = (struct ghostty_render_context *)userdata;
-	SDL_Color fg;
-	SDL_Color bg;
-	SDL_Surface *glyph = NULL;
-	SDL_Rect destrect;
-	int style = TTF_STYLE_NORMAL;
 
 	if (ctx == NULL || cell == NULL || x >= cols || y >= rows) { return; }
 
-	fg = ghostty_sdl_color(cell->has_fg ? cell->fg : ctx->frame.default_fg);
-	bg = ghostty_sdl_color(cell->has_bg ? cell->bg : ctx->frame.default_bg);
+	rgb_t fg = to_rgb(cell->has_fg ? cell->fg : ctx->frame.default_fg);
+	rgb_t bg = to_rgb(cell->has_bg ? cell->bg : ctx->frame.default_bg);
 
 	if (cell->inverse || flash ||
 	    (draw_cursor && ctx->frame.cursor_visible &&
 	     x == ctx->frame.cursor_x && y == ctx->frame.cursor_y)) {
-		SDL_Color tmp = fg;
+		rgb_t tmp = fg;
 		fg = bg;
 		bg = tmp;
 	}
 
+	rect_t destrect;
 	destrect.x = x * advance;
 	destrect.y = y * text_height;
 	destrect.w = advance;
 	destrect.h = text_height;
-	SDL_FillRect(screen, &destrect, SDL_MapRGB(screen->format, bg.r, bg.g, bg.b));
+	renderer_fill_rect(renderer, &destrect, bg);
 
 	if (!cell->has_text || cell->codepoint == 0 || cell->wide_tail || cell->invisible) {
 		return;
 	}
 
-	if (cell->bold) { style |= TTF_STYLE_BOLD; }
-	if (cell->italic) { style |= TTF_STYLE_ITALIC; }
-	if (cell->underline) { style |= TTF_STYLE_UNDERLINE; }
+	font_style_t style = FONT_STYLE_NORMAL;
+	if (cell->bold)      { style |= FONT_STYLE_BOLD; }
+	if (cell->italic)    { style |= FONT_STYLE_ITALIC; }
+	if (cell->underline) { style |= FONT_STYLE_UNDERLINE; }
 
-	glyph = glyph_cache_lookup(cell->codepoint, style, fg, bg);
-	if (glyph == NULL) {
-		PRINT(stderr, "Ghostty glyph render failed for U+%04x: %s\n",
-		      (unsigned)cell->codepoint, TTF_GetError());
-		ctx->failed = 1;
-		return;
-	}
-	if (SDL_BlitSurface(glyph, NULL, screen, &destrect) != 0) {
-		PRINT(stderr, "Ghostty glyph blit failed: %s\n", SDL_GetError());
+	if (renderer_draw_glyph(renderer, destrect.x, destrect.y,
+	                        cell->codepoint, style, fg, bg) != 0) {
+		PRINT(stderr, "Ghostty glyph render failed for U+%04x\n",
+		      (unsigned)cell->codepoint);
 		ctx->failed = 1;
 	}
 }
@@ -1519,7 +1320,6 @@ static int render_ghostty(int force_full_repaint) {
 	static uint16_t prev_cursor_x = 0;
 	static uint16_t prev_cursor_y = 0;
 	struct ghostty_render_context ctx;
-	SDL_Color bg;
 	int cursor_visible;
 	int cursor_changed;
 
@@ -1537,16 +1337,25 @@ static int render_ghostty(int force_full_repaint) {
 		 prev_cursor_x != ctx.frame.cursor_x ||
 		 prev_cursor_y != ctx.frame.cursor_y);
 
-	force_full_repaint = force_full_repaint || flash ||
-		ctx.frame.dirty == GHOSTTY_BRIDGE_DIRTY_FULL;
+	/* Force every repaint to be a full repaint. The native Screen backend
+	 * is double-buffered (screen_create_window_buffers(2)) and we have no
+	 * per-buffer damage tracking: a partial paint to buffer A leaves B
+	 * stale, so on the next flip the previous frame's content reappears,
+	 * producing flicker and a phantom cursor at the old position. Until
+	 * each buffer tracks its own dirty set, just paint everything every
+	 * frame — the terminal is small enough that this is cheap. */
+	force_full_repaint = 1;
 
-	bg = ghostty_sdl_color(ctx.frame.default_bg);
+	renderer_begin_frame(renderer);
+
+	rgb_t bg = to_rgb(ctx.frame.default_bg);
 	if (force_full_repaint) {
-		SDL_FillRect(screen, NULL, SDL_MapRGB(screen->format, bg.r, bg.g, bg.b));
+		renderer_clear(renderer, bg);
 	}
 	if (force_full_repaint || ctx.frame.dirty != 0) {
 		if (ghostty_bridge_visit_cells(!force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
 			fprintf(stderr, "ghostty render: visit_cells failed\n");
+			renderer_end_frame(renderer);
 			return 0;
 		}
 	}
@@ -1554,12 +1363,14 @@ static int render_ghostty(int force_full_repaint) {
 		if (prev_cursor_visible && prev_cursor_y < rows &&
 		    ghostty_bridge_visit_row(prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit old cursor row failed\n");
+			renderer_end_frame(renderer);
 			return 0;
 		}
 		if (cursor_visible && ctx.frame.cursor_y < rows &&
 		    (!prev_cursor_visible || prev_cursor_y != ctx.frame.cursor_y) &&
 		    ghostty_bridge_visit_row(ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit new cursor row failed\n");
+			renderer_end_frame(renderer);
 			return 0;
 		}
 	}
@@ -1568,68 +1379,29 @@ static int render_ghostty(int force_full_repaint) {
 	prev_cursor_x = ctx.frame.cursor_x;
 	prev_cursor_y = ctx.frame.cursor_y;
 
-	TTF_SetFontStyle(font, TTF_STYLE_NORMAL);
-
-	if(metamode && metamode_cursor != NULL){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 0;
-		destrect.w = metamode_cursor->w;
-		destrect.h = metamode_cursor->h;
-		SDL_BlitSurface(metamode_cursor, NULL, screen, &destrect);
+	if (metamode && metamode_cursor != NULL) {
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, 0, metamode_cursor);
 	}
-
-	if(vmodifiers & KEYMOD_CTRL){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 1 * text_height;
-		destrect.w = ctrl_key_indicator->w;
-		destrect.h = ctrl_key_indicator->h;
-		SDL_BlitSurface(ctrl_key_indicator, NULL, screen, &destrect);
+	if (vmodifiers & KEYMOD_CTRL) {
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, 1 * text_height, ctrl_key_indicator);
 	}
-
-	if(vmodifiers & KEYMOD_ALT){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 2 * text_height;
-		destrect.w = alt_key_indicator->w;
-		destrect.h = alt_key_indicator->h;
-		SDL_BlitSurface(alt_key_indicator, NULL, screen, &destrect);
+	if (vmodifiers & KEYMOD_ALT) {
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, 2 * text_height, alt_key_indicator);
 	}
-
-	if(vmodifiers & KEYMOD_SHIFT){
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 3 * text_height;
-		destrect.w = shift_key_indicator->w;
-		destrect.h = shift_key_indicator->h;
-		SDL_BlitSurface(shift_key_indicator, NULL, screen, &destrect);
+	if (vmodifiers & KEYMOD_SHIFT) {
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, 3 * text_height, shift_key_indicator);
 	}
-
 	if (altsym_lock) {
-		SDL_Rect destrect;
-		destrect.x = (cols-1) * advance;
-		destrect.y = 3 * text_height;
-		destrect.w = shift_key_indicator->w;
-		destrect.h = shift_key_indicator->h;
-		SDL_BlitSurface(altsym_indicator, NULL, screen, &destrect);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, 3 * text_height, altsym_indicator);
 	}
 
-	SDL_Surface *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
+	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
 	if (symmenu_surface != NULL) {
-		SDL_Rect destrect;
-		destrect.w = symmenu_surface->w;
-		destrect.h = symmenu_surface->h;
-		destrect.x = 0;
-		destrect.y = screen->h - symmenu_surface->h;;
-		if (SDL_BlitSurface(symmenu_surface, NULL, screen, &destrect) != 0) {
-			PRINT(stderr, "Symmenu blit failed: %s\n", SDL_GetError());
-			return 1;
-		}
+		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
 	}
 
 	ghostty_bridge_finish_frame();
-	SDL_Flip(screen);
+	renderer_end_frame(renderer);
 
 	if(flash){
 		flash = 0;
@@ -1772,7 +1544,6 @@ static int pty_init() {
 	return TERM_SUCCESS;
 }
 
-extern int SDL_PrivateQuit(void);
 void sig_child(int signo){
 	int status;
 
@@ -1785,18 +1556,25 @@ void sig_child(int signo){
 			PRINT(stderr, "Child %d exited abnormally\n", child_pid);
 		}
 		exit_application = 1;
-		SDL_PrivateQuit();
+		/* Poke the event pipe so the render thread's select() unblocks and
+		 * sees exit_application set. The main run loop is woken by the next
+		 * BPS event; for a faster shutdown a follow-up could push a user
+		 * BPS event here, but the existing flow is correct. */
+		if (event_pipe[1] >= 0) {
+			char w = 'q';
+			(void)write(event_pipe[1], &w, 1);
+		}
 	} else {
 		PRINT(stderr, "Got SIGCHILD for process other than %d\n", child_pid);
 	}
 	errno = old_errno;
 }
 
-/* This function is run in an SDL_Thread, and will check
- * for either input event indication or data from the
- * shell, then run the render loop
+/* Runs in a dedicated pthread. Blocks in select() on the pty master and
+ * the event pipe; either input triggers a dirty-gate check and, if set,
+ * a render pass.
  */
-int run_render(void* data){
+void *run_render(void *data){
 
 	fd_set fds;
 	char ev_buf[100];
@@ -1829,9 +1607,9 @@ int run_render(void* data){
 			}
 		}
 		/* Only repaint when something visible actually changed. The pipe
-		 * poke wakes us for every SDL event, but inert system events
-		 * (SYSWMEVENT/ACTIVEEVENT/unknown) leave screen_dirty clear, so
-		 * we skip the full-screen FillRect + page-flip that was causing
+		 * poke wakes us for every platform event, but inert events
+		 * (orientation check, ignored touch, unknown) leave screen_dirty
+		 * clear, so we skip the full-screen clear + post that was causing
 		 * the white-flash storm. */
 		lock_input();
 		int do_render = screen_dirty;
@@ -1847,8 +1625,7 @@ int run_render(void* data){
 			unlock_input();
 		}
 	}
-	/* never reached */
-	return 0;
+	return NULL;
 }
 
 int app_handle_event(app_t *app, const event_t *event) {
@@ -1861,6 +1638,12 @@ int app_handle_event(app_t *app, const event_t *event) {
 		exit_application = 1;
 		return 1;
 	case TERM_EVENT_RESIZE:
+		/* Apply any pending platform-side geometry change (rotation: set
+		 * ROTATION/SIZE/SOURCE_SIZE and destroy+recreate the render
+		 * buffers) *before* rescreen reflows ghostty and re-paints. This
+		 * runs under input_mutex (lock_input held by the caller), so the
+		 * destructive buffer rebuild can't race the render thread. */
+		platform_apply_pending_resize(g_platform);
 		rescreen(event->as.resize.w, event->as.resize.h);
 		mark_screen_dirty(1);
 		return 1;
@@ -1886,7 +1669,11 @@ int app_handle_event(app_t *app, const event_t *event) {
 				/* height-only INFO update: keep current visibility */
 				vkb_h = virtualkeyboard_visible ? event->as.vkb.height : 0;
 			}
-			setup_screen_size(screen->w, screen->h - vkb_h);
+			setup_screen_size(fb_w, fb_h - vkb_h);
+			/* rows/cols changed -> next frame must repaint so the new
+			 * effective viewport is reflected (matches the dirty-mark in
+			 * TERM_EVENT_RESIZE). */
+			mark_screen_dirty(1);
 		}
 		return 1;
 	case TERM_EVENT_NONE:
@@ -1909,25 +1696,33 @@ int main(int argc, char **argv) {
 	char* home = getenv("HOME");
 	if(home != NULL){ chdir(home); }
 
-	/* Stateless SDL/BPS platform services. The seam is frozen now; #6
-	 * replaces platform_sdl_create() with the native Screen/BPS backend. */
-	g_platform = platform_sdl_create();
-
-	/* Lua is the only config language. On first run (no .term49.lua) the
-	 * loader yields all-defaults, which we then persist as a starter
-	 * config and link the bundled README (what the old first_run() did). */
+	/* Load prefs FIRST so the screen-idle decision is in hand before we
+	 * create the native window (platform_screen_create reads
+	 * SCREEN_IDLE_NORMAL when setting SCREEN_PROPERTY_IDLE_MODE). */
 	int lua_cfg_existed = (access(PREFS_LUA_FILE_PATH, F_OK) == 0);
 	prefs = prefs_lua_load(PREFS_LUA_FILE_PATH);
 	if (!lua_cfg_existed) {
 		prefs_first_run_readme();
 		prefs_emit_lua(prefs, PREFS_LUA_FILE_PATH);
 	}
+	if (!prefs->screen_idle_awake) {
+		setenv("SCREEN_IDLE_NORMAL", "1", 0);
+	}
+	/* AUTO_ORIENTATION is read by the navigator orientation-check handler at
+	 * runtime, so set it before platform_screen_create starts pumping events. */
+	setenv("AUTO_ORIENTATION", "1", 0);
+
+	/* Native Screen/BPS platform backend. Owns the window/context/buffers
+	 * and the event pump. */
+	g_platform = platform_screen_create();
+	if (g_platform == NULL) {
+		fprintf(stderr, "Unable to initialize Screen/BPS platform\n");
+		return TERM_FAILURE;
+	}
+
 	if (platform_is_passport(g_platform)) {
 		prefs->auto_show_vkb = 1;
 	}
-
-	/* set auto orientation */
-	setenv("AUTO_ORIENTATION", "1", 0);
 
 	/* Initialize IO */
 	if (TERM_SUCCESS != io_init(prefs)) {
@@ -1954,24 +1749,23 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	/* initialize SDL video etc */
-	if (TERM_SUCCESS != sdl_init()) {
-		PRINT(stderr, "Unable to initialize SDL\n");
+	/* initialize FreeType, font, renderer, ghostty bridge. The native
+	 * Screen window was already created by platform_screen_create above. */
+	if (TERM_SUCCESS != startup_init()) {
+		PRINT(stderr, "Unable to initialize startup state\n");
 		app_shutdown();
 		return TERM_FAILURE;
 	}
 
-	/* initialize renderer-owned caches */
-	renderer = renderer_sdl_new();
-	if (renderer == NULL || renderer_init_symmenus(renderer, screen, prefs) != 0) {
-		PRINT(stderr, "Unable to initialize SDL renderer caches\n");
+	if (renderer_init_symmenus(renderer, prefs) != 0) {
+		PRINT(stderr, "Unable to initialize renderer symmenu caches\n");
 		app_shutdown();
 		return TERM_FAILURE;
 	}
 
 	/* App state owns the (single) session. Created after pty_init() and
-	 * ghostty_bridge_init() (inside sdl_init) so the session can adopt the
-	 * io master fd + ghostty singleton. */
+	 * ghostty_bridge_init() (inside startup_init) so the session can adopt
+	 * the io master fd + ghostty singleton. */
 	if (app_init(&g_app, prefs) != 0) {
 		PRINT(stderr, "Unable to initialize app state\n");
 		app_shutdown();
@@ -1983,15 +1777,16 @@ int main(int argc, char **argv) {
 	}
 
 	/* start up main event loop */
-	SDL_Thread *render_thread = SDL_CreateThread(run_render, NULL);
+	pthread_t render_thread;
+	pthread_create(&render_thread, NULL, run_render, NULL);
 	/* screen_dirty starts set for the first frame, but the render thread
-	 * blocks in select() until either pty output or an SDL event arrives.
-	 * Poke it once so launch never sits on an undrawn black backbuffer. */
+	 * blocks in select() until either pty output or a platform event
+	 * arrives. Poke it once so launch never sits on an undrawn buffer. */
 	indicate_event_input();
 	while (!exit_application) {
 
 		//Request and process the next event. platform_next_event blocks
-		//(SDL_WaitEvent) outside the lock; only dispatch is locked. The
+		//in bps_get_event outside the lock; only dispatch is locked. The
 		//render-thread poke stays unconditional, as before.
 		event_t event;
 		int have = platform_next_event(g_platform, &event);
@@ -2012,7 +1807,10 @@ int main(int argc, char **argv) {
 	}
 
 	PRINT(stderr, "Exiting run loop\n");
-	SDL_KillThread(render_thread);
+	/* exit_application is already set; poke the event pipe so the render
+	 * thread's select() unblocks and sees the flag, then join cleanly. */
+	indicate_event_input();
+	pthread_join(render_thread, NULL);
 	platform_vkb_hide(g_platform);
 	app_shutdown();
 

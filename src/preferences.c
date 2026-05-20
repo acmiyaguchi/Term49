@@ -613,7 +613,7 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 
 static lua_State *g_lua_state = NULL;
 
-/* Minimal Lua-callable surface. Glue (terminal.h) keeps app/SDL
+/* Minimal Lua-callable surface. Glue (terminal.h) keeps app/renderer
  * internals out of this TU. Broader APIs are intentionally deferred. */
 static int luaC_font_size_set(lua_State *L) {
 	set_font_size((int)luaL_checkinteger(L, 1));

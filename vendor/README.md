@@ -1,34 +1,19 @@
 # Vendored dependencies
 
-This directory owns all third-party code and binary artifacts used by Term49.
-See `manifest.md` for exact submodule pins, prebuilt hashes, and the current
-source-vs-prebuilt reproducibility status.
+This directory owns all third-party source checkouts used by Term49. See
+`manifest.md` for exact submodule pins.
 
 ## Layout
 
 | Path | Role |
 | --- | --- |
-| `prebuilt-bb10/` | Checked-in ARMv7 BB10 headers and shared libraries used by the top-level build and packaged into the BAR. |
-| `sdl/` | Source submodule for the BB10/PlayBook SDL 1.2 fork that produced `prebuilt-bb10/lib/libSDL12.so`. |
-| `touch-control-overlay/` | Source submodule for `prebuilt-bb10/lib/libTouchControlOverlay.so`; this is an indirect dependency of the SDL fork. |
 | `libghostty-vt/` | Vendored Ghostty terminal parser/state model integration. |
 | `lua/` | Source submodule for Lua 5.4 (`lua/lua` upstream), built to a static `liblua.a` by the top-level Makefile and statically linked. Term49's config language and scripting runtime. |
 
-## Current prebuilt inventory
+## Notes
 
-The checked-in BB10 prebuilts are ARM shared libraries. Verify them with
-`sha256sum -c vendor/prebuilt-bb10/SHA256SUMS` from the repo root.
-
-* SDL headers report SDL `1.2.14` and the packaged binary is `libSDL12.so`.
-* TouchControlOverlay is packaged as `libTouchControlOverlay.so`; Term49 does not call it directly, but `libSDL12.so` requires its `tco_*` symbols.
-
-The application still uses the SDL 1.2 API directly (`SDL_Surface`, `SDL_SetVideoMode`, `SDL_Event`, etc.) and carries an in-tree copy of `src/SDL_ttf.c`. Moving to SDL2/SDL3 is therefore a real port, not just a library swap.
-
-## Upgrade notes
-
-No dependency versions were changed by the vendor-layout refactor; the headers and binaries still match the old `external/` contents.
-
-* Prefer rebuilding prebuilts from source submodules with the BB10 NDK, then replacing `prebuilt-bb10/include` and `prebuilt-bb10/lib` together so headers and binaries stay ABI-matched.
-* SDL is the larger project. Upstream SDL is now SDL3, but Term49 is still written against SDL 1.2 APIs (`SDL_Surface`, `SDL_SetVideoMode`, `SDL_Event`, etc.) and depends on the BB10/PlayBook screen integration in the fork. Practical paths are:
-  * refresh the existing BB10 SDL 1.2 fork while preserving the `libSDL12.so` ABI; or
-  * port Term49 to SDL2/SDL3 APIs and package the corresponding BB10/QNX library under a new name.
+Term49 no longer vendors any ARM/QNX prebuilts. The native UI is driven
+directly through the BB10 NDK (`libscreen`, `libbps`, `libfreetype`,
+`libicu*`, `libclipboard`), all of which ship with the NDK. The old SDL 1.2
+fork plus its TouchControlOverlay dependency were removed when the renderer
+moved to the native Screen API.

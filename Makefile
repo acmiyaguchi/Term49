@@ -2,9 +2,6 @@ CC := qcc
 
 INCLUDE := -I$(QNX_TARGET)/usr/include
 INCLUDE += -I$(QNX_TARGET)/usr/include/freetype2
-VENDOR_PREBUILT := ./vendor/prebuilt-bb10
-
-INCLUDE += -I$(VENDOR_PREBUILT)/include
 
 # BB10 libraries
 LIBPATHS	:= -L$(QNX_TARGET)/armle-v7/lib
@@ -13,12 +10,7 @@ LIBS    	:= -lbps -licui18n -licuuc -lscreen -lm -lfreetype -lclipboard
 # Defines
 DEFINES := -D_FORTIFY_SOURCE=2 -D__PLAYBOOK__ -fstack-protector-strong
 
-# OpenGL libraries
 LIBPATHS += -L$(QNX_TARGET)/armle-v7/usr/lib
-
-# Include vendored BB10 prebuilt libs
-LIBPATHS += -L$(VENDOR_PREBUILT)/lib
-LIBS     += -lSDL12 -lTouchControlOverlay
 
 # Term49 uses libghostty-vt as its terminal parser/state model and renderer
 # source of truth. Build the freestanding Ghostty static library on demand.
