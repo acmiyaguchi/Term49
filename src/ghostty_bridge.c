@@ -395,23 +395,23 @@ int ghostty_bridge_finish_frame(void) {
     &clean) == GHOSTTY_SUCCESS ? 0 : -1;
 }
 
-int ghostty_bridge_scroll_view(int delta_rows) {
+static void gb_scroll_viewport(GhosttyTerminalScrollViewportTag tag, int delta_rows) {
+  if (!gb.initialized) { return; }
+  if (tag == GHOSTTY_SCROLL_VIEWPORT_DELTA && delta_rows == 0) { return; }
   GhosttyTerminalScrollViewport behavior = {
-    .tag = GHOSTTY_SCROLL_VIEWPORT_DELTA,
+    .tag = tag,
     .value = { .delta = (intptr_t)delta_rows },
   };
-  if (!gb.initialized || delta_rows == 0) { return 0; }
   ghostty_terminal_scroll_viewport(gb.terminal, behavior);
+}
+
+int ghostty_bridge_scroll_view(int delta_rows) {
+  gb_scroll_viewport(GHOSTTY_SCROLL_VIEWPORT_DELTA, delta_rows);
   return 0;
 }
 
 int ghostty_bridge_scroll_to_bottom(void) {
-  GhosttyTerminalScrollViewport behavior = {
-    .tag = GHOSTTY_SCROLL_VIEWPORT_BOTTOM,
-    .value = { .delta = 0 },
-  };
-  if (!gb.initialized) { return 0; }
-  ghostty_terminal_scroll_viewport(gb.terminal, behavior);
+  gb_scroll_viewport(GHOSTTY_SCROLL_VIEWPORT_BOTTOM, 0);
   return 0;
 }
 
@@ -442,4 +442,3 @@ int ghostty_bridge_mouse_wheel_ready(void) {
          gb_mode_on(GHOSTTY_MODE_BUTTON_MOUSE) ||
          gb_mode_on(GHOSTTY_MODE_ANY_MOUSE);
 }
-

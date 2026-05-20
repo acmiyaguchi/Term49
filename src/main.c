@@ -553,9 +553,8 @@ void handle_activeevent(int gain, int state){
 }
 
 static void maybe_show_vkb(void) {
-	/* On a Passport the system gesture for the VKB doesn't work, so we
-	 * reveal it on a screen tap. Triggered from TOUCH_UP rather than
-	 * TOUCH_DOWN so a drag-to-scroll gesture doesn't pop the keyboard. */
+	/* Passport's system gesture for the VKB doesn't work; auto-reveal
+	 * when the user opts in. */
 	if (prefs->auto_show_vkb) {
 		platform_vkb_show(g_platform);
 	}
@@ -585,8 +584,7 @@ void handle_mousedown(uint16_t x, uint16_t y){
  *   WHEEL  = alt-screen with SGR mouse reporting enabled, forward each
  *            row of drag as an xterm wheel event to the running TUI.
  *   LOCKED = gesture started while a symmenu was open, or in alt-screen
- *            without mouse reporting; consume the touch without action.
- *   IDLE   = no touch is active. */
+ *            without mouse reporting; consume the touch without action. */
 enum drag_mode {
 	DRAG_IDLE = 0,
 	DRAG_SCROLL,
@@ -595,34 +593,40 @@ enum drag_mode {
 };
 static struct {
 	enum drag_mode mode;
-	int     active;
-	int     committed;
-	int16_t start_y;
-	int16_t last_y;
-	int16_t last_x;
-	int     accum_dy;
+	int committed;
+	int start_y;
+	int last_y;
+	int accum_dy;
 } g_drag;
 
 static void drag_reset(void) {
-	g_drag.mode      = DRAG_IDLE;
-	g_drag.active    = 0;
-	g_drag.committed = 0;
-	g_drag.start_y   = 0;
-	g_drag.last_y    = 0;
-	g_drag.last_x    = 0;
-	g_drag.accum_dy  = 0;
+	memset(&g_drag, 0, sizeof(g_drag));
 }
 
-/* Emit one xterm SGR (mode 1006) wheel event at (col, row) — both
- * 1-indexed cell coords. up=1 → wheel up (button 64), up=0 → wheel
- * down (button 65). Bytes go straight back through the pty so the
- * running TUI consumes them as if a real wheel had been spun. */
-static void emit_wheel(int col, int row, int up) {
-	char buf[32];
-	int cb = up ? 64 : 65;
-	int n = snprintf(buf, sizeof(buf), "\x1b[<%d;%d;%dM", cb, col, row);
-	if (n > 0 && n < (int)sizeof(buf)) {
-		io_write_master_char(buf, (size_t)n);
+enum {
+	SGR_WHEEL_UP = 64,
+	SGR_WHEEL_DOWN = 65,
+};
+
+/* Batch `ticks` xterm SGR (mode 1006) wheel events at (col, row) into a
+ * single write to the pty master. A fast drag can accumulate several
+ * rows per MOVE event; one write() beats N. */
+static void emit_wheels(int col, int row, int up, int ticks) {
+	char buf[256];
+	int cb = up ? SGR_WHEEL_UP : SGR_WHEEL_DOWN;
+	size_t off = 0;
+	while (ticks > 0) {
+		int n = snprintf(buf + off, sizeof(buf) - off,
+		                 "\x1b[<%d;%d;%dM", cb, col, row);
+		if (n <= 0 || (size_t)n >= sizeof(buf) - off) { break; }
+		off += (size_t)n;
+		--ticks;
+	}
+	if (off > 0) {
+		io_write_master_char(buf, off);
+	}
+	if (ticks > 0) {
+		emit_wheels(col, row, up, ticks);
 	}
 }
 
@@ -1699,22 +1703,17 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	case TERM_EVENT_KEY:
 		if (event->as.key.pressed) {
-			/* Any keypress snaps the viewport back to the live bottom
-			 * so the keystroke isn't typed into history. libghostty
-			 * no-ops when already at bottom. */
+			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
 			ghostty_bridge_scroll_to_bottom();
 		}
 		app_handle_key(app, &event->as.key);
 		return 1;
 	case TERM_EVENT_TOUCH_DOWN:
 		drag_reset();
-		g_drag.active  = 1;
-		g_drag.start_y = (int16_t)event->as.touch.y;
-		g_drag.last_y  = (int16_t)event->as.touch.y;
-		g_drag.last_x  = (int16_t)event->as.touch.x;
-		/* Decide gesture intent once, here. The mode latches for the
-		 * whole gesture so e.g. a symmenu tap that dismisses the menu
-		 * mid-stroke can't suddenly start scrolling. */
+		g_drag.start_y = event->as.touch.y;
+		g_drag.last_y  = event->as.touch.y;
+		/* Latch the mode for the whole gesture so e.g. a symmenu tap
+		 * that dismisses the menu mid-stroke can't start scrolling. */
 		if (current_symmenu != NULL) {
 			g_drag.mode = DRAG_LOCKED;
 		} else if (ghostty_bridge_mouse_wheel_ready()) {
@@ -1728,17 +1727,15 @@ int app_handle_event(app_t *app, const event_t *event) {
 		mark_screen_dirty(1);
 		return 1;
 	case TERM_EVENT_TOUCH_MOVE: {
-		if (!g_drag.active ||
-		    g_drag.mode == DRAG_LOCKED || g_drag.mode == DRAG_IDLE) {
+		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
 			return 1;
 		}
-		int16_t y = (int16_t)event->as.touch.y;
-		int16_t x = (int16_t)event->as.touch.x;
-		int dy = (int)y - (int)g_drag.last_y;
+		int y = event->as.touch.y;
+		int x = event->as.touch.x;
+		int dy = y - g_drag.last_y;
 		g_drag.last_y = y;
-		g_drag.last_x = x;
 		if (!g_drag.committed) {
-			if (abs((int)y - (int)g_drag.start_y) < text_height / 2) {
+			if (abs(y - g_drag.start_y) < text_height / 2) {
 				return 1;
 			}
 			g_drag.committed = 1;
@@ -1749,28 +1746,21 @@ int app_handle_event(app_t *app, const event_t *event) {
 			return 1;
 		}
 		g_drag.accum_dy -= rows * text_height;
-		/* Natural / iOS-style scrolling: the content follows the finger.
-		 * Finger DOWN (rows > 0) reveals older content (history / scroll
-		 * up); finger UP (rows < 0) reveals newer content (toward live). */
+		/* Natural / iOS-style scrolling: content follows the finger.
+		 * Finger DOWN (rows > 0) reveals older content. */
 		if (g_drag.mode == DRAG_WHEEL) {
-			int ticks = abs(rows);
-			/* finger-down → wheel-up (older content); finger-up → wheel-down. */
-			int up = rows > 0;
-			int col = (text_width  > 0) ? (x / text_width)  + 1 : 1;
-			int rrow= (text_height > 0) ? (y / text_height) + 1 : 1;
-			for (int i = 0; i < ticks; ++i) {
-				emit_wheel(col, rrow, up);
-			}
+			int col  = (text_width  > 0) ? (x / text_width)  + 1 : 1;
+			int rrow = (text_height > 0) ? (y / text_height) + 1 : 1;
+			emit_wheels(col, rrow, rows > 0, abs(rows));
 		} else {
-			/* DRAG_SCROLL — libghostty uses "up is negative" for delta,
-			 * so to scroll into history on finger-down we negate. */
+			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
 			ghostty_bridge_scroll_view(-rows);
 			mark_screen_dirty(1);
 		}
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_UP:
-		if (g_drag.active && !g_drag.committed && g_drag.mode != DRAG_LOCKED) {
+		if (g_drag.mode != DRAG_IDLE && !g_drag.committed && g_drag.mode != DRAG_LOCKED) {
 			maybe_show_vkb();
 		}
 		drag_reset();
@@ -1891,9 +1881,7 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	if (prefs->auto_show_vkb) {
-		platform_vkb_show(g_platform);
-	}
+	maybe_show_vkb();
 
 	/* start up main event loop */
 	pthread_t render_thread;
