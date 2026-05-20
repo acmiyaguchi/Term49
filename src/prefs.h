@@ -22,28 +22,45 @@
 #include <unicode/utf.h>
 #include "types.h"
 
-#define PREFS_FILE_PATH ".term49rc"
+#define PREFS_LUA_FILE_PATH ".term49.lua"
 #define TERM_DEFAULT_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
 #define TERM_DEFAULT_FONT_SIZE 24
 
 int preferences_guess_best_font_size(pref_t *prefs, int target_cols);
 
-pref_t* read_preferences(const char* filename);
-void save_preferences(pref_t const* pref, char const* filename);
 void destroy_preferences(pref_t *pref);
+/* Frees pref_t's owned members but NOT the struct itself, so a reload
+ * can rebuild fields in place without invalidating the global pointer
+ * borrowers (app/io/renderer) hold. */
+void destroy_preferences_members(pref_t *pref);
 
-/* Loader boundary. pref_t is the loader-agnostic plain-data contract; the
- * concrete config parser (libconfig today, Lua in #7) stays PRIVATE to the
- * loader .c file -- no other translation unit includes <libconfig.h> or any
- * future lua headers. #7 adds prefs_lua_loader() populating the SAME pref_t
- * and selects it here, with no consumer changes. */
-typedef struct prefs_loader {
-	pref_t *(*load)(const char *path);
-	void    (*save)(const pref_t *prefs, const char *path);
-	void    (*destroy)(pref_t *prefs);
-} prefs_loader_t;
+/* Loader boundary. pref_t is the loader-agnostic plain-data contract;
+ * the concrete config parser (Lua) stays PRIVATE to preferences.c -- no
+ * other translation unit includes any lua headers. Lua is the only
+ * config language, so these are called directly (no loader vtable). */
 
-const prefs_loader_t *prefs_libconfig_loader(void);
+/* Execute the user's .term49.lua and build pref_t from its globals. A
+ * missing/broken file falls back to compiled defaults (the only sane
+ * behaviour at startup). */
+pref_t *prefs_lua_load(const char *path);
+/* Free a pref_t from prefs_lua_load() and close the scripting state. */
+void prefs_lua_destroy(pref_t *pref);
+/* Re-run .term49.lua for a live reload. Returns a fresh pref_t on
+ * success (scripting state already committed); returns NULL on a
+ * parse error / OOM WITHOUT disturbing the running config or Lua
+ * state, so a broken edit can't wipe a working setup to defaults. */
+pref_t *prefs_lua_reload(void);
+/* Serialize pref_t to a .term49.lua; used to persist a first-run
+ * default config. */
+void prefs_emit_lua(const pref_t *prefs, const char *path);
+/* First-run README symlink (config-format independent). */
+void prefs_first_run_readme(void);
+
+/* Invoke a no-argument Lua function (by global name) registered from the
+ * user's config, via lua_pcall so a Lua error cannot longjmp through C.
+ * Returns 1 on success, 0 if unavailable or the call errored. The Lua
+ * state is owned by, and stays private to, the loader TU. */
+int prefs_lua_invoke(const char *name);
 
 keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);

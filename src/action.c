@@ -44,6 +44,22 @@ static int parse_builtin(const char *value, builtin_action_t *out) {
 		*out = TERM_BUILTIN_PASTE_CLIPBOARD;
 		return 1;
 	}
+	if (strcmp(value, "font_size_increase") == 0) {
+		*out = TERM_BUILTIN_FONT_SIZE_INCREASE;
+		return 1;
+	}
+	if (strcmp(value, "font_size_decrease") == 0) {
+		*out = TERM_BUILTIN_FONT_SIZE_DECREASE;
+		return 1;
+	}
+	if (strcmp(value, "font_size_reset") == 0) {
+		*out = TERM_BUILTIN_FONT_SIZE_RESET;
+		return 1;
+	}
+	if (strcmp(value, "reload_config") == 0) {
+		*out = TERM_BUILTIN_RELOAD_CONFIG;
+		return 1;
+	}
 	return 0;
 }
 
@@ -57,6 +73,17 @@ int action_parse(const char *value, action_t *out) {
 	/* Parsed keybindings always target the active session; #4/#5 set this
 	 * explicitly when routing to a specific session. */
 	out->target.session = 0;
+
+	/* "lua:<fn>" binds a key to a no-arg Lua function from .term49.lua.
+	 * arg points into `value` (the keymap's heap-owned ->to string), the
+	 * same lifetime model as TERM_ACTION_SEND_BYTES below. */
+	if (strncmp(value, "lua:", 4) == 0) {
+		out->kind = TERM_ACTION_BUILTIN;
+		out->as.builtin.id = TERM_BUILTIN_LUA_CALL;
+		out->as.builtin.arg = value + 4;
+		out->as.builtin.arg_len = strlen(value + 4);
+		return 1;
+	}
 
 	if (parse_builtin(value, &builtin)) {
 		out->kind = TERM_ACTION_BUILTIN;

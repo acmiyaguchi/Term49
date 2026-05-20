@@ -35,12 +35,20 @@
 #define READ_BUFFER_SIZE 5000
 #define CHARACTER_BUFFER 10
 #define MIN_FONT_SIZE 4
+#define TERM_MAX_FONT_SIZE 144
 
 // sym = f0d3 // z = 0x007a
 #define KEYCODE_BB_ALT_KEY 0xF0E9
 #define KEYCODE_BB_SYM_KEY 0xF0D3
 
 void rescreen(int w, int h);
+void set_font_size(int new_size);
+int term_current_font_size(void);
+int app_run_action_string(const char *s);
+/* True once the runtime is fully up (app + video + prefs). The `term`
+ * Lua table is inert until then: term.* called at .term49.lua load time
+ * is a no-op, not a way to configure startup. */
+int term_runtime_ready(void);
 void setup_screen_size(int w, int h);
 void set_screen_cols(int cols);
 void app_shutdown(void);

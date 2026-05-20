@@ -23,7 +23,9 @@
 #include <stddef.h>
 #include <sys/keycodes.h>
 
-#include <libconfig.h>
+#include <lua.h>
+#include <lauxlib.h>
+#include <lualib.h>
 
 #include "terminal.h"
 #include "accent_menus.h"
@@ -31,7 +33,6 @@
 #include "symmenu.h"
 #include "prefs.h"
 
-#define PREFS_FILE_BACKUP ".term49rc-old"
 #define README_FILE_PATH "../app/native/README"
 #define README45_FILE_PATH "../app/native/README45"
 
@@ -60,11 +61,15 @@ static const int PREFS_VERSION = 9;
                                                   {'j', "kcud1"}, \
                                                   {'l', "kcuf1"}, \
                                                   {'h', "kcub1"}}
-#define DEFAULT_METAMODE_FUNC_KEYS_LEN 4
+#define DEFAULT_METAMODE_FUNC_KEYS_LEN 8
 #define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
                                                 {'c', "ctrl_down"}, \
                                                 {'s', "rescreen"}, \
-                                                {'v', "paste_clipboard"}}
+                                                {'v', "paste_clipboard"}, \
+                                                {'i', "font_size_increase"}, \
+                                                {'o', "font_size_decrease"}, \
+                                                {'p', "font_size_reset"}, \
+                                                {'r', "reload_config"}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
 #define DEFAULT_SYMMENU_ENTRIES (keymap_t[]) {  \
@@ -119,10 +124,13 @@ static const int font_widths[NUM_SIZES] = {0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6,
                                            147, 148, 148, 149, 149};
 
 
-static void first_run(pref_t *prefs) {
+/* First-run side effect that has nothing to do with the config format:
+ * symlink the bundled README into HOME. (The default .term49.lua is
+ * written separately by the caller via prefs_emit_lua.) */
+void prefs_first_run_readme(void) {
 	char* home = getenv("HOME");
 	if(home != NULL){ chdir(home); }
-	
+
 	char* readme_path = (atoi(getenv("WIDTH")) <= 720) ? README45_FILE_PATH : README_FILE_PATH;
 	fprintf(stderr, "Updating README\n");
 	if (access(readme_path, F_OK) != -1) {
@@ -133,8 +141,6 @@ static void first_run(pref_t *prefs) {
 			}
 		}
 	}
-
-	save_preferences(prefs, PREFS_FILE_PATH);
 }
 
 int preferences_guess_best_font_size(pref_t *prefs, int target_cols){
@@ -164,218 +170,6 @@ int preferences_guess_best_font_size(pref_t *prefs, int target_cols){
 	return font_widths[NUM_SIZES-1];
 }
 
-static void upgrade_config_v8(config_t *dst, config_t *src) {
-	config_setting_t *dst_root = config_root_setting(dst);
-
-	/* upgrade metamode hitbox */
-
-	config_setting_t *old_hitbox_s = config_lookup(src, "metamode_hitbox");
-	if (old_hitbox_s != NULL) {
-		config_setting_t *x_s = config_setting_get_member(old_hitbox_s, "x");
-		config_setting_t *y_s = config_setting_get_member(old_hitbox_s, "y");
-		config_setting_t *w_s = config_setting_get_member(old_hitbox_s, "w");
-		config_setting_t *h_s = config_setting_get_member(old_hitbox_s, "h");
-
-		if (x_s && y_s && w_s && h_s) {
-			int x = config_setting_get_int(x_s);
-			int y = config_setting_get_int(y_s);
-			int w = config_setting_get_int(w_s);
-			int h = config_setting_get_int(h_s);
-
-			config_setting_remove(dst_root, "metamode_hitbox");
-			config_setting_t *new_hitbox_s = config_setting_add(dst_root, "metamode_hitbox", CONFIG_TYPE_ARRAY);
-			config_setting_set_int_elem(new_hitbox_s, -1, x);
-			config_setting_set_int_elem(new_hitbox_s, -1, y);
-			config_setting_set_int_elem(new_hitbox_s, -1, w);
-			config_setting_set_int_elem(new_hitbox_s, -1, h);
-		}
-	}
-
-	/* upgrade various keymaps */
-	char const *keymap_keys[] = {
-		"metamode_keys",
-		"metamode_sticky_keys",
-		"metamode_func_keys",
-		NULL
-	};
-
-	for (char const **key_ptr = keymap_keys; *key_ptr != NULL; ++key_ptr) {
-		char const *key = *key_ptr;
-		config_setting_t *old_map_s = config_lookup(src, key);
-		if (old_map_s == NULL) {
-			continue;
-		}
-
-		config_setting_remove(dst_root, key);
-		config_setting_t *new_map_s = config_setting_add(dst_root, key, CONFIG_TYPE_LIST);
-		
-		for (size_t i = 0; i < config_setting_length(old_map_s); ++i) {
-			config_setting_t *old_key_s = config_setting_get_elem(old_map_s, i);
-			
-			char const *from = config_setting_name(old_key_s);
-			char const *to = config_setting_get_string(old_key_s);
-			
-			config_setting_t *new_key_s = config_setting_add(new_map_s, NULL, CONFIG_TYPE_LIST);
-			config_setting_set_string_elem(new_key_s, -1, from);
-			config_setting_set_string_elem(new_key_s, -1, to);
-		}
-	}
-
-	/* upgrade symmenu */
-	config_setting_t *old_map_s = config_lookup(src, "sym_keys");
-	if (old_map_s == NULL) {
-		return;
-	}
-	
-	config_setting_t *new_map_s = config_setting_add(dst_root, "main_symmenu", CONFIG_TYPE_LIST);
-
-	for (int row = config_setting_length(old_map_s) - 1; row >= 0; --row) {
-		config_setting_t *old_row_s = config_setting_get_elem(old_map_s, row);
-		config_setting_t *new_row_s = config_setting_add(new_map_s, NULL, CONFIG_TYPE_LIST);
-			
-		for (size_t col = 0; col < config_setting_length(old_row_s); ++col) {
-			config_setting_t *old_key_s = config_setting_get_elem(old_row_s, col);
-			
-			char const *from = config_setting_name(old_key_s);
-			char const *to = config_setting_get_string(old_key_s);
-			
-			config_setting_t *new_key_s = config_setting_add(new_row_s, NULL, CONFIG_TYPE_LIST);
-			config_setting_set_string_elem(new_key_s, -1, from);
-			config_setting_set_string_elem(new_key_s, -1, to);
-		}
-	}
-}
-
-typedef void (*prefs_upgrade_fn)(config_t *dst, config_t *src);
-
-/* Explicit, table-driven version dispatch. Each row upgrades a config AT
- * from_version TO to_version; adding a future migration is one row plus
- * one function. NOTE: this applies a single step (the on-disk file is
- * the only input). True multi-step chaining (e.g. v7 -> v8 -> v9) needs
- * an intermediate-config deep copy libconfig does not provide; deferred
- * until a second step actually exists, which is why the table is kept
- * simple rather than abstracted now. */
-static const struct {
-	int from_version;
-	int to_version;
-	prefs_upgrade_fn apply;
-} PREFS_UPGRADES[] = {
-	{ 8, 9, upgrade_config_v8 },
-};
-
-static config_t *upgrade_config(char const *path, int old_version) {
-	config_t src_data;
-	config_t *src = &src_data;
-	config_t *dst = (config_t*)malloc(sizeof(config_t));
-
-	config_init(src);
-	config_init(dst);
-	config_read_file(src, path);
-	config_read_file(dst, path);
-
-	int handled = 0;
-	for (size_t i = 0; i < sizeof(PREFS_UPGRADES) / sizeof(PREFS_UPGRADES[0]); ++i) {
-		if (PREFS_UPGRADES[i].from_version == old_version) {
-			fprintf(stderr, "Upgrading prefs v%d -> v%d. Old prefs in %s\n",
-			        PREFS_UPGRADES[i].from_version, PREFS_UPGRADES[i].to_version,
-			        PREFS_FILE_BACKUP);
-			PREFS_UPGRADES[i].apply(dst, src);
-			handled = 1;
-			break;
-		}
-	}
-	if (!handled) {
-		fprintf(stderr, "Preferences version %d not supported!\n", old_version);
-	}
-
-	config_destroy(src);
-	return dst;
-}
-
-/* --- libconfig structural validation ---------------------------------
- * The loaders below index into config aggregates. A malformed .term49rc
- * (wrong element types, scalars where lists are expected, short arrays)
- * must fall back to defaults instead of dereferencing NULL. These
- * helpers are NULL-tolerant: config_setting_type/is_* are macros that
- * deref (S)->type and config_setting_get_elem() derefs its argument, so
- * every setting pointer is checked before use. They are only invoked
- * once the caller has confirmed the top-level setting is the right
- * aggregate type, so config_setting_length() here is always safe. */
-
-static int keymap_elem_valid(config_setting_t *m) {
-	/* a keymap entry is an aggregate whose elements 0 and 1 are strings;
-	 * get_string_elem() is type/range-safe once m itself is non-NULL */
-	return m != NULL
-		&& config_setting_get_string_elem(m, 0) != NULL
-		&& config_setting_get_string_elem(m, 1) != NULL;
-}
-
-static int keymap_list_valid(config_setting_t *setting) {
-	for (int i = 0; i < config_setting_length(setting); ++i) {
-		if (!keymap_elem_valid(config_setting_get_elem(setting, i))) {
-			return 0;
-		}
-	}
-	return 1;
-}
-
-static int symmenu_rows_valid(config_setting_t *rows_s) {
-	for (int row = 0; row < config_setting_length(rows_s); ++row) {
-		config_setting_t *col_s = config_setting_get_elem(rows_s, row);
-		if (col_s == NULL || !config_setting_is_aggregate(col_s)) {
-			return 0;
-		}
-		for (int col = 0; col < config_setting_length(col_s); ++col) {
-			if (!keymap_elem_valid(config_setting_get_elem(col_s, col))) {
-				return 0;
-			}
-		}
-	}
-	return 1;
-}
-
-static int number_array_valid(config_setting_t *setting, int min_len) {
-	if (config_setting_length(setting) < min_len) {
-		return 0;
-	}
-	for (int i = 0; i < config_setting_length(setting); ++i) {
-		config_setting_t *e = config_setting_get_elem(setting, i);
-		if (e == NULL || !config_setting_is_number(e)) {
-			return 0;
-		}
-	}
-	return 1;
-}
-
-static int* create_int_array(config_t const *config, char const *path, size_t def_len, int const *def, int dynamic) {
-	config_setting_t *setting = config_lookup(config, path);
-	int use_default = 0;
-	size_t source_len = 0;
-
-	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_ARRAY) || !number_array_valid(setting, 0)) {
-		fprintf(stderr, "invalid array %s, using default\n", path);
-		source_len = def_len;
-		use_default = 1;
-	} else {
-		source_len = config_setting_length(setting);
-	}
-	
-	int *result = calloc(source_len + 1, sizeof(int));
-	result[source_len] = -1;  // sentinel for end of array, only useful for positive arrays
-
-	if (use_default) {
-		for (int i = 0; i < source_len; i++) {
-			result[i] = def[i];
-		}
-	} else {
-		for (int i = 0; i < source_len; i++) {
-			result[i] = config_setting_get_int_elem(setting, i);
-		}
-	}
-
-	return result;
-}
-
 static void keymap_set_to(keymap_t *entry, const char *to) {
 	entry->to = strdup(to);
 	if (!action_parse(entry->to, &entry->action)) {
@@ -383,165 +177,301 @@ static void keymap_set_to(keymap_t *entry, const char *to) {
 	}
 }
 
-static keymap_t* create_keymap_array(config_t const *config, char const *path, size_t def_len, keymap_t const *def) {
-	config_setting_t *setting = config_lookup(config, path);
-	int use_default = 0;
-	size_t source_len = 0;
+/* ====================================================================
+ * Lua is the only config language. The builders below populate pref_t
+ * fields directly from the user's .term49.lua globals, mirroring the
+ * exact allocation shape destroy_preferences() frees: calloc'd,
+ * sentinel-terminated arrays; strdup'd keymap ->to via keymap_set_to;
+ * symmenu_t entries + symkey matrix. A missing or ill-typed global
+ * falls back to the compiled DEFAULT_* (same robustness the old
+ * libconfig path had). All Lua handles stay private to this TU.
+ * ==================================================================== */
 
-	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_LIST) || !keymap_list_valid(setting)) {
-		fprintf(stderr, "invalid keymap list %s, using default\n", path);
-		source_len = def_len;
-		use_default = 1;
-	} else {
-		source_len = config_setting_length(setting);
+/* push global `key`; return 1 with the table on the stack, else 0 with
+ * nothing pushed. */
+static int lua_get_table(lua_State *L, const char *key) {
+	lua_getglobal(L, key);
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		return 1;
 	}
-	
-	keymap_t *result = calloc(source_len + 1, sizeof(keymap_t));
-	result[source_len] = (keymap_t){0, NULL}; // sentinel for end of array
-	
-	if (use_default) {
-		for (int i = 0; i < source_len; i++) {
-			result[i].from = def[i].from;
-			keymap_set_to(&result[i], def[i].to);
-		}
-	} else {
-		for (int i = 0; i < source_len; i++) {
-			config_setting_t *m = config_setting_get_elem(setting, i);
-			char const *from_str = config_setting_get_string_elem(m, 0);
-			result[i].from = from_str[0];
-			keymap_set_to(&result[i], config_setting_get_string_elem(m, 1));
-		}
-	}
+	lua_pop(L, 1);
+	return 0;
+}
 
+/* Read the {from,to} pair at index `i` of the table currently on top of
+ * the stack. On success returns 1 with the pair left on the stack (at
+ * -1) and *from/*to pointing into Lua strings owned by it (valid until
+ * the caller pops the pair). On failure returns 0 with nothing left. */
+static int lua_pair_at(lua_State *L, int i, const char **from, const char **to) {
+	int ok = 0;
+	lua_rawgeti(L, -1, (lua_Integer)i);          /* pair */
+	if (lua_type(L, -1) == LUA_TTABLE) {
+		lua_rawgeti(L, -1, 1);
+		lua_rawgeti(L, -2, 2);
+		const char *f = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : NULL;
+		const char *t = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : NULL;
+		if (f && f[0] && t) { *from = f; *to = t; ok = 1; }
+		lua_pop(L, 2);                       /* pop the two field values */
+	}
+	if (!ok) {
+		lua_pop(L, 1);                       /* pop the pair */
+	}
+	return ok;
+}
+
+/* Validate that the table currently at stack top is a sequence of valid
+ * {from,to} string pairs. STACK: net zero -- the table stays at -1 in
+ * every path (lua_pair_at pops what it pushed; we pop each validated
+ * pair). */
+static int lua_pairs_valid(lua_State *L) {
+	size_t n = (size_t)lua_rawlen(L, -1);
+	for (size_t i = 1; i <= n; ++i) {
+		const char *f, *t;
+		if (!lua_pair_at(L, (int)i, &f, &t)) {
+			return 0;
+		}
+		lua_pop(L, 1);                       /* pop validated pair */
+	}
+	return 1;
+}
+
+/* Build a sentinel-terminated keymap_t[] from the table-of-pairs at
+ * stack top. Validate-all-then-build, so one bad entry rejects the
+ * whole table with no partial allocation. Returns NULL if any pair is
+ * invalid (no log -- the caller reports with its key name); *out_n is
+ * the entry count on success. STACK: the table stays at -1 in every
+ * path; the caller owns and pops it. */
+static keymap_t *lua_keymap_from_top(lua_State *L, size_t *out_n) {
+	if (!lua_pairs_valid(L)) {
+		return NULL;
+	}
+	size_t n = (size_t)lua_rawlen(L, -1);
+	keymap_t *result = calloc(n + 1, sizeof(keymap_t));
+	result[n] = (keymap_t){0, NULL};
+	for (size_t i = 1; i <= n; ++i) {
+		const char *f, *t;
+		lua_pair_at(L, (int)i, &f, &t);      /* validated above => succeeds */
+		result[i - 1].from = f[0];
+		keymap_set_to(&result[i - 1], t);
+		lua_pop(L, 1);                       /* pop the pair */
+	}
+	*out_n = n;
 	return result;
 }
 
-static symmenu_t* create_symmenu(config_t const *config, char const *path, int def_num_rows, int const *def_row_lens, keymap_t const *def_entries) {
-	config_setting_t *rows_s = config_lookup(config, path);
-	int use_default = 0;
+/* Allocate a sentinel-terminated keymap_t[] from a compiled default
+ * table (the shared fallback shape). */
+static keymap_t *lua_keymap_defaults(const keymap_t *def, size_t def_len) {
+	keymap_t *result = calloc(def_len + 1, sizeof(keymap_t));
+	result[def_len] = (keymap_t){0, NULL};
+	for (size_t i = 0; i < def_len; ++i) {
+		result[i].from = def[i].from;
+		keymap_set_to(&result[i], def[i].to);
+	}
+	return result;
+}
 
-	symmenu_t *menu = calloc(1, sizeof(symmenu_t));
-	
-	if (!rows_s || (config_setting_type(rows_s) != CONFIG_TYPE_LIST) || !symmenu_rows_valid(rows_s)) {
-		fprintf(stderr, "invalid symmenu %s, using default\n", path);
+static int *lua_create_int_array(lua_State *L, const char *key,
+                                 size_t def_len, const int *def) {
+	int *vals = NULL;
+	size_t len = 0;
+	int ok = 0;
 
-		/* calculate the length of the keymap entry array */
-		int def_num_keys = 0;
-		for (int i = 0; i < def_num_rows; ++i) {
-			def_num_keys += def_row_lens[i];
-		}
-		
-		/* allocate the keymap entry and symkey arrays */
-		menu->entries = calloc(def_num_keys + 1, sizeof(keymap_t));
-		menu->entries[def_num_keys] = (keymap_t){0, NULL}; // sentinel for end of array
-		
-		menu->keys = calloc(def_num_rows + 1, sizeof(symkey_t*));
-		menu->keys[def_num_rows] = NULL;
-		
-		/* fill in the keymap entry array */
-		int entry_idx = 0;
-		for (int row = 0; row < def_num_rows; ++row) {
-			/* allocate the symkey row */
-			menu->keys[row] = calloc(def_row_lens[row] + 1, sizeof(symkey_t));
-			menu->keys[row][def_row_lens[row]].map = NULL;
-			
-			/* fill in the symkey row (rest done during render) */
-			for (int col = 0; col < def_row_lens[row]; ++col) {
-				menu->entries[entry_idx].from = def_entries[entry_idx].from;
-				keymap_set_to(&menu->entries[entry_idx], def_entries[entry_idx].to);
-				
-				menu->keys[row][col].flash = '\0';
-				menu->keys[row][col].map = &menu->entries[entry_idx];
-				
-				++entry_idx;
+	if (lua_get_table(L, key)) {
+		size_t n = (size_t)lua_rawlen(L, -1);
+		int good = 1;
+		int *tmp = calloc(n + 1, sizeof(int));
+		for (size_t i = 1; i <= n; ++i) {
+			lua_rawgeti(L, -1, (lua_Integer)i);
+			if (lua_type(L, -1) == LUA_TNUMBER) {
+				tmp[i - 1] = (int)lua_tointeger(L, -1);
+			} else {
+				good = 0;
 			}
+			lua_pop(L, 1);
 		}
-
-	} else {
-		/* calculate the length of the keymap entry array */
-		int num_keys = 0;
-		for (int row = 0; row < config_setting_length(rows_s); ++row) {
-			config_setting_t *col_s = config_setting_get_elem(rows_s, row);
-			num_keys += config_setting_length(col_s);
-		}
-	
-		/* allocate the keymap entry and symkey arrays */
-		menu->entries = calloc(num_keys + 1, sizeof(keymap_t));
-		menu->entries[num_keys] = (keymap_t){0, NULL}; // sentinel for end of array
-		
-		menu->keys = calloc(config_setting_length(rows_s) + 1, sizeof(symkey_t*));
-		menu->keys[config_setting_length(rows_s)] = NULL;
-
-		/* fill in the keymap entry array */
-		int entry_idx = 0;
-		for (int row = 0; row < config_setting_length(rows_s); ++row) {
-			config_setting_t *col_s = config_setting_get_elem(rows_s, row);
-			int col_len = config_setting_length(col_s);
-			
-			/* allocate the symkey row */
-			menu->keys[row] = calloc(col_len + 1, sizeof(symkey_t));
-			menu->keys[row][col_len].map = NULL;
-			
-			/* fill in the symkey row (rest done during render) */
-			for (int col = 0; col < col_len; ++col) {
-				config_setting_t *m = config_setting_get_elem(col_s, col);
-				char const *from_str = config_setting_get_string_elem(m, 0);
-				menu->entries[entry_idx].from = from_str[0];
-				keymap_set_to(&menu->entries[entry_idx], config_setting_get_string_elem(m, 1));
-			
-				menu->keys[row][col].flash = '\0';
-				menu->keys[row][col].map = &menu->entries[entry_idx];
-
-				++entry_idx;
-			}
-		}
+		lua_pop(L, 1);                        /* pop the global table */
+		if (good) { vals = tmp; len = n; ok = 1; }
+		else { free(tmp); }
+	}
+	if (!ok) {
+		fprintf(stderr, "invalid array %s, using default\n", key);
+		len = def_len;
 	}
 
+	int *result = calloc(len + 1, sizeof(int));
+	result[len] = -1;  /* sentinel (positive-array convention) */
+	for (size_t i = 0; i < len; ++i) {
+		result[i] = ok ? vals[i] : def[i];
+	}
+	free(vals);
+	return result;
+}
+
+/* Fixed-length colour reader: always exactly PREFS_COLOR_NUM_ELEMENTS
+ * ints plus the positive-array -1 sentinel. Per-element fallback to
+ * def[i] for a missing/short/non-numeric entry; extra Lua elements are
+ * ignored. So a hand-edited {} / {1,2} / overlong colour can never make
+ * a consumer over- or under-read (lua_create_int_array rejected the
+ * whole array on any flaw; this degrades per element instead). STACK:
+ * net zero. */
+static int *lua_create_color(lua_State *L, const char *key, const int *def) {
+	int *result = calloc(PREFS_COLOR_NUM_ELEMENTS + 1, sizeof(int));
+	result[PREFS_COLOR_NUM_ELEMENTS] = -1;   /* sentinel */
+	int have = lua_get_table(L, key);
+	for (int i = 0; i < PREFS_COLOR_NUM_ELEMENTS; ++i) {
+		int v = def[i];
+		if (have) {
+			lua_rawgeti(L, -1, i + 1);
+			if (lua_type(L, -1) == LUA_TNUMBER) {
+				v = (int)lua_tointeger(L, -1);
+			}
+			lua_pop(L, 1);
+		}
+		result[i] = v;
+	}
+	if (have) {
+		lua_pop(L, 1);                       /* pop the global table */
+	}
+	return result;
+}
+
+static hitbox_t *lua_create_hitbox(lua_State *L, const char *key, hitbox_t def) {
+	hitbox_t *result = calloc(1, sizeof(hitbox_t));
+	int v[4];
+	int ok = 0;
+
+	if (lua_get_table(L, key)) {
+		if ((size_t)lua_rawlen(L, -1) >= 4) {
+			ok = 1;
+			for (int i = 0; i < 4; ++i) {
+				lua_rawgeti(L, -1, i + 1);
+				if (lua_type(L, -1) == LUA_TNUMBER) {
+					v[i] = (int)lua_tointeger(L, -1);
+				} else {
+					ok = 0;
+				}
+				lua_pop(L, 1);
+			}
+		}
+		lua_pop(L, 1);
+	}
+	if (!ok) {
+		fprintf(stderr, "invalid array %s, using default\n", key);
+		result->x = def.x; result->y = def.y;
+		result->w = def.w; result->h = def.h;
+	} else {
+		result->x = v[0]; result->y = v[1];
+		result->w = v[2]; result->h = v[3];
+	}
+	return result;
+}
+
+static keymap_t *lua_create_keymap_array(lua_State *L, const char *key,
+                                         size_t def_len, const keymap_t *def) {
+	if (lua_get_table(L, key)) {
+		size_t n;
+		keymap_t *result = lua_keymap_from_top(L, &n);
+		lua_pop(L, 1);                       /* pop the global table */
+		if (result != NULL) {
+			return result;
+		}
+	}
+	fprintf(stderr, "invalid keymap list %s, using default\n", key);
+	return lua_keymap_defaults(def, def_len);
+}
+
+static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
+                                     int def_num_rows, const int *def_row_lens,
+                                     const keymap_t *def_entries) {
+	symmenu_t *menu = calloc(1, sizeof(symmenu_t));
+
+	if (lua_get_table(L, key)) {
+		int nrows = (int)lua_rawlen(L, -1);
+		int valid = 1;
+		for (int r = 1; r <= nrows && valid; ++r) {
+			lua_rawgeti(L, -1, r);               /* row */
+			if (lua_type(L, -1) != LUA_TTABLE || !lua_pairs_valid(L)) {
+				valid = 0;
+			}
+			lua_pop(L, 1);                        /* pop the row */
+		}
+		if (valid) {
+			int num_keys = 0;
+			for (int r = 1; r <= nrows; ++r) {
+				lua_rawgeti(L, -1, r);
+				num_keys += (int)lua_rawlen(L, -1);
+				lua_pop(L, 1);
+			}
+			menu->entries = calloc(num_keys + 1, sizeof(keymap_t));
+			menu->entries[num_keys] = (keymap_t){0, NULL};
+			menu->keys = calloc(nrows + 1, sizeof(symkey_t *));
+			menu->keys[nrows] = NULL;
+
+			int entry_idx = 0;
+			for (int r = 0; r < nrows; ++r) {
+				lua_rawgeti(L, -1, r + 1);       /* row */
+				int col_len = (int)lua_rawlen(L, -1);
+				menu->keys[r] = calloc(col_len + 1, sizeof(symkey_t));
+				menu->keys[r][col_len].map = NULL;
+				for (int c = 0; c < col_len; ++c) {
+					const char *f, *t;
+					lua_pair_at(L, c + 1, &f, &t); /* valid => succeeds */
+					menu->entries[entry_idx].from = f[0];
+					keymap_set_to(&menu->entries[entry_idx], t);
+					lua_pop(L, 1);           /* pop the pair */
+					menu->keys[r][c].flash = '\0';
+					menu->keys[r][c].map = &menu->entries[entry_idx];
+					++entry_idx;
+				}
+				lua_pop(L, 1);                   /* pop the row */
+			}
+			lua_pop(L, 1);                           /* pop the global table */
+			return menu;
+		}
+		lua_pop(L, 1);                                   /* pop the global table */
+	}
+
+	fprintf(stderr, "invalid symmenu %s, using default\n", key);
+	int def_num_keys = 0;
+	for (int i = 0; i < def_num_rows; ++i) {
+		def_num_keys += def_row_lens[i];
+	}
+	menu->entries = calloc(def_num_keys + 1, sizeof(keymap_t));
+	menu->entries[def_num_keys] = (keymap_t){0, NULL};
+	menu->keys = calloc(def_num_rows + 1, sizeof(symkey_t *));
+	menu->keys[def_num_rows] = NULL;
+	int entry_idx = 0;
+	for (int row = 0; row < def_num_rows; ++row) {
+		menu->keys[row] = calloc(def_row_lens[row] + 1, sizeof(symkey_t));
+		menu->keys[row][def_row_lens[row]].map = NULL;
+		for (int col = 0; col < def_row_lens[row]; ++col) {
+			menu->entries[entry_idx].from = def_entries[entry_idx].from;
+			keymap_set_to(&menu->entries[entry_idx], def_entries[entry_idx].to);
+			menu->keys[row][col].flash = '\0';
+			menu->keys[row][col].map = &menu->entries[entry_idx];
+			++entry_idx;
+		}
+	}
 	return menu;
 }
 
-static hitbox_t* create_hitbox(config_t const *config, char const *path, hitbox_t def) {
-	config_setting_t *setting = config_lookup(config, path);
-	int use_default = 0;
-
-	if (!setting || (config_setting_type(setting) != CONFIG_TYPE_ARRAY) || !number_array_valid(setting, 4)) {
-		fprintf(stderr, "invalid array %s, using default\n", path);
-		use_default = 1;
-	}
-	
-	hitbox_t *result = calloc(1, sizeof(hitbox_t));
-
-	if (use_default) {
-		result->x = def.x;
-		result->y = def.y;
-		result->w = def.w;
-		result->h = def.h;
-	} else {
-		result->x = config_setting_get_int_elem(setting, 0);
-		result->y = config_setting_get_int_elem(setting, 1);
-		result->w = config_setting_get_int_elem(setting, 2);
-		result->h = config_setting_get_int_elem(setting, 3);
-	}
-
-	return result;
-}
-
-void destroy_preferences(pref_t *pref) {
+void destroy_preferences_members(pref_t *pref) {
 	free(pref->font_path);
 	free(pref->tty_encoding);
 
 	free(pref->text_color);
 	free(pref->background_color);
 	free(pref->metamode_hitbox);
-	
+
 	keymap_t *m = pref->metamode_keys;
 	while (m->to != NULL) { free(m->to); ++m; }
 	free(pref->metamode_keys);
-	
+
 	m = pref->metamode_sticky_keys;
 	while (m->to != NULL) { free(m->to); ++m; }
 	free(pref->metamode_sticky_keys);
-	
+
 	m = pref->metamode_func_keys;
 	while (m->to != NULL) { free(m->to); ++m; }
 	free(pref->metamode_func_keys);
@@ -555,20 +485,21 @@ void destroy_preferences(pref_t *pref) {
 	m = pref->altsym_entries;
 	while (m->to != NULL) { free(m->to); ++m; }
 	free(pref->altsym_entries);
-	
-	free(pref->keyhold_actions_exempt);
 
+	free(pref->keyhold_actions_exempt);
+}
+
+void destroy_preferences(pref_t *pref) {
+	destroy_preferences_members(pref);
 	free(pref);
 }
 
 /* --- scalar/string preference schema ---------------------------------
  * Single source of truth for every plain int/bool/string preference:
- * key name, type, the pref_t field (by offset), and default. read and
- * save are both driven from this table, so a preference cannot drift
- * between the two sides (which previously caused metamode_hold_key to be
- * saved as a bool while read as an int keycode, and keyhold_accents to
- * be read but never written). Structured prefs (colour/hitbox/keymap/
- * symmenu arrays) keep their dedicated create_ / set_ helpers. */
+ * key name, type, the pref_t field (by offset), and default. The Lua
+ * scalar reader and the .term49.lua emitter are both driven from this
+ * table, so a preference cannot drift between the two sides. Structured
+ * prefs (colour/hitbox/keymap/symmenu) keep their dedicated builders. */
 typedef enum { PS_INT, PS_BOOL, PS_STRING } prefs_scalar_type;
 
 typedef struct {
@@ -587,7 +518,7 @@ static const prefs_scalar_desc PREFS_SCALARS[] = {
 	{ "metamode_doubletap_key",   PS_INT,    offsetof(pref_t, metamode_doubletap_key),   DEFAULT_METAMODE_DOUBLETAP_KEY, NULL },
 	{ "metamode_doubletap_delay", PS_INT,    offsetof(pref_t, metamode_doubletap_delay), DEFAULT_METAMODE_DOUBLETAP_DELAY, NULL },
 	{ "keyhold_actions",          PS_BOOL,   offsetof(pref_t, keyhold_actions),          DEFAULT_KEYHOLD_ACTIONS,        NULL },
-	/* keycode, not a flag: previously saved as bool (a drift bug) -> INT */
+	/* keycode, not a flag */
 	{ "metamode_hold_key",        PS_INT,    offsetof(pref_t, metamode_hold_key),        DEFAULT_METAMODE_HOLD_KEY,      NULL },
 	{ "allow_resize_columns",     PS_BOOL,   offsetof(pref_t, allow_resize_columns),     DEFAULT_ALLOW_RESIZE_COLUMNS,   NULL },
 	{ "tty_encoding",             PS_STRING, offsetof(pref_t, tty_encoding),             0,                              DEFAULT_TTY_ENCODING },
@@ -598,203 +529,55 @@ static const prefs_scalar_desc PREFS_SCALARS[] = {
 	{ "keyhold_accents",          PS_BOOL,   offsetof(pref_t, keyhold_accents),          DEFAULT_KEYHOLD_ACCENTS,        NULL },
 };
 
-static void prefs_read_scalars(config_t const *config, pref_t *prefs) {
+static void lua_read_scalars(lua_State *L, pref_t *prefs) {
 	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
 		const prefs_scalar_desc *d = &PREFS_SCALARS[i];
 		void *field = (char *)prefs + d->offset;
+		lua_getglobal(L, d->key);
+		int ty = lua_type(L, -1);
 		switch (d->type) {
 		case PS_INT:
-			if (config_lookup_int(config, d->key, (int *)field) != CONFIG_TRUE) {
-				*(int *)field = d->int_default;
-			}
+			*(int *)field = (ty == LUA_TNUMBER) ? (int)lua_tointeger(L, -1)
+			                                    : d->int_default;
 			break;
 		case PS_BOOL:
-			if (config_lookup_bool(config, d->key, (int *)field) != CONFIG_TRUE) {
-				*(int *)field = d->int_default;
-			}
-			break;
-		case PS_STRING: {
-			const char *s = NULL;
-			if (config_lookup_string(config, d->key, &s) != CONFIG_TRUE) {
-				s = d->str_default;
-			}
-			*(char **)field = strdup(s);  /* prefs owns its strings */
-			break;
-		}
-		}
-	}
-}
-
-static void prefs_save_scalars(config_setting_t *root, pref_t const *prefs) {
-	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
-		const prefs_scalar_desc *d = &PREFS_SCALARS[i];
-		const void *field = (const char *)prefs + d->offset;
-		config_setting_t *s;
-		switch (d->type) {
-		case PS_INT:
-			s = config_setting_add(root, d->key, CONFIG_TYPE_INT);
-			config_setting_set_int(s, *(const int *)field);
-			break;
-		case PS_BOOL:
-			s = config_setting_add(root, d->key, CONFIG_TYPE_BOOL);
-			config_setting_set_bool(s, *(const int *)field);
+			*(int *)field = (ty == LUA_TBOOLEAN) ? lua_toboolean(L, -1)
+			              : (ty == LUA_TNUMBER)  ? (lua_tointeger(L, -1) != 0)
+			                                     : d->int_default;
 			break;
 		case PS_STRING:
-			s = config_setting_add(root, d->key, CONFIG_TYPE_STRING);
-			config_setting_set_string(s, *(char *const *)field);
+			*(char **)field = strdup(ty == LUA_TSTRING ? lua_tostring(L, -1)
+			                                            : d->str_default);
 			break;
 		}
+		lua_pop(L, 1);
 	}
 }
 
-pref_t *read_preferences(const char* filename) {
-	pref_t *prefs = calloc(1, sizeof(pref_t)); // our internal data structure
-	if (prefs == NULL) {
-		fprintf(stderr, "fatal error: failed to calloc prefs structure\n");
-		exit(1);
-	}
+/* Single Lua -> pref_t population routine. Mirrors the field set and
+ * defaults of the old libconfig path exactly. */
+static void prefs_build_from_lua(lua_State *L, pref_t *prefs) {
+	lua_read_scalars(L, prefs);
 
-	int is_first_run = 0; int upgraded = 0;
-	
-	config_t config_data; // what libconfig parses out of the file
-	config_t *config = &config_data;
-	config_init(config);
-	
-	if (access(filename, F_OK) == -1) {
-		PRINT(stderr, "Preferences file not found, assuming first run\n");
-		is_first_run = 1;
-	} else {
-		if(config_read_file(config, filename) != CONFIG_TRUE){
-			fprintf(stderr, "%s:%d - %s\n", config_error_file(config),
-			        config_error_line(config), config_error_text(config));
-		}
-	}
+	prefs->text_color = lua_create_color(L, "text_color", DEFAULT_TEXT_COLOR);
+	prefs->background_color = lua_create_color(L, "background_color", DEFAULT_BACKGROUND_COLOR);
+	prefs->metamode_hitbox = lua_create_hitbox(L, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
+	prefs->metamode_keys = lua_create_keymap_array(L, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
+	prefs->metamode_sticky_keys = lua_create_keymap_array(L, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
+	prefs->metamode_func_keys = lua_create_keymap_array(L, "metamode_func_keys", DEFAULT_METAMODE_FUNC_KEYS_LEN, DEFAULT_METAMODE_FUNC_KEYS);
+	prefs->keyhold_actions_exempt = lua_create_int_array(L, "keyhold_actions_exempt", DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN, DEFAULT_KEYHOLD_ACTIONS_EXEMPT);
 
-	if (config_lookup_int(config, "prefs_version", &prefs->prefs_version) != CONFIG_TRUE) {
-		prefs->prefs_version = PREFS_VERSION;
-	}
-	if(prefs->prefs_version != PREFS_VERSION) {
-		config = upgrade_config(filename, prefs->prefs_version);
-		upgraded = 1;
-	}
-	
-	int default_font_columns = (atoi(getenv("WIDTH")) <= 720) ? 45 : 60;
+	prefs->main_symmenu = lua_create_symmenu(L, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
+	prefs->altsym_entries = lua_create_keymap_array(L, "altsym_entries", DEFAULT_ALTSYM_ENTRIES_LEN, DEFAULT_ALTSYM_ENTRIES);
 
-	prefs_read_scalars(config, prefs);
-
-	prefs->text_color = create_int_array(config, "text_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_TEXT_COLOR, 0);
-	prefs->background_color = create_int_array(config, "background_color", PREFS_COLOR_NUM_ELEMENTS, DEFAULT_BACKGROUND_COLOR, 0);
-	prefs->metamode_hitbox = create_hitbox(config, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
-	prefs->metamode_keys = create_keymap_array(config, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
-	prefs->metamode_sticky_keys = create_keymap_array(config, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
-	prefs->metamode_func_keys = create_keymap_array(config, "metamode_func_keys", DEFAULT_METAMODE_FUNC_KEYS_LEN, DEFAULT_METAMODE_FUNC_KEYS);
-	prefs->keyhold_actions_exempt = create_int_array(config, "keyhold_actions_exempt", DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN, DEFAULT_KEYHOLD_ACTIONS_EXEMPT, 1);
-
-	prefs->main_symmenu = create_symmenu(config, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
-	prefs->altsym_entries = create_keymap_array(config, "altsym_entries", DEFAULT_ALTSYM_ENTRIES_LEN, DEFAULT_ALTSYM_ENTRIES);
-
-	/* the accent menus are configurable, but we won't include them in the default config */
+	/* accent menus are configurable but not part of the default config */
 	char am_name[] = {' ', '_', 'a', 'c', 'c', 'e', 'n', 't', 's', '\0'};
 	for (char c = 'a'; c <= 'z'; ++c) {
 		size_t idx = (size_t)(c - 'a');
 		am_name[0] = c;
-		prefs->accent_menus[idx][0] = create_symmenu(config, am_name, 1, &accent_row_lens[idx], lowercase_accent_entries[idx]);
-		prefs->accent_menus[idx][1] = create_symmenu(config, am_name, 1, &accent_row_lens[idx], uppercase_accent_entries[idx]);
+		prefs->accent_menus[idx][0] = lua_create_symmenu(L, am_name, 1, &accent_row_lens[idx], lowercase_accent_entries[idx]);
+		prefs->accent_menus[idx][1] = lua_create_symmenu(L, am_name, 1, &accent_row_lens[idx], uppercase_accent_entries[idx]);
 	}
-
-	if (is_first_run) {
-		first_run(prefs);
-	}
-
-	if (upgraded) {
-		if (rename(PREFS_FILE_PATH, PREFS_FILE_BACKUP)) {
-			fprintf(stderr, "Failed to back up old prefs! Won't overwrite %s\n", PREFS_FILE_PATH);
-		} else {
-			save_preferences(prefs, PREFS_FILE_PATH);
-		}
-	}
-
-	return prefs;
-}
-
-void set_int_array(config_setting_t *root, char const *key, size_t num_elems, int const *source) {
-	config_setting_t *setting = config_setting_add(root, key, CONFIG_TYPE_ARRAY);
-	for (size_t i = 0; i < num_elems; ++i) {
-		config_setting_t *elem = config_setting_add(setting, NULL, CONFIG_TYPE_INT);
-		config_setting_set_int(elem, source[i]);
-	}
-}
-
-void set_keymap_array(config_setting_t *root, char const *key, keymap_t const *source) {
-	config_setting_t *setting = config_setting_add(root, key, CONFIG_TYPE_LIST);
-	for (; source->to != NULL; ++source) {
-		config_setting_t *group = config_setting_add(setting, NULL, CONFIG_TYPE_LIST);
-		
-		config_setting_t *from_s = config_setting_add(group, NULL, CONFIG_TYPE_STRING);
-		char from_str[2] = {source->from, '\0'};
-		config_setting_set_string(from_s, from_str);
-
-		config_setting_t *to_s = config_setting_add(group, NULL, CONFIG_TYPE_STRING);
-		config_setting_set_string(to_s, source->to);
-	}
-}
-
-void set_symmenu(config_setting_t *root, char const *key, symmenu_t const *source) {
-	config_setting_t *rows_s = config_setting_add(root, key, CONFIG_TYPE_LIST);
-	config_setting_t *col_s = config_setting_add(rows_s, NULL, CONFIG_TYPE_LIST);
-
-	int row = 0; int col = 0;
-	while (1) {
-		if (source->keys[row][col].map == NULL) {
-			++row;
-			if (source->keys[row] == NULL) {
-				return;
-			}
-			col = 0;
-			col_s = config_setting_add(rows_s, NULL, CONFIG_TYPE_LIST);
-			continue;
-		}
-		
-		config_setting_t *group = config_setting_add(col_s, NULL, CONFIG_TYPE_LIST);
-		
-		config_setting_t *from_s = config_setting_add(group, NULL, CONFIG_TYPE_STRING);
-		char from_str[2] = {source->keys[row][col].map->from, '\0'};
-		config_setting_set_string(from_s, from_str);
-
-		config_setting_t *to_s = config_setting_add(group, NULL, CONFIG_TYPE_STRING);
-		config_setting_set_string(to_s, source->keys[row][col].map->to);
-
-		++col;
-	}
-}
-
-void save_preferences(pref_t const* prefs, char const* filename) {
-	config_t config;
-	config_init(&config);
-	config_setting_t *root = config_root_setting(&config);
-
-	/* Stamp the file with the schema version being written so a later
-	 * Term49 can detect and upgrade it. Previously omitted -- upgrade
-	 * detection only worked because the read-side default happened to be
-	 * the current version. */
-	config_setting_t *ver_s = config_setting_add(root, "prefs_version", CONFIG_TYPE_INT);
-	config_setting_set_int(ver_s, PREFS_VERSION);
-
-	prefs_save_scalars(root, prefs);
-
-	set_int_array(root, "text_color", PREFS_COLOR_NUM_ELEMENTS, prefs->text_color);
-	set_int_array(root, "background_color", PREFS_COLOR_NUM_ELEMENTS, prefs->background_color);
-	set_int_array(root, "metamode_hitbox", 4, prefs->metamode_hitbox);
-	set_keymap_array(root, "metamode_keys", prefs->metamode_keys);
-	set_keymap_array(root, "metamode_sticky_keys", prefs->metamode_sticky_keys);
-	set_keymap_array(root, "metamode_func_keys", prefs->metamode_func_keys);
-	set_symmenu(root, "main_symmenu", prefs->main_symmenu);
-
-	int num_exempt = 0;
-	for (; prefs->keyhold_actions_exempt[num_exempt] > 0; ++num_exempt) { }
-	set_int_array(root, "keyhold_actions_exempt", num_exempt, prefs->keyhold_actions_exempt);
-
-	config_write_file(&config, filename);
 }
 
 int is_int_member(int const* list, int target) {
@@ -803,7 +586,6 @@ int is_int_member(int const* list, int target) {
 			return 1;
 		}
 	}
-	
 	return 0;
 }
 
@@ -822,25 +604,296 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 	return entry != NULL ? entry->to : NULL;
 }
 
-/* The .term49rc/libconfig loader behind the prefs_loader_t seam.
- *
- * libconfig is kept and stays fully private to this translation unit:
- * it remains the legacy .term49rc reader/writer, and an alternate parser
- * or loader is added as a sibling behind prefs_loader_t rather than a
- * rewrite. It is deliberately not replaced with a custom format -- that
- * would risk the guarantee that existing .term49rc files keep loading,
- * for no proportionate gain.
- *
- * No separate parser-neutral representation is needed: pref_t (plain
- * data) plus prefs_loader_t (this vtable) already are that boundary, and
- * the scalar schema table above is the single source of truth any
- * alternate loader would populate. */
-static const prefs_loader_t LIBCONFIG_LOADER = {
-	read_preferences,
-	save_preferences,
-	destroy_preferences,
+/* ====================================================================
+ * Lua loader + scripting. The lua_State is created here, kept for the
+ * process lifetime so config-defined functions remain callable from
+ * keybindings, and closed in prefs_lua_destroy. It never escapes this
+ * TU; main.c reaches scripting only through prefs_lua_invoke().
+ * ==================================================================== */
+
+static lua_State *g_lua_state = NULL;
+
+/* Minimal Lua-callable surface. Glue (terminal.h) keeps app/SDL
+ * internals out of this TU. Broader APIs are intentionally deferred. */
+static int luaC_font_size_set(lua_State *L) {
+	set_font_size((int)luaL_checkinteger(L, 1));
+	return 0;
+}
+static int luaC_font_size_get(lua_State *L) {
+	lua_pushinteger(L, term_current_font_size());
+	return 1;
+}
+static int luaC_action(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string(luaL_checkstring(L, 1)));
+	return 1;
+}
+static const luaL_Reg TERM_LUA_LIB[] = {
+	{ "font_size_set", luaC_font_size_set },
+	{ "font_size_get", luaC_font_size_get },
+	{ "action",        luaC_action },
+	{ NULL, NULL }
 };
 
-const prefs_loader_t *prefs_libconfig_loader(void) {
-	return &LIBCONFIG_LOADER;
+/* Fresh Lua state with stdlib + the `term` table registered (so the
+ * config can use it at top level and in keybinding functions). NULL on
+ * OOM; the caller decides whether that is fatal. */
+static lua_State *lua_new_state(void) {
+	lua_State *L = luaL_newstate();
+	if (L == NULL) {
+		return NULL;
+	}
+	luaL_openlibs(L);
+	luaL_newlib(L, TERM_LUA_LIB);
+	lua_setglobal(L, "term");
+	return L;
+}
+
+/* Shared core for the startup loader and the live reloader. Creates a
+ * fresh lua_State (returned via *out_L; NULL only on luaL_newstate OOM),
+ * runs the file, and -- unless the file failed to parse and the caller
+ * opted out via build_on_parse_error -- builds a pref_t from it.
+ *
+ * *out_parsed is 1 iff the file parsed. On a parse failure the Lua error
+ * message is left at the top of *out_L for the caller to log; it is NOT
+ * popped here (prefs_build_from_lua is stack-neutral, so it survives a
+ * build-on-error). Return value:
+ *   - non-NULL  : built pref_t (all-defaults if !*out_parsed)
+ *   - NULL, *out_L == NULL          : luaL_newstate OOM
+ *   - NULL, *out_L != NULL, !parsed : parse error, build_on_parse_error=0
+ *                                     (no pref_t allocated)
+ *   - NULL, *out_L != NULL, parsed  : calloc OOM
+ * The caller owns *out_L: commit it to g_lua_state, or lua_close() it. */
+static pref_t *prefs_lua_try_build(const char *path, int build_on_parse_error,
+                                   lua_State **out_L, int *out_parsed) {
+	lua_State *L = lua_new_state();
+	*out_L = L;
+	*out_parsed = 0;
+	if (L == NULL) {
+		return NULL;
+	}
+	if (luaL_dofile(L, path) != LUA_OK) {
+		if (!build_on_parse_error) {
+			return NULL;  /* error message left at L's stack top */
+		}
+		/* fall through: every global absent -> all defaults */
+	} else {
+		*out_parsed = 1;
+	}
+
+	pref_t *prefs = calloc(1, sizeof(pref_t));
+	if (prefs == NULL) {
+		return NULL;
+	}
+	prefs->prefs_version = PREFS_VERSION;
+	prefs_build_from_lua(L, prefs);
+	return prefs;
+}
+
+/* Startup loader. Always returns a usable pref_t: a missing/broken
+ * .term49.lua falls back to compiled defaults, which is the only
+ * sensible behaviour at startup (there is no prior config to keep).
+ * Destructive: commits the new lua_State unconditionally. */
+pref_t *prefs_lua_load(const char *path) {
+	if (g_lua_state) { lua_close(g_lua_state); g_lua_state = NULL; }
+
+	lua_State *L;
+	int parsed;
+	pref_t *prefs = prefs_lua_try_build(path, 1, &L, &parsed);
+	if (prefs == NULL) {
+		fprintf(stderr, "fatal error: %s\n",
+		        L == NULL ? "luaL_newstate failed"
+		                  : "failed to calloc prefs structure");
+		exit(1);
+	}
+	if (!parsed) {
+		fprintf(stderr, "term49: error loading %s: %s\n",
+		        path, lua_tostring(L, -1));
+		lua_pop(L, 1);
+	}
+
+	g_lua_state = L; /* retained for scripting; closed in prefs_lua_destroy */
+	return prefs;
+}
+
+/* Reload loader. Non-destructive on failure: a Lua syntax/parse error
+ * (or OOM) returns NULL with the live g_lua_state and the caller's
+ * pref_t left completely untouched, so a fat-fingered config edit can
+ * never silently wipe a running setup back to defaults. On success the
+ * new scripting state is committed and a fresh pref_t returned for the
+ * caller to move into place. */
+pref_t *prefs_lua_reload(void) {
+	lua_State *L;
+	int parsed;
+	pref_t *prefs = prefs_lua_try_build(PREFS_LUA_FILE_PATH, 0, &L, &parsed);
+	if (prefs == NULL) {
+		if (L == NULL) {
+			fprintf(stderr, "term49: reload aborted: out of memory\n");
+		} else if (!parsed) {
+			fprintf(stderr, "term49: reload rejected, keeping current config: %s\n",
+			        lua_tostring(L, -1));
+			lua_close(L);
+		} else {
+			lua_close(L);  /* calloc OOM after a good parse */
+		}
+		return NULL;
+	}
+
+	/* Commit the scripting state only now that the file parsed. */
+	if (g_lua_state) { lua_close(g_lua_state); }
+	g_lua_state = L;
+	return prefs;
+}
+
+/* .term49.lua is hand-authored; Term49 never writes it back (a first-run
+ * default is emitted by prefs_emit_lua, not through this path). */
+void prefs_lua_destroy(pref_t *pref) {
+	destroy_preferences(pref); /* format-agnostic: frees pref_t only */
+	if (g_lua_state) {
+		lua_close(g_lua_state);
+		g_lua_state = NULL;
+	}
+}
+
+int prefs_lua_invoke(const char *name) {
+	if (g_lua_state == NULL || name == NULL) {
+		return 0;
+	}
+	lua_State *L = g_lua_state;
+	lua_getglobal(L, name);
+	if (!lua_isfunction(L, -1)) {
+		lua_pop(L, 1);
+		return 0;
+	}
+	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
+		fprintf(stderr, "term49: lua error in '%s': %s\n",
+		        name, lua_tostring(L, -1));
+		lua_pop(L, 1);
+		return 0;
+	}
+	return 1;
+}
+
+/* --- pref_t -> .term49.lua emitter (first-run default config) --------
+ * Emits the scalar schema + structured fields a user is expected to
+ * tweak (accent menus omitted, matching the historical default). */
+static void lua_emit_qstr(FILE *f, const char *s) {
+	fputc('"', f);
+	if (s) {
+		for (; *s; ++s) {
+			unsigned char c = (unsigned char)*s;
+			if (c == '"')       fputs("\\\"", f);
+			else if (c == '\\') fputs("\\\\", f);
+			else if (c >= 0x20 && c < 0x7f) fputc(c, f);
+			else fprintf(f, "\\x%02X", c); /* Lua 5.2+ hex escape */
+		}
+	}
+	fputc('"', f);
+}
+
+static void lua_emit_keymap(FILE *f, const char *key, const keymap_t *km) {
+	fprintf(f, "%s = {\n", key);
+	for (; km && km->to != NULL; ++km) {
+		char from[2] = { km->from, '\0' };
+		fputs("  { ", f);
+		lua_emit_qstr(f, from);
+		fputs(", ", f);
+		lua_emit_qstr(f, km->to);
+		fputs(" },\n", f);
+	}
+	fputs("}\n\n", f);
+}
+
+static void lua_emit_symmenu(FILE *f, const char *key, const symmenu_t *m) {
+	fprintf(f, "%s = {\n", key);
+	if (m && m->keys && m->keys[0]) {
+		int row = 0, col = 0;
+		fputs("  {", f);
+		while (1) {
+			if (m->keys[row][col].map == NULL) {
+				fputs(" },\n", f);
+				++row;
+				if (m->keys[row] == NULL) break;
+				col = 0;
+				fputs("  {", f);
+				continue;
+			}
+			char from[2] = { m->keys[row][col].map->from, '\0' };
+			fputs(" { ", f);
+			lua_emit_qstr(f, from);
+			fputs(", ", f);
+			lua_emit_qstr(f, m->keys[row][col].map->to);
+			fputs(" },", f);
+			++col;
+		}
+	}
+	fputs("}\n\n", f);
+}
+
+void prefs_emit_lua(const pref_t *prefs, const char *path) {
+	FILE *f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, "term49: cannot write %s: %s\n", path, strerror(errno));
+		return;
+	}
+
+	fputs("-- Term49 configuration (Lua). Generated automatically; safe to\n"
+	      "-- edit. This file is never rewritten by Term49.\n"
+	      "--\n"
+	      "-- SECURITY: this file is executed as a full Lua program at startup\n"
+	      "-- and on reload, with the full standard library (including os and\n"
+	      "-- io). Treat it like a shell rc -- only run a .term49.lua you wrote\n"
+	      "-- or trust.\n\n", f);
+	fprintf(f, "prefs_version = %d\n\n", PREFS_VERSION);
+
+	for (size_t i = 0; i < sizeof(PREFS_SCALARS) / sizeof(PREFS_SCALARS[0]); ++i) {
+		const prefs_scalar_desc *d = &PREFS_SCALARS[i];
+		const void *field = (const char *)prefs + d->offset;
+		switch (d->type) {
+		case PS_INT:
+			fprintf(f, "%s = %d\n", d->key, *(const int *)field);
+			break;
+		case PS_BOOL:
+			fprintf(f, "%s = %s\n", d->key,
+			        *(const int *)field ? "true" : "false");
+			break;
+		case PS_STRING:
+			fprintf(f, "%s = ", d->key);
+			lua_emit_qstr(f, *(char *const *)field);
+			fputc('\n', f);
+			break;
+		}
+	}
+	fputc('\n', f);
+
+	fprintf(f, "text_color = { %d, %d, %d }\n",
+	        prefs->text_color[0], prefs->text_color[1], prefs->text_color[2]);
+	fprintf(f, "background_color = { %d, %d, %d }\n",
+	        prefs->background_color[0], prefs->background_color[1],
+	        prefs->background_color[2]);
+	if (prefs->metamode_hitbox) {
+		fprintf(f, "metamode_hitbox = { %d, %d, %d, %d }\n",
+		        prefs->metamode_hitbox->x, prefs->metamode_hitbox->y,
+		        prefs->metamode_hitbox->w, prefs->metamode_hitbox->h);
+	}
+	fputs("keyhold_actions_exempt = {", f);
+	for (int i = 0; prefs->keyhold_actions_exempt &&
+	                prefs->keyhold_actions_exempt[i] > 0; ++i) {
+		fprintf(f, "%s %d", i ? "," : "", prefs->keyhold_actions_exempt[i]);
+	}
+	fputs(" }\n\n", f);
+
+	lua_emit_keymap(f, "metamode_keys", prefs->metamode_keys);
+	lua_emit_keymap(f, "metamode_sticky_keys", prefs->metamode_sticky_keys);
+	lua_emit_keymap(f, "metamode_func_keys", prefs->metamode_func_keys);
+	lua_emit_symmenu(f, "main_symmenu", prefs->main_symmenu);
+
+	fputs("-- Scripting example (uncomment to use). A key bound to\n"
+	      "-- \"lua:<name>\" in metamode_func_keys calls the matching Lua\n"
+	      "-- function via lua_pcall. term.font_size_get/set and\n"
+	      "-- term.action(\"<builtin>\") (e.g. \"reload_config\") are available.\n"
+	      "--\n"
+	      "-- function zoom_in() term.font_size_set(term.font_size_get() + 3) end\n"
+	      "-- then add  { \"z\", \"lua:zoom_in\" }  to metamode_func_keys above.\n", f);
+
+	fclose(f);
 }

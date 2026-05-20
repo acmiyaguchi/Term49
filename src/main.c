@@ -122,7 +122,10 @@ static symmenu_t *current_symmenu = NULL;
 static renderer_t *renderer = NULL;
 static app_t *g_app = NULL;
 static platform_t *g_platform = NULL;
-static const prefs_loader_t *g_prefs_loader = NULL;
+/* Set by the reload_config builtin; consumed at a safe point in the main
+ * loop (never inside action dispatch / a lua_pcall). Same input thread,
+ * same lock as event handling, so a plain int is sufficient. */
+static int g_reload_pending = 0;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
@@ -364,7 +367,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		}
 		// else
 		keystrokes_len = strlen(keystrokes);
-		/* libconfig will return ascii strings, but we can put utf8 in there too */
+		/* config strings are ascii, but we can put utf8 in there too */
 		ukeystrokes = (UChar*)calloc(keystrokes_len, sizeof(UChar));
 		ukeystrokes_len = io_read_utf8_string(keystrokes, keystrokes_len, ukeystrokes);
 		/* and write out to the tty whatever the keys were */
@@ -634,6 +637,8 @@ void handle_virtualkeyboard_event(bps_event_t *event){
 	app_handle_event(g_app, &ev);
 }
 
+static int render_ghostty(int force_full_repaint); /* defined below */
+
 void rescreen(int w, int h){
 
 	int width  = w == -1 ? screen->w : w;
@@ -653,6 +658,99 @@ void rescreen(int w, int h){
 		setup_screen_size(width, height - vkb_h);
 	}
 	mark_screen_dirty(1);
+	/* Repaint synchronously now instead of waiting for the render thread
+	 * to wake on the next event. Twice: the screen is SDL_DOUBLEBUF, so a
+	 * single full repaint refreshes only one of the two buffers and the
+	 * next flip would briefly show the stale (old-size) buffer. We hold
+	 * lock_input() in every rescreen() caller, so this cannot race the
+	 * render thread (it also renders only under that lock). */
+	render_ghostty(1);
+	render_ghostty(1);
+}
+
+/* Change the active font size at runtime. Clamps to a sane range, then reuses
+ * the existing rescreen() teardown/rebuild path (font_uninit -> font_init ->
+ * setup_screen_size -> ghostty/PTY resize -> redraw). Session-only: the new
+ * size is NOT written back to the config. */
+void set_font_size(int new_size){
+	if(new_size < MIN_FONT_SIZE)        new_size = MIN_FONT_SIZE;
+	if(new_size > TERM_MAX_FONT_SIZE)   new_size = TERM_MAX_FONT_SIZE;
+	/* The `term` table is inert until the runtime is up: term.font_size_set
+	 * called at .term49.lua load time is a no-op, NOT a way to set the
+	 * startup size. The declarative startup size is the `font_size` scalar
+	 * global (PREFS_SCALARS -> prefs->font_size -> font_init at startup).
+	 * (At reload time the runtime IS ready, so a top-level term.* there acts
+	 * on the about-to-be-replaced prefs and self-corrects on the reload's
+	 * own rescreen -- harmless; put live tweaks in keybinding functions.) */
+	if(!term_runtime_ready()) return;
+	if(new_size == prefs->font_size) return;
+	prefs->font_size = new_size;
+	rescreen(-1, -1);
+}
+
+/* Narrow glue for the Lua `term` table (registered in preferences.c).
+ * Kept here so preferences.c never sees app/SDL internals. */
+int term_current_font_size(void){
+	return prefs ? prefs->font_size : TERM_DEFAULT_FONT_SIZE;
+}
+
+/* The runtime is "ready" once the app, video surface, and prefs all
+ * exist. Until then (notably while .term49.lua is executing inside the
+ * startup loader) the global prefs/g_app/screen are still NULL, so every
+ * term.* C entry point must bail before dereferencing them. */
+int term_runtime_ready(void){
+	return g_app != NULL && screen != NULL && prefs != NULL;
+}
+
+int app_run_action_string(const char *s){
+	action_t a;
+	if(!term_runtime_ready()) return 0;
+	if(s == NULL || !action_parse(s, &a)) return 0;
+	return app_dispatch_action(g_app, &a);
+}
+
+/* Re-run .term49.lua and re-apply it live. MUST be called only from the
+ * deferred safe point in the run loop (never from action dispatch / a
+ * lua_pcall): the loader closes and reopens the lua_State, and frees the
+ * old keymaps/symmenus a keypress may still be unwinding through.
+ *
+ * In-place move: the loader builds a fresh pref_t; we free the old
+ * owned members and overwrite *prefs, keeping the global `prefs`
+ * pointer stable so borrowers (app/io/renderer) stay valid. Transient
+ * UI pointers into the old prefs are reset first. tty_encoding is not
+ * re-applied (io converter is opened once at startup); changing it
+ * still needs a restart. */
+static void app_reload_config(void){
+	pref_t *fresh = prefs_lua_reload();
+	if(fresh == NULL){
+		/* Parse error / OOM: prefs_lua_reload() left the running config
+		 * and scripting state fully intact, so a broken edit can't wipe
+		 * a working setup to defaults. No transient on-screen cue: this
+		 * BB10 SDL backend only composites on the next event pump, so a
+		 * flash would not show until an unrelated tap (confusing). The
+		 * feedback is simply that nothing changes -- the rejected edit
+		 * is logged to stderr for dev builds. */
+		return;
+	}
+	/* Drop transient UI state derived from / pointing into the config
+	 * we're about to free. Exhaustive: these are the only globals tied to
+	 * the outgoing prefs (renderer symmenu caches are rebuilt below; app/io
+	 * borrow only the stable struct pointer; event-handler menu/keymap
+	 * pointers are stack locals, gone by this deferred safe point). */
+	current_symmenu = NULL;
+	metamode = 0;
+	altsym_lock = 0;
+	symmenu_lock = 0;
+
+	destroy_preferences_members(prefs);  /* free old arrays, keep struct */
+	*prefs = *fresh;                     /* move new data into stable struct */
+	free(fresh);                         /* free only the empty container */
+
+	/* rebuild derived state from the new prefs */
+	if(renderer != NULL){
+		renderer_init_symmenus(renderer, screen, prefs);
+	}
+	rescreen(-1, -1);                    /* font/grid/PTY + synchronous redraw */
 }
 
 void toggle_vkeymod(int mod){
@@ -696,6 +794,23 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_PASTE_CLIPBOARD:
 			return session_dispatch_action(session, action);
+		case TERM_BUILTIN_FONT_SIZE_INCREASE:
+			set_font_size(prefs->font_size + 1);
+			return 1;
+		case TERM_BUILTIN_FONT_SIZE_DECREASE:
+			set_font_size(prefs->font_size - 1);
+			return 1;
+		case TERM_BUILTIN_FONT_SIZE_RESET:
+			set_font_size(TERM_DEFAULT_FONT_SIZE);
+			return 1;
+		case TERM_BUILTIN_LUA_CALL:
+			return prefs_lua_invoke(action->as.builtin.arg);
+		case TERM_BUILTIN_RELOAD_CONFIG:
+			/* Deferred: the loader closes/reopens the lua_State and
+			 * frees keymaps this keypress may still be unwinding
+			 * through. Applied at the run-loop safe point. */
+			g_reload_pending = 1;
+			return 1;
 		default:
 			return 0;
 		}
@@ -1262,11 +1377,9 @@ void app_shutdown(void){
 	TTF_Quit();
 	SDL_Quit();
 
-	if (g_prefs_loader != NULL) {
-		g_prefs_loader->destroy(prefs);
-	} else {
-		destroy_preferences(prefs);
-	}
+	/* prefs is assigned (or the process exit(1)s) before any app_shutdown()
+	 * call site, so it is always non-NULL here. */
+	prefs_lua_destroy(prefs);
 
 	io_uninit();
 }
@@ -1795,14 +1908,20 @@ int main(int argc, char **argv) {
 	/* Switch to our home directory */
 	char* home = getenv("HOME");
 	if(home != NULL){ chdir(home); }
-	
+
 	/* Stateless SDL/BPS platform services. The seam is frozen now; #6
 	 * replaces platform_sdl_create() with the native Screen/BPS backend. */
 	g_platform = platform_sdl_create();
 
-	/* libconfig stays behind this seam; #7 selects prefs_lua_loader() here. */
-	g_prefs_loader = prefs_libconfig_loader();
-	prefs = g_prefs_loader->load(PREFS_FILE_PATH);
+	/* Lua is the only config language. On first run (no .term49.lua) the
+	 * loader yields all-defaults, which we then persist as a starter
+	 * config and link the bundled README (what the old first_run() did). */
+	int lua_cfg_existed = (access(PREFS_LUA_FILE_PATH, F_OK) == 0);
+	prefs = prefs_lua_load(PREFS_LUA_FILE_PATH);
+	if (!lua_cfg_existed) {
+		prefs_first_run_readme();
+		prefs_emit_lua(prefs, PREFS_LUA_FILE_PATH);
+	}
 	if (platform_is_passport(g_platform)) {
 		prefs->auto_show_vkb = 1;
 	}
@@ -1880,6 +1999,13 @@ int main(int argc, char **argv) {
 		lock_input();
 		if (have) {
 			app_handle_event(g_app, &event);
+		}
+		/* Safe point: the triggering event (and any lua_pcall within
+		 * it) has fully returned; still under the input lock, same
+		 * thread as rescreen. */
+		if (g_reload_pending) {
+			g_reload_pending = 0;
+			app_reload_config();
 		}
 		indicate_event_input();
 		unlock_input();
