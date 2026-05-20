@@ -53,9 +53,9 @@ void bitmap_fill_rect(bitmap_t *dst, const rect_t *r, rgb_t color) {
 	for (int y = y0; y < y1; ++y) {
 		uint8_t *row = dst->pixels + (size_t)y * dst->stride + (size_t)x0 * 4;
 		for (int x = x0; x < x1; ++x) {
-			row[0] = color.r;
+			row[0] = color.b;
 			row[1] = color.g;
-			row[2] = color.b;
+			row[2] = color.r;
 			row[3] = 0xFF;
 			row += 4;
 		}

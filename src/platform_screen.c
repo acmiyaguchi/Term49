@@ -24,6 +24,14 @@ typedef struct platform_screen {
 	int              orientation_angle;
 	int              last_w;
 	int              last_h;
+	/* Pending orientation/geometry change stashed by translate_navigator and
+	 * applied by screen_plat_apply_pending_resize on the main thread under
+	 * the app's input lock. See apply_pending_resize in platform.h for why
+	 * the destructive parts can't run inside translate_*. */
+	int              pending_resize_valid;
+	int              pending_resize_angle;
+	int              pending_resize_w;
+	int              pending_resize_h;
 } platform_screen_t;
 
 static platform_screen_t *self_of(platform_t *p) {
@@ -78,7 +86,12 @@ static int translate_screen(platform_screen_t *self, bps_event_t *event, event_t
 	}
 	case SCREEN_EVENT_MTOUCH_TOUCH: {
 		int pos[2] = {0, 0};
-		screen_get_event_property_iv(se, SCREEN_PROPERTY_SOURCE_POSITION, pos);
+		if (screen_get_event_property_iv(se, SCREEN_PROPERTY_SOURCE_POSITION, pos) != 0) {
+			/* Drop touches whose position we couldn't read — otherwise the
+			 * zero-init pos would emit a synthetic (0,0) touch and trip the
+			 * metamode hitbox in the top-left corner. */
+			return 0;
+		}
 		if (pos[1] < 0) {
 			/* Negative-Y events are bezel swipes; the vendored SDL
 			 * also dropped these. */
@@ -110,13 +123,17 @@ static int translate_navigator(platform_screen_t *self, bps_event_t *event, even
 			new_w = self->last_h;
 			new_h = self->last_w;
 		}
-		int size[2] = {new_w, new_h};
-		screen_set_window_property_iv(self->window, SCREEN_PROPERTY_ROTATION, &angle);
-		screen_set_window_property_iv(self->window, SCREEN_PROPERTY_SIZE, size);
-		screen_set_window_property_iv(self->window, SCREEN_PROPERTY_SOURCE_SIZE, size);
-		self->orientation_angle = angle;
-		self->last_w = new_w;
-		self->last_h = new_h;
+		/* Stash the new geometry but don't touch the window or the render
+		 * buffers here: translate_navigator runs on the main thread *outside*
+		 * the app's input lock, while the render thread may be mid-frame
+		 * with a cached buffer pointer. The main thread will call
+		 * platform_apply_pending_resize() under the lock during the
+		 * TERM_EVENT_RESIZE handler — that's the safe spot to mutate
+		 * ROTATION/SIZE and destroy+recreate buffers. */
+		self->pending_resize_valid = 1;
+		self->pending_resize_angle = angle;
+		self->pending_resize_w     = new_w;
+		self->pending_resize_h     = new_h;
 		memset(out, 0, sizeof(*out));
 		out->type = TERM_EVENT_RESIZE;
 		out->as.resize.w = new_w;
@@ -214,14 +231,38 @@ static int screen_plat_is_passport(platform_t *p) {
 static int screen_plat_notify(platform_t *p, const char *msg)   { (void)p; (void)msg; return -1; }
 static int screen_plat_open_url(platform_t *p, const char *url) { (void)p; (void)url; return -1; }
 
+static void screen_plat_apply_pending_resize(platform_t *p) {
+	platform_screen_t *self = self_of(p);
+	if (self == NULL || !self->pending_resize_valid) {
+		return;
+	}
+	int angle = self->pending_resize_angle;
+	int size[2] = {self->pending_resize_w, self->pending_resize_h};
+	screen_set_window_property_iv(self->window, SCREEN_PROPERTY_ROTATION, &angle);
+	screen_set_window_property_iv(self->window, SCREEN_PROPERTY_SIZE, size);
+	screen_set_window_property_iv(self->window, SCREEN_PROPERTY_SOURCE_SIZE, size);
+	/* Buffers were sized to the old geometry. Tear them down and recreate at
+	 * the new size so the next latch_framebuffer views the correct dimensions
+	 * and screen_post_window doesn't stretch / clip. */
+	screen_destroy_window_buffers(self->window);
+	if (screen_create_window_buffers(self->window, 2) != 0) {
+		fprintf(stderr, "platform_screen: screen_create_window_buffers failed during resize\n");
+	}
+	self->orientation_angle  = angle;
+	self->last_w             = self->pending_resize_w;
+	self->last_h             = self->pending_resize_h;
+	self->pending_resize_valid = 0;
+}
+
 static const platform_ops_t SCREEN_PLATFORM_OPS = {
-	.next_event  = screen_plat_next_event,
-	.vkb_show    = screen_plat_vkb_show,
-	.vkb_hide    = screen_plat_vkb_hide,
-	.vkb_height  = screen_plat_vkb_height,
-	.is_passport = screen_plat_is_passport,
-	.notify      = screen_plat_notify,
-	.open_url    = screen_plat_open_url,
+	.next_event           = screen_plat_next_event,
+	.vkb_show             = screen_plat_vkb_show,
+	.vkb_hide             = screen_plat_vkb_hide,
+	.vkb_height           = screen_plat_vkb_height,
+	.is_passport          = screen_plat_is_passport,
+	.notify               = screen_plat_notify,
+	.open_url             = screen_plat_open_url,
+	.apply_pending_resize = screen_plat_apply_pending_resize,
 };
 
 const platform_ops_t *platform_screen_ops(void) {

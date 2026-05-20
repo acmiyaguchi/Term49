@@ -1,8 +1,12 @@
 /*
  * Project-owned pixel buffer. Replaces the SDL_Surface dependency that used
  * to span main.c, symmenu rendering, and the glyph cache. All composition is
- * pinned to RGBA8888 (byte order R, G, B, A) so blits are straight memcpy and
- * the framebuffer view aligns with SCREEN_FORMAT_RGBA8888.
+ * pinned to RGBA8888 in the in-memory byte order BB10's Screen API actually
+ * uses for SCREEN_FORMAT_RGBA8888: B at byte 0, G at byte 1, R at byte 2,
+ * A at byte 3. The packed-uint32 view is 0xAARRGGBB; on little-endian ARM
+ * that serializes to [B, G, R, A] — the same layout the Screen tutorial
+ * dumps verbatim into a 32-bit BMP. Writers in this file and font.c MUST
+ * follow this order or the framebuffer reads back with R and B swapped.
  */
 
 #ifndef BITMAP_H_
@@ -13,7 +17,7 @@
 #include "term_types.h"
 
 typedef enum bitmap_fmt {
-	BITMAP_FMT_RGBA8888,  /* 4 bytes / pixel, byte order R, G, B, A. */
+	BITMAP_FMT_RGBA8888,  /* 4 bytes / pixel, byte order B, G, R, A (Screen native). */
 	BITMAP_FMT_A8,        /* 1 byte / pixel, alpha mask (FreeType FT_PIXEL_MODE_GRAY). */
 } bitmap_fmt_t;
 

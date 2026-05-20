@@ -40,7 +40,7 @@ typedef struct event {
 	event_type_t type;
 	union {
 		key_event_t key;
-		rect_t touch;
+		struct { int x, y; } touch;
 		struct { int w, h; } resize;
 		struct { int active; int state; } activate;
 		/* visible: 1 show, 0 hide, -1 height-only update (keep current

@@ -18,6 +18,12 @@ typedef struct platform_ops {
 	int  (*is_passport)(platform_t *p);
 	int  (*notify)(platform_t *p, const char *msg);    /* -1 stub until #5 */
 	int  (*open_url)(platform_t *p, const char *url);  /* -1 stub until #5 */
+	/* Apply any pending window-geometry changes (rotation + size + render
+	 * buffer rebuild) stashed by next_event. Called from the main thread
+	 * under the app's input lock so the destructive buffer rebuild cannot
+	 * race the render thread's cached active_buffer pointer. No-op if
+	 * nothing is pending. */
+	void (*apply_pending_resize)(platform_t *p);
 } platform_ops_t;
 
 /* Generic wrapper lifecycle (platform.c). */
@@ -33,5 +39,6 @@ int  platform_vkb_height(platform_t *p);
 int  platform_is_passport(platform_t *p);
 int  platform_notify(platform_t *p, const char *msg);
 int  platform_open_url(platform_t *p, const char *url);
+void platform_apply_pending_resize(platform_t *p);
 
 #endif

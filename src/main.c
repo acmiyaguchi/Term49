@@ -177,7 +177,15 @@ static int event_pipe[2];
 static int rows;
 static int cols;
 
-static void glyph_cache_clear(void);
+/* Init flags guard app_shutdown against the early-exit paths in main() that
+ * fire before startup_init() has set up the corresponding resources.
+ * Destroying an uninitialized mutex, closing an unopened pipe, or
+ * FT_Done_FreeType on a never-initialized library is undefined behaviour. */
+static int input_mutex_inited;
+static int event_pipe_open;
+static int font_library_inited;
+static int font_inited;
+static int ghostty_inited;
 
 
 int is_terminfo_keystrokes(const char* keystrokes){
@@ -1149,22 +1157,25 @@ void set_screen_cols(int ncols){
 
 static int startup_init() {
 	pthread_mutex_init(&input_mutex, NULL);
+	input_mutex_inited = 1;
 
 	if(pipe(event_pipe) == -1){
 		fprintf(stderr, "Couldn't create event pipe\n");
 		return TERM_FAILURE;
 	}
+	event_pipe_open = 1;
 
 	if(font_library_init() != 0){
 		fprintf(stderr, "Couldn't initialize FreeType\n");
 		return TERM_FAILURE;
 	}
+	font_library_inited = 1;
 
 	if(font_init(prefs->font_size) == TERM_FAILURE){
 		PRINT(stderr, "Couldn't initialize font\n");
-		font_library_quit();
 		return TERM_FAILURE;
 	}
+	font_inited = 1;
 
 	renderer = renderer_screen_create(g_platform, font);
 	if (renderer == NULL) {
@@ -1188,6 +1199,7 @@ static int startup_init() {
 		fprintf(stderr, "Unable to initialize libghostty-vt terminal\n");
 		return TERM_FAILURE;
 	}
+	ghostty_inited = 1;
 	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
 	                      (uint32_t)advance, (uint32_t)text_height);
 
@@ -1196,7 +1208,14 @@ static int startup_init() {
 
 void app_shutdown(void){
 
-	pthread_mutex_destroy(&input_mutex);
+	/* Every cleanup below is gated on the matching init flag so the
+	 * early-exit paths in main() (io_init / pty_init / sigaction / startup_init
+	 * failures) don't call destructors on resources that were never set up. */
+
+	if (input_mutex_inited) {
+		pthread_mutex_destroy(&input_mutex);
+		input_mutex_inited = 0;
+	}
 
 	/* Tear down session state before ghostty_bridge_uninit()/io_uninit()
 	 * below, since the single session borrows both. NULL-safe on the
@@ -1210,13 +1229,28 @@ void app_shutdown(void){
 	renderer_destroy(renderer);
 	renderer = NULL;
 
-	font_uninit();
-	font_library_quit();
+	if (font_inited) {
+		font_uninit();
+		font_inited = 0;
+	}
+	if (font_library_inited) {
+		font_library_quit();
+		font_library_inited = 0;
+	}
 
 	platform_destroy(g_platform);
 	g_platform = NULL;
 
-	ghostty_bridge_uninit();
+	if (ghostty_inited) {
+		ghostty_bridge_uninit();
+		ghostty_inited = 0;
+	}
+
+	if (event_pipe_open) {
+		close(event_pipe[0]);
+		close(event_pipe[1]);
+		event_pipe_open = 0;
+	}
 
 	/* prefs is assigned (or the process exit(1)s) before any app_shutdown()
 	 * call site, so it is always non-NULL here. */
@@ -1604,6 +1638,12 @@ int app_handle_event(app_t *app, const event_t *event) {
 		exit_application = 1;
 		return 1;
 	case TERM_EVENT_RESIZE:
+		/* Apply any pending platform-side geometry change (rotation: set
+		 * ROTATION/SIZE/SOURCE_SIZE and destroy+recreate the render
+		 * buffers) *before* rescreen reflows ghostty and re-paints. This
+		 * runs under input_mutex (lock_input held by the caller), so the
+		 * destructive buffer rebuild can't race the render thread. */
+		platform_apply_pending_resize(g_platform);
 		rescreen(event->as.resize.w, event->as.resize.h);
 		mark_screen_dirty(1);
 		return 1;
@@ -1630,6 +1670,10 @@ int app_handle_event(app_t *app, const event_t *event) {
 				vkb_h = virtualkeyboard_visible ? event->as.vkb.height : 0;
 			}
 			setup_screen_size(fb_w, fb_h - vkb_h);
+			/* rows/cols changed -> next frame must repaint so the new
+			 * effective viewport is reflected (matches the dirty-mark in
+			 * TERM_EVENT_RESIZE). */
+			mark_screen_dirty(1);
 		}
 		return 1;
 	case TERM_EVENT_NONE:

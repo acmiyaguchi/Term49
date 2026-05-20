@@ -44,7 +44,9 @@ symmenu_render_t *symmenu_render_create(int screen_w, int screen_h,
 			longest_row_len = col_len;
 		}
 	}
-	if (menu->keys[0] == NULL) {
+	if (menu->keys[0] == NULL || longest_row_len <= 0) {
+		/* No rows, or the first row is non-NULL but has zero usable entries
+		 * (every `map` pointer null). Either case would `/0` at bg_w below. */
 		return NULL;
 	}
 

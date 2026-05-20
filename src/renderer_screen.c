@@ -148,6 +148,12 @@ static int screen_framebuffer_size(renderer_t *r, int *w, int *h) {
 		if (screen_get_window_property_iv(self->window, SCREEN_PROPERTY_SIZE, size) != 0) {
 			return -1;
 		}
+		/* Fail closed: callers (rescreen, symmenu init) divide by these
+		 * dimensions, so a "successful" zero return turns into a SIGFPE
+		 * downstream. */
+		if (size[0] <= 0 || size[1] <= 0) {
+			return -1;
+		}
 		if (w) *w = size[0];
 		if (h) *h = size[1];
 		return 0;

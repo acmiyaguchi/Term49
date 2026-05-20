@@ -135,9 +135,10 @@ bitmap_t *font_render_glyph_shaded(font_t *f, uint32_t codepoint,
 				if (dx < 0 || dx >= out->w) continue;
 				uint8_t a = srow[x];
 				uint8_t *p = drow + (size_t)dx * 4;
-				p[0] = (uint8_t)((fg.r * a + bg.r * (255 - a)) / 255);
+				/* BGRA in memory: see bitmap.h for the byte-order rationale. */
+				p[0] = (uint8_t)((fg.b * a + bg.b * (255 - a)) / 255);
 				p[1] = (uint8_t)((fg.g * a + bg.g * (255 - a)) / 255);
-				p[2] = (uint8_t)((fg.b * a + bg.b * (255 - a)) / 255);
+				p[2] = (uint8_t)((fg.r * a + bg.r * (255 - a)) / 255);
 				p[3] = 0xFF;
 			}
 		}

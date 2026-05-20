@@ -87,3 +87,9 @@ int platform_open_url(platform_t *p, const char *url) {
 	}
 	return p->ops->open_url(p, url);
 }
+
+void platform_apply_pending_resize(platform_t *p) {
+	if (p != NULL && p->ops->apply_pending_resize != NULL) {
+		p->ops->apply_pending_resize(p);
+	}
+}
