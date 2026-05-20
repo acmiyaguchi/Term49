@@ -1303,8 +1303,14 @@ static int render_ghostty(int force_full_repaint) {
 		 prev_cursor_x != ctx.frame.cursor_x ||
 		 prev_cursor_y != ctx.frame.cursor_y);
 
-	force_full_repaint = force_full_repaint || flash ||
-		ctx.frame.dirty == GHOSTTY_BRIDGE_DIRTY_FULL;
+	/* Force every repaint to be a full repaint. The native Screen backend
+	 * is double-buffered (screen_create_window_buffers(2)) and we have no
+	 * per-buffer damage tracking: a partial paint to buffer A leaves B
+	 * stale, so on the next flip the previous frame's content reappears,
+	 * producing flicker and a phantom cursor at the old position. Until
+	 * each buffer tracks its own dirty set, just paint everything every
+	 * frame — the terminal is small enough that this is cheap. */
+	force_full_repaint = 1;
 
 	renderer_begin_frame(renderer);
 

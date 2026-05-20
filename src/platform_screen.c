@@ -256,7 +256,11 @@ platform_t *platform_screen_create(void) {
 
 	int format = SCREEN_FORMAT_RGBA8888;
 	int usage  = SCREEN_USAGE_NATIVE | SCREEN_USAGE_ROTATION;
-	int sens   = SCREEN_SENSITIVITY_NEVER;
+	/* SCREEN_SENSITIVITY_TEST (the default) is what we want: the window
+	 * receives keyboard/pointer/touch when visible. SCREEN_SENSITIVITY_NEVER
+	 * silently swallows every input event — the app shows but cannot be
+	 * typed into. */
+	int sens   = SCREEN_SENSITIVITY_TEST;
 	screen_set_window_property_iv(self->window, SCREEN_PROPERTY_FORMAT, &format);
 	screen_set_window_property_iv(self->window, SCREEN_PROPERTY_USAGE,  &usage);
 	screen_set_window_property_iv(self->window, SCREEN_PROPERTY_SENSITIVITY, &sens);

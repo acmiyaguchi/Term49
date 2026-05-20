@@ -40,6 +40,8 @@ typedef struct renderer_screen {
 	int               fb_valid;
 	int               fb_w;
 	int               fb_h;
+	int               buffer_count;
+	screen_buffer_t   active_buffer;
 	glyph_cache_t     cache;
 	symmenu_render_t *main_symmenu;
 	symmenu_render_t *accent_menus[26][2];
@@ -99,12 +101,24 @@ static const bitmap_t *glyph_cache_lookup(renderer_screen_t *self,
 }
 
 static int latch_framebuffer(renderer_screen_t *self) {
-	screen_buffer_t buffer = NULL;
+	/* RENDER_BUFFERS is an array sized by the buffer count set with
+	 * screen_create_window_buffers(). For double-buffered windows we MUST
+	 * provide storage for both pointers or screen_get_window_property_pv
+	 * will overrun a single-pointer local. We render to the first entry
+	 * (the next buffer ready for the application) and post that same
+	 * entry in end_frame. */
+	int count = self->buffer_count > 0 ? self->buffer_count : 2;
+	screen_buffer_t buffers[4] = {NULL, NULL, NULL, NULL};
+	if (count > (int)(sizeof(buffers) / sizeof(buffers[0]))) {
+		count = (int)(sizeof(buffers) / sizeof(buffers[0]));
+	}
 	if (screen_get_window_property_pv(self->window, SCREEN_PROPERTY_RENDER_BUFFERS,
-	                                  (void **)&buffer) != 0 || buffer == NULL) {
+	                                  (void **)buffers) != 0 || buffers[0] == NULL) {
 		self->fb_valid = 0;
+		self->active_buffer = NULL;
 		return -1;
 	}
+	screen_buffer_t buffer = buffers[0];
 	void *ptr = NULL;
 	int   stride = 0;
 	int   size[2] = {0, 0};
@@ -113,12 +127,14 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	    screen_get_buffer_property_iv(buffer, SCREEN_PROPERTY_BUFFER_SIZE, size) != 0 ||
 	    ptr == NULL || stride <= 0 || size[0] <= 0 || size[1] <= 0) {
 		self->fb_valid = 0;
+		self->active_buffer = NULL;
 		return -1;
 	}
 	bitmap_view(&self->fb, (uint8_t *)ptr, size[0], size[1], stride, BITMAP_FMT_RGBA8888);
 	self->fb_valid = 1;
 	self->fb_w = size[0];
 	self->fb_h = size[1];
+	self->active_buffer = buffer;
 	return 0;
 }
 
@@ -151,17 +167,13 @@ static void screen_begin_frame(renderer_t *r) {
 
 static void screen_end_frame(renderer_t *r) {
 	renderer_screen_t *self = self_of(r);
-	if (self == NULL || !self->fb_valid) {
-		return;
-	}
-	screen_buffer_t buffer = NULL;
-	if (screen_get_window_property_pv(self->window, SCREEN_PROPERTY_RENDER_BUFFERS,
-	                                  (void **)&buffer) != 0 || buffer == NULL) {
+	if (self == NULL || !self->fb_valid || self->active_buffer == NULL) {
 		return;
 	}
 	int rect[4] = {0, 0, self->fb_w, self->fb_h};
-	screen_post_window(self->window, buffer, 1, rect, 0);
+	screen_post_window(self->window, self->active_buffer, 1, rect, 0);
 	self->fb_valid = 0;
+	self->active_buffer = NULL;
 }
 
 static void screen_clear(renderer_t *r, rgb_t color) {
@@ -342,6 +354,12 @@ renderer_t *renderer_screen_create(platform_t *platform, font_t *font) {
 	self->font   = font;
 	self->ctx    = ctx;
 	self->window = win;
+
+	int bcount = 0;
+	if (screen_get_window_property_iv(win, SCREEN_PROPERTY_RENDER_BUFFER_COUNT, &bcount) != 0 || bcount <= 0) {
+		bcount = 2;
+	}
+	self->buffer_count = bcount;
 
 	renderer_t *r = renderer_create(renderer_screen_ops());
 	if (r == NULL) {
