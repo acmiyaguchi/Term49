@@ -66,6 +66,38 @@ live in `vendor/libghostty-vt/tests/`.
 * BB10 pty output may contain bare LF, so the bridge normalizes bare `\n` to
   `\r\n` before feeding Ghostty to avoid staircase newlines.
 
+## Tabs
+
+Term49 supports multiple shells in a single app instance. Each tab is its
+own pty + child shell, and Ghostty bridge with its own scrollback. Output
+from background tabs continues to be buffered (their scrollback grows) even
+while you're focused on a different tab.
+
+Default keybindings (all in metamode — tap `metamode_doubletap_key` twice
+or whatever you have bound, then the letter):
+
+| Metamode key | Action       |
+|--------------|--------------|
+| `t`          | `tab_new`    |
+| `]`          | `tab_next`   |
+| `[`          | `tab_prev`   |
+| `x`          | `tab_close`  |
+
+A tab strip overlay appears at the top of the screen whenever a tab action
+fires. It shows a pill per tab (`1`, `2`, ...) with the active tab
+highlighted; exited tabs are marked `1.`. Tap the top edge of the screen
+to reveal it manually, or tap any visible pill to jump to that tab; tap
+elsewhere or press any key that isn't a tab binding to dismiss.
+
+When a shell exits (e.g. you type `exit`), the tab stays in the strip
+showing the shell's final scrollback. Press `tab_close` to dismiss the
+`[exited]` tab; the app only quits when the last tab is dismissed.
+
+All tab actions are also reachable from Lua scripting via
+`term.action("tab_new")`, etc., so custom keybindings or programmatic tab
+opening from `.term49.lua` work without any extra wiring. The maximum
+number of simultaneous tabs is `APP_MAX_SESSIONS` (8 by default).
+
 ## Signing the release
 
 To distribute Term49 through the BlackBerry signing flow, run `make sign`

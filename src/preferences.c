@@ -61,7 +61,7 @@ static const int PREFS_VERSION = 9;
                                                   {'j', "kcud1"}, \
                                                   {'l', "kcuf1"}, \
                                                   {'h', "kcub1"}}
-#define DEFAULT_METAMODE_FUNC_KEYS_LEN 8
+#define DEFAULT_METAMODE_FUNC_KEYS_LEN 12
 #define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
                                                 {'c', "ctrl_down"}, \
                                                 {'s', "rescreen"}, \
@@ -69,7 +69,11 @@ static const int PREFS_VERSION = 9;
                                                 {'i', "font_size_increase"}, \
                                                 {'o', "font_size_decrease"}, \
                                                 {'p', "font_size_reset"}, \
-                                                {'r', "reload_config"}}
+                                                {'r', "reload_config"}, \
+                                                {'t', "tab_new"}, \
+                                                {']', "tab_next"}, \
+                                                {'[', "tab_prev"}, \
+                                                {'x', "tab_close"}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
 #define DEFAULT_SYMMENU_ENTRIES (keymap_t[]) {  \

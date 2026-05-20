@@ -160,6 +160,18 @@ static void mark_screen_dirty(int full_repaint) {
 	}
 }
 
+/* Tab overlay: a one-row strip drawn at y=0 over the active session's
+ * frame. Toggled by tab actions and by a top-edge tap; hidden by any
+ * other input. State written only under input_mutex. */
+static int tab_overlay_visible = 0;
+
+static void tab_overlay_set(int visible) {
+	if (tab_overlay_visible != visible) {
+		tab_overlay_visible = visible;
+		mark_screen_dirty(1);
+	}
+}
+
 static bitmap_t *ctrl_key_indicator;
 static bitmap_t *alt_key_indicator;
 static bitmap_t *shift_key_indicator;
@@ -558,13 +570,49 @@ static void maybe_show_vkb(void) {
 	}
 }
 
+static int tab_overlay_pill_at(int touch_x, unsigned *out_slot);
+
 void handle_mousedown(uint16_t x, uint16_t y){
-	/* check for hits in the metamode_hitbox */
-	if((x >= prefs->metamode_hitbox->x) &&
-	   (x <= prefs->metamode_hitbox->x + prefs->metamode_hitbox->w) &&
-	   (y >= prefs->metamode_hitbox->y) &&
-	   (y <= prefs->metamode_hitbox->y + prefs->metamode_hitbox->h)) {
-		/* hit in the box */
+	/* Tab overlay handling sits FIRST so a tap on the strip neither leaks
+	 * down to the metamode hitbox nor reveals the VKB. y < text_height is
+	 * "the top row" — the strip is exactly one row tall. */
+	int hit_metamode =
+	    (x >= prefs->metamode_hitbox->x) &&
+	    (x <= prefs->metamode_hitbox->x + prefs->metamode_hitbox->w) &&
+	    (y >= prefs->metamode_hitbox->y) &&
+	    (y <= prefs->metamode_hitbox->y + prefs->metamode_hitbox->h);
+
+	if (y < (uint16_t)text_height && !hit_metamode) {
+		if (tab_overlay_visible) {
+			unsigned slot;
+			if (tab_overlay_pill_at(x, &slot)) {
+				if (slot != app_active_index(g_app)) {
+					session_t *target = app_session_at(g_app, slot);
+					if (target != NULL) {
+						/* Switch directly to the picked slot. */
+						while (app_active_index(g_app) != slot) {
+							app_session_select_next(g_app);
+						}
+						mark_screen_dirty(1);
+					}
+				}
+				return;
+			}
+			/* Hit the strip but outside any pill — dismiss it. */
+			tab_overlay_set(0);
+			return;
+		}
+		/* Strip hidden, top-edge tap reveals it. */
+		tab_overlay_set(1);
+		return;
+	}
+
+	/* Any tap below the strip dismisses it. */
+	if (tab_overlay_visible) {
+		tab_overlay_set(0);
+	}
+
+	if (hit_metamode) {
 		metamode_toggle();
 	}
 
@@ -632,6 +680,7 @@ static int render_ghostty(int force_full_repaint); /* defined below */
 static int pty_init(session_t *session);            /* defined below */
 void set_tty_window_size(void);                     /* defined below */
 void indicate_event_input(void);                    /* defined below */
+static void draw_tab_overlay(void);                 /* defined below */
 
 void rescreen(int w, int h){
 
@@ -815,18 +864,21 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			                      (uint16_t)cols, (uint16_t)rows,
 			                      (uint32_t)advance, (uint32_t)text_height);
 			set_tty_window_size();
+			tab_overlay_set(1);
 			mark_screen_dirty(1);
 			return 1;
 		}
 		case TERM_BUILTIN_TAB_NEXT:
 			if (app_session_count(app) > 1) {
 				app_session_select_next(app);
+				tab_overlay_set(1);
 				mark_screen_dirty(1);
 			}
 			return 1;
 		case TERM_BUILTIN_TAB_PREV:
 			if (app_session_count(app) > 1) {
 				app_session_select_prev(app);
+				tab_overlay_set(1);
 				mark_screen_dirty(1);
 			}
 			return 1;
@@ -1510,6 +1562,13 @@ static int render_ghostty(int force_full_repaint) {
 	prev_cursor_x = ctx.frame.cursor_x;
 	prev_cursor_y = ctx.frame.cursor_y;
 
+	/* Tab overlay: drawn before the indicator column / symmenu so those
+	 * still show through if they overlap. Drawn after the main grid so
+	 * it always overlays the top row of cell content. */
+	if (tab_overlay_visible) {
+		draw_tab_overlay();
+	}
+
 	if (metamode && metamode_cursor != NULL) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, 0, metamode_cursor);
 	}
@@ -1541,6 +1600,86 @@ static int render_ghostty(int force_full_repaint) {
 	}
 
 	return 1;
+}
+
+/* Per-pill layout: " N " (3 cells) for live tabs, " N. " (4 cells) for
+ * exited tabs. The dot is a stand-in for a strikethrough/dim style we
+ * can't easily render in monospace. Tabs are 1-indexed in the label so
+ * the user sees "1 2 3" matching how they conceive them. */
+static int tab_overlay_pill_width_cells(unsigned slot) {
+	session_t *s = app_session_at(g_app, slot);
+	return session_is_exited(s) ? 4 : 3;
+}
+
+static void draw_tab_overlay(void) {
+	if (font == NULL || g_app == NULL) {
+		return;
+	}
+	unsigned count = app_session_count(g_app);
+	if (count == 0) {
+		return;
+	}
+	unsigned active = app_active_index(g_app);
+
+	int strip_w = fb_w;
+	rect_t strip = { 0, 0, strip_w, text_height };
+	rgb_t base_bg = TERM_COLOR_BT_GRAY;
+	rgb_t base_fg = TERM_COLOR_BLACK;
+	rgb_t hi_bg   = TERM_COLOR_WHITE;
+	rgb_t hi_fg   = TERM_COLOR_BLACK;
+	renderer_fill_rect(renderer, &strip, base_bg);
+
+	int pen_x = 0;
+	for (unsigned i = 0; i < count; ++i) {
+		int cells = tab_overlay_pill_width_cells(i);
+		int pill_w = cells * advance;
+		if (pen_x + pill_w > strip_w) {
+			break;  /* out of room — last visible pill marks overflow */
+		}
+		int is_active = (i == active);
+		rgb_t pill_bg = is_active ? hi_bg : base_bg;
+		rgb_t pill_fg = is_active ? hi_fg : base_fg;
+		rect_t r = { pen_x, 0, pill_w, text_height };
+		renderer_fill_rect(renderer, &r, pill_bg);
+
+		char label[8];
+		session_t *s = app_session_at(g_app, i);
+		if (session_is_exited(s)) {
+			snprintf(label, sizeof(label), " %u. ", i + 1);
+		} else {
+			snprintf(label, sizeof(label), " %u ", i + 1);
+		}
+		for (int j = 0; j < cells; ++j) {
+			renderer_draw_glyph(renderer, pen_x + j * advance, 0,
+			                    (uint32_t)(unsigned char)label[j],
+			                    FONT_STYLE_NORMAL, pill_fg, pill_bg);
+		}
+		pen_x += pill_w + 1;  /* 1px hairline between pills */
+	}
+}
+
+/* Translate an x coordinate within the overlay row into a tab slot. Mirrors
+ * draw_tab_overlay's layout exactly. Returns 1 + sets *out_slot on hit. */
+static int tab_overlay_pill_at(int touch_x, unsigned *out_slot) {
+	if (g_app == NULL) {
+		return 0;
+	}
+	unsigned count = app_session_count(g_app);
+	int pen_x = 0;
+	int strip_w = fb_w;
+	for (unsigned i = 0; i < count; ++i) {
+		int cells = tab_overlay_pill_width_cells(i);
+		int pill_w = cells * advance;
+		if (pen_x + pill_w > strip_w) {
+			break;
+		}
+		if (touch_x >= pen_x && touch_x < pen_x + pill_w) {
+			if (out_slot != NULL) { *out_slot = i; }
+			return 1;
+		}
+		pen_x += pill_w + 1;
+	}
+	return 0;
 }
 
 static void terminal_setenv(void) {
@@ -1826,6 +1965,12 @@ int app_handle_event(app_t *app, const event_t *event) {
 		if (event->as.key.pressed) {
 			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
 			ghostty_bridge_scroll_to_bottom(session_bridge(app_active_session(app)));
+		}
+		/* Any key dismisses the overlay before dispatch; if the key is a
+		 * tab_new/next/prev/close binding, the action handler re-shows
+		 * it. Non-tab keys leave it hidden. */
+		if (tab_overlay_visible) {
+			tab_overlay_set(0);
 		}
 		app_handle_key(app, &event->as.key);
 		return 1;
