@@ -33,10 +33,11 @@
 #include <bps/deviceinfo.h>
 #include <unicode/utf.h>
 
+#include <pthread.h>
+
 #include "SDL.h"
 #include "SDL_ttf.h"
 #include "SDL_syswm.h"
-#include "SDL_thread.h"
 
 #include "types.h"
 #include "terminal.h"
@@ -168,7 +169,7 @@ static pid_t child_pid = -1;
 static char virtualkeyboard_visible = 0;
 static char key_repeat_done = 0;
 
-static SDL_mutex *input_mutex = NULL;
+static pthread_mutex_t input_mutex;
 
 static int event_pipe[2];
 
@@ -1207,16 +1208,10 @@ void setup_screen_size(int s_w, int s_h){
 }
 
 void lock_input(){
-	if(SDL_LockMutex(input_mutex) == -1){
-		fprintf(stderr, "Couldn't lock input mutex - exiting\n");
-		exit_application = 1;
-	}
+	pthread_mutex_lock(&input_mutex);
 }
 void unlock_input(){
-	if(SDL_UnlockMutex(input_mutex) == -1){
-		fprintf(stderr, "Couldn't unlock input mutex - exiting\n");
-		exit_application = 1;
-	}
+	pthread_mutex_unlock(&input_mutex);
 }
 
 void indicate_event_input(){
@@ -1253,7 +1248,7 @@ void set_screen_cols(int ncols){
 
 static int sdl_init() {
 	/* init the input mutex */
-	input_mutex = SDL_CreateMutex();
+	pthread_mutex_init(&input_mutex, NULL);
 	
 	/* init the event input pipe */
 	if(pipe(event_pipe) == -1){
@@ -1355,7 +1350,7 @@ static int sdl_init() {
 
 void app_shutdown(void){
 
-	SDL_DestroyMutex(input_mutex);
+	pthread_mutex_destroy(&input_mutex);
 
 	/* Tear down session state before ghostty_bridge_uninit()/io_uninit()
 	 * below, since the single session borrows both. NULL-safe on the
@@ -1792,11 +1787,11 @@ void sig_child(int signo){
 	errno = old_errno;
 }
 
-/* This function is run in an SDL_Thread, and will check
- * for either input event indication or data from the
- * shell, then run the render loop
+/* Runs in a dedicated pthread. Blocks in select() on the pty master and
+ * the event pipe; either input triggers a dirty-gate check and, if set,
+ * a render pass.
  */
-int run_render(void* data){
+void *run_render(void *data){
 
 	fd_set fds;
 	char ev_buf[100];
@@ -1847,8 +1842,7 @@ int run_render(void* data){
 			unlock_input();
 		}
 	}
-	/* never reached */
-	return 0;
+	return NULL;
 }
 
 int app_handle_event(app_t *app, const event_t *event) {
@@ -1983,7 +1977,8 @@ int main(int argc, char **argv) {
 	}
 
 	/* start up main event loop */
-	SDL_Thread *render_thread = SDL_CreateThread(run_render, NULL);
+	pthread_t render_thread;
+	pthread_create(&render_thread, NULL, run_render, NULL);
 	/* screen_dirty starts set for the first frame, but the render thread
 	 * blocks in select() until either pty output or an SDL event arrives.
 	 * Poke it once so launch never sits on an undrawn black backbuffer. */
@@ -2012,7 +2007,10 @@ int main(int argc, char **argv) {
 	}
 
 	PRINT(stderr, "Exiting run loop\n");
-	SDL_KillThread(render_thread);
+	/* exit_application is already set; poke the event pipe so the render
+	 * thread's select() unblocks and sees the flag, then join cleanly. */
+	indicate_event_input();
+	pthread_join(render_thread, NULL);
 	platform_vkb_hide(g_platform);
 	app_shutdown();
 
