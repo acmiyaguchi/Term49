@@ -50,14 +50,20 @@ void bitmap_fill_rect(bitmap_t *dst, const rect_t *r, rgb_t color) {
 		if (r->y + r->h < y1) y1 = r->y + r->h;
 	}
 	if (x0 >= x1 || y0 >= y1) return;
+	/* The framebuffer is BB10 RGBA8888 — bytes [B, G, R, A] on little-
+	 * endian ARM, which serializes to 0xAARRGGBB as a uint32_t. Pre-pack
+	 * once, then store one 32-bit word per pixel instead of four scalar
+	 * bytes. Inner loop is the per-cell background fill and runs ~1280×
+	 * per frame under the forced full repaint, so the saving compounds. */
+	const uint32_t pix = ((uint32_t)0xFFu << 24) |
+	                     ((uint32_t)color.r << 16) |
+	                     ((uint32_t)color.g <<  8) |
+	                     ((uint32_t)color.b);
+	const int span = x1 - x0;
 	for (int y = y0; y < y1; ++y) {
-		uint8_t *row = dst->pixels + (size_t)y * dst->stride + (size_t)x0 * 4;
-		for (int x = x0; x < x1; ++x) {
-			row[0] = color.b;
-			row[1] = color.g;
-			row[2] = color.r;
-			row[3] = 0xFF;
-			row += 4;
+		uint32_t *row = (uint32_t *)(dst->pixels + (size_t)y * dst->stride) + x0;
+		for (int x = 0; x < span; ++x) {
+			row[x] = pix;
 		}
 	}
 }
