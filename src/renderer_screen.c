@@ -31,6 +31,21 @@ typedef struct glyph_cache {
 	glyph_cache_entry_t entries[GLYPH_CACHE_SIZE];
 } glyph_cache_t;
 
+/* Per-buffer freshness for damage-aware paints. We treat a buffer as
+ * "fresh" once we have completed a full repaint to it; any partial paint
+ * leaves the other buffer(s) trailing the visible state, so the next
+ * latch onto one of those *must* force a full repaint to avoid the
+ * phantom-frame flicker described in #15. The known[] table is keyed by
+ * the screen_buffer_t pointers handed out by SCREEN_PROPERTY_RENDER_BUFFERS;
+ * we rebuild it whenever the buffer set changes (i.e. across a
+ * destroy/recreate on rotation or resize). */
+#define KNOWN_BUFFERS_MAX 4
+
+typedef struct known_buffer {
+	screen_buffer_t buf;
+	int             fresh;
+} known_buffer_t;
+
 typedef struct renderer_screen {
 	platform_t       *plat;        /* borrowed */
 	font_t           *font;        /* borrowed */
@@ -42,6 +57,10 @@ typedef struct renderer_screen {
 	int               fb_h;
 	int               buffer_count;
 	screen_buffer_t   active_buffer;
+	known_buffer_t    known[KNOWN_BUFFERS_MAX];
+	int               known_count;
+	int               current_idx;   /* index into known[] for active_buffer */
+	int               current_stale; /* latched buffer was not fresh; force full */
 	glyph_cache_t     cache;
 	symmenu_render_t *main_symmenu;
 	symmenu_render_t *accent_menus[26][2];
@@ -108,7 +127,7 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	 * (the next buffer ready for the application) and post that same
 	 * entry in end_frame. */
 	int count = self->buffer_count > 0 ? self->buffer_count : 2;
-	screen_buffer_t buffers[4] = {NULL, NULL, NULL, NULL};
+	screen_buffer_t buffers[KNOWN_BUFFERS_MAX] = {NULL};
 	if (count > (int)(sizeof(buffers) / sizeof(buffers[0]))) {
 		count = (int)(sizeof(buffers) / sizeof(buffers[0]));
 	}
@@ -116,6 +135,7 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	                                  (void **)buffers) != 0 || buffers[0] == NULL) {
 		self->fb_valid = 0;
 		self->active_buffer = NULL;
+		self->current_stale = 1;
 		return -1;
 	}
 	screen_buffer_t buffer = buffers[0];
@@ -128,8 +148,44 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	    ptr == NULL || stride <= 0 || size[0] <= 0 || size[1] <= 0) {
 		self->fb_valid = 0;
 		self->active_buffer = NULL;
+		self->current_stale = 1;
 		return -1;
 	}
+
+	/* Refresh the known[] table against the current buffer set. If any
+	 * tracked buffer pointer disappeared (rotation/resize destroyed and
+	 * recreated the buffers) the table is now lying about freshness, so
+	 * drop everything and re-learn — every new buffer starts stale. */
+	for (int i = 0; i < self->known_count; ++i) {
+		int found = 0;
+		for (int j = 0; j < count && buffers[j] != NULL; ++j) {
+			if (self->known[i].buf == buffers[j]) { found = 1; break; }
+		}
+		if (!found) {
+			self->known_count = 0;
+			break;
+		}
+	}
+	int idx = -1;
+	for (int i = 0; i < self->known_count; ++i) {
+		if (self->known[i].buf == buffer) { idx = i; break; }
+	}
+	if (idx < 0) {
+		if (self->known_count < KNOWN_BUFFERS_MAX) {
+			idx = self->known_count++;
+		} else {
+			/* Defensive: with screen_create_window_buffers(2) we'll
+			 * never see more than 2 distinct buffers, and the table
+			 * holds 4. If somehow we did, reuse slot 0 — the table
+			 * will recover on the next set-change reset. */
+			idx = 0;
+		}
+		self->known[idx].buf   = buffer;
+		self->known[idx].fresh = 0;
+	}
+	self->current_idx   = idx;
+	self->current_stale = !self->known[idx].fresh;
+
 	bitmap_view(&self->fb, (uint8_t *)ptr, size[0], size[1], stride, BITMAP_FMT_RGBA8888);
 	self->fb_valid = 1;
 	self->fb_w = size[0];
@@ -163,21 +219,36 @@ static int screen_framebuffer_size(renderer_t *r, int *w, int *h) {
 	return 0;
 }
 
-static void screen_begin_frame(renderer_t *r) {
+static int screen_begin_frame(renderer_t *r) {
 	renderer_screen_t *self = self_of(r);
 	if (self == NULL) {
-		return;
+		return 0;
 	}
+	/* A failed latch leaves current_stale set, so the caller still
+	 * picks "force full" — the safer default when we couldn't even
+	 * read the buffer. */
 	latch_framebuffer(self);
+	return self->current_stale ? 1 : 0;
 }
 
-static void screen_end_frame(renderer_t *r) {
+static void screen_end_frame(renderer_t *r, int was_full) {
 	renderer_screen_t *self = self_of(r);
 	if (self == NULL || !self->fb_valid || self->active_buffer == NULL) {
 		return;
 	}
 	int rect[4] = {0, 0, self->fb_w, self->fb_h};
 	screen_post_window(self->window, self->active_buffer, 1, rect, 0);
+	/* A full paint brings the active buffer fully in sync with the
+	 * just-rendered state; the other buffer(s), still showing the
+	 * pre-paint frame, are now stale by definition. A partial paint
+	 * doesn't move us off "stale": the active buffer is closer to
+	 * truth but still missing whatever cells the partial pass skipped,
+	 * so leave its freshness flag where it was. */
+	if (was_full) {
+		for (int i = 0; i < self->known_count; ++i) {
+			self->known[i].fresh = (i == self->current_idx) ? 1 : 0;
+		}
+	}
 	self->fb_valid = 0;
 	self->active_buffer = NULL;
 }

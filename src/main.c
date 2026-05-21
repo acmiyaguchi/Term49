@@ -1598,16 +1598,17 @@ static int render_ghostty(int force_full_repaint) {
 		 prev_cursor_x != ctx.frame.cursor_x ||
 		 prev_cursor_y != ctx.frame.cursor_y);
 
-	/* Force every repaint to be a full repaint. The native Screen backend
-	 * is double-buffered (screen_create_window_buffers(2)) and we have no
-	 * per-buffer damage tracking: a partial paint to buffer A leaves B
-	 * stale, so on the next flip the previous frame's content reappears,
-	 * producing flicker and a phantom cursor at the old position. Until
-	 * each buffer tracks its own dirty set, just paint everything every
-	 * frame — the terminal is small enough that this is cheap. */
-	force_full_repaint = 1;
-
-	renderer_begin_frame(renderer);
+	/* Latch the next render buffer and ask the renderer whether it must
+	 * be fully repainted this frame. With BB10's double-buffered window
+	 * a partial paint to A leaves B trailing the visible state, so the
+	 * next flip onto B would briefly show stale content. The renderer
+	 * tracks each known screen_buffer_t's freshness and returns 1 here
+	 * whenever the latched buffer hasn't been fully painted since the
+	 * other buffer was — that's our cue to upgrade this frame to a full
+	 * repaint, which then makes the buffer fresh and the other(s) stale. */
+	if (renderer_begin_frame(renderer)) {
+		force_full_repaint = 1;
+	}
 
 	rgb_t bg = to_rgb(ctx.frame.default_bg);
 	if (force_full_repaint) {
@@ -1616,7 +1617,7 @@ static int render_ghostty(int force_full_repaint) {
 	if (force_full_repaint || ctx.frame.dirty != 0) {
 		if (ghostty_bridge_visit_cells(bridge, !force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
 			fprintf(stderr, "ghostty render: visit_cells failed\n");
-			renderer_end_frame(renderer);
+			renderer_end_frame(renderer, force_full_repaint);
 			return 0;
 		}
 	}
@@ -1624,14 +1625,14 @@ static int render_ghostty(int force_full_repaint) {
 		if (prev_cursor_visible && prev_cursor_y < rows &&
 		    ghostty_bridge_visit_row(bridge, prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit old cursor row failed\n");
-			renderer_end_frame(renderer);
+			renderer_end_frame(renderer, force_full_repaint);
 			return 0;
 		}
 		if (cursor_visible && ctx.frame.cursor_y < rows &&
 		    (!prev_cursor_visible || prev_cursor_y != ctx.frame.cursor_y) &&
 		    ghostty_bridge_visit_row(bridge, ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit new cursor row failed\n");
-			renderer_end_frame(renderer);
+			renderer_end_frame(renderer, force_full_repaint);
 			return 0;
 		}
 	}
@@ -1669,7 +1670,7 @@ static int render_ghostty(int force_full_repaint) {
 	}
 
 	ghostty_bridge_finish_frame(bridge);
-	renderer_end_frame(renderer);
+	renderer_end_frame(renderer, force_full_repaint);
 
 	if(flash){
 		flash = 0;
