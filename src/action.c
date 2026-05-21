@@ -60,6 +60,22 @@ static int parse_builtin(const char *value, builtin_action_t *out) {
 		*out = TERM_BUILTIN_RELOAD_CONFIG;
 		return 1;
 	}
+	if (strcmp(value, "tab_new") == 0) {
+		*out = TERM_BUILTIN_TAB_NEW;
+		return 1;
+	}
+	if (strcmp(value, "tab_next") == 0) {
+		*out = TERM_BUILTIN_TAB_NEXT;
+		return 1;
+	}
+	if (strcmp(value, "tab_prev") == 0) {
+		*out = TERM_BUILTIN_TAB_PREV;
+		return 1;
+	}
+	if (strcmp(value, "tab_close") == 0) {
+		*out = TERM_BUILTIN_TAB_CLOSE;
+		return 1;
+	}
 	return 0;
 }
 

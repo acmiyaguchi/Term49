@@ -147,6 +147,14 @@ static int advance;
 static int fb_w;
 static int fb_h;
 
+/* Pixels reserved at the top of the framebuffer for the persistent tab
+ * strip. Zero in the single-tab case (the flash overlay just covers
+ * row 0 momentarily). setup_screen_size() subtracts this so `rows` is
+ * the grid-only count. */
+static int grid_top_pad = 0;
+
+#define TAB_OVERLAY_PLUS_CELLS 3
+
 /* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
  * lock_input()), so no atomics needed. Start dirty for the first frame. */
@@ -160,12 +168,56 @@ static void mark_screen_dirty(int full_repaint) {
 	}
 }
 
+/* Tab overlay: one-row strip drawn over row 0. Always visible while
+ * count > 1; with a single tab, this flag flashes it on tab actions and
+ * top-edge taps. Written only under input_mutex. */
+static int tab_overlay_visible = 0;
+
+static void tab_overlay_set(int visible) {
+	if (tab_overlay_visible != visible) {
+		tab_overlay_visible = visible;
+		mark_screen_dirty(1);
+	}
+}
+
+static int tab_overlay_should_show(void) {
+	if (g_app != NULL && app_session_count(g_app) > 1) {
+		return 1;
+	}
+	return tab_overlay_visible;
+}
+
+static void apply_tab_strip_layout(void) {
+	int want = (g_app != NULL && app_session_count(g_app) > 1) ? text_height : 0;
+	if (want == grid_top_pad) {
+		return;
+	}
+	grid_top_pad = want;
+	setup_screen_size(fb_w, fb_h);
+	mark_screen_dirty(1);
+}
+
+void indicate_event_input(void);  /* defined below */
+
+static void close_session_and_reflow(unsigned idx) {
+	app_session_close_index(g_app, idx);
+	unsigned remaining = app_session_count(g_app);
+	if (remaining == 0) {
+		exit_application = 1;
+		indicate_event_input();
+		return;
+	}
+	if (remaining == 1) {
+		tab_overlay_set(0);
+	}
+	apply_tab_strip_layout();
+	mark_screen_dirty(1);
+}
+
 static bitmap_t *ctrl_key_indicator;
 static bitmap_t *alt_key_indicator;
 static bitmap_t *shift_key_indicator;
 static bitmap_t *altsym_indicator;
-
-static pid_t child_pid = -1;
 
 static char virtualkeyboard_visible = 0;
 static char key_repeat_done = 0;
@@ -185,7 +237,6 @@ static int input_mutex_inited;
 static int event_pipe_open;
 static int font_library_inited;
 static int font_inited;
-static int ghostty_inited;
 
 
 int is_terminfo_keystrokes(const char* keystrokes){
@@ -363,6 +414,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 	size_t keystrokes_len;
 	int terminfo_key = 0;
 	UChar terminfo_keystrokes[CHARACTER_BUFFER];
+	session_t *s = app_active_session(g_app);
 
 	if(keystrokes){
 		terminfo_key = is_terminfo_keystrokes(keystrokes);
@@ -371,7 +423,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		if(terminfo_key){
 			ukeystrokes_len = terminal_key_sequence(terminfo_key, 0, terminfo_keystrokes);
 			/* and write out to the tty whatever the keys were */
-			io_write_master(terminfo_keystrokes, ukeystrokes_len);
+			session_write_text(s, terminfo_keystrokes, ukeystrokes_len);
 			return 1;
 		}
 		// else
@@ -380,7 +432,7 @@ int send_metamode_keystrokes(const char* keystrokes){
 		ukeystrokes = (UChar*)calloc(keystrokes_len, sizeof(UChar));
 		ukeystrokes_len = io_read_utf8_string(keystrokes, keystrokes_len, ukeystrokes);
 		/* and write out to the tty whatever the keys were */
-		io_write_master(ukeystrokes, ukeystrokes_len);
+		session_write_text(s, ukeystrokes, ukeystrokes_len);
 		free(ukeystrokes);
 		return 1;
 	}
@@ -560,13 +612,58 @@ static void maybe_show_vkb(void) {
 	}
 }
 
+static int tab_overlay_pill_at(int touch_x, unsigned *out_slot);
+static int tab_overlay_new_button_at(int touch_x);
+
 void handle_mousedown(uint16_t x, uint16_t y){
-	/* check for hits in the metamode_hitbox */
-	if((x >= prefs->metamode_hitbox->x) &&
-	   (x <= prefs->metamode_hitbox->x + prefs->metamode_hitbox->w) &&
-	   (y >= prefs->metamode_hitbox->y) &&
-	   (y <= prefs->metamode_hitbox->y + prefs->metamode_hitbox->h)) {
-		/* hit in the box */
+	/* Tab overlay handling sits FIRST so a tap on the strip neither leaks
+	 * down to the metamode hitbox nor reveals the VKB. y < text_height is
+	 * "the top row" — the strip is exactly one row tall. */
+	int hit_metamode =
+	    (x >= prefs->metamode_hitbox->x) &&
+	    (x <= prefs->metamode_hitbox->x + prefs->metamode_hitbox->w) &&
+	    (y >= prefs->metamode_hitbox->y) &&
+	    (y <= prefs->metamode_hitbox->y + prefs->metamode_hitbox->h);
+
+	if (y < (uint16_t)text_height && !hit_metamode) {
+		if (tab_overlay_should_show()) {
+			unsigned slot;
+			if (tab_overlay_pill_at(x, &slot)) {
+				if (slot != app_active_index(g_app)) {
+					session_t *target = app_session_at(g_app, slot);
+					if (target != NULL) {
+						/* Switch directly to the picked slot. */
+						while (app_active_index(g_app) != slot) {
+							app_session_select_next(g_app);
+						}
+						mark_screen_dirty(1);
+					}
+				}
+				return;
+			}
+			if (tab_overlay_new_button_at(x)) {
+				action_t a = {0};
+				a.kind = TERM_ACTION_BUILTIN;
+				a.as.builtin.id = TERM_BUILTIN_TAB_NEW;
+				app_dispatch_action(g_app, &a);
+				return;
+			}
+			/* Hit the strip but outside any pill/button — dismiss it. */
+			tab_overlay_set(0);
+			return;
+		}
+		/* Strip hidden, top-edge tap reveals it. */
+		tab_overlay_set(1);
+		return;
+	}
+
+	/* Any tap below the strip clears the flash flag (the persistent
+	 * count>1 strip stays up via tab_overlay_should_show). */
+	if (tab_overlay_visible) {
+		tab_overlay_set(0);
+	}
+
+	if (hit_metamode) {
 		metamode_toggle();
 	}
 
@@ -611,7 +708,7 @@ enum {
 /* Batch `ticks` xterm SGR (mode 1006) wheel events at (col, row) into a
  * single write to the pty master. A fast drag can accumulate several
  * rows per MOVE event; one write() beats N. */
-static void emit_wheels(int col, int row, int up, int ticks) {
+static void emit_wheels(session_t *session, int col, int row, int up, int ticks) {
 	char buf[256];
 	int cb = up ? SGR_WHEEL_UP : SGR_WHEEL_DOWN;
 	size_t off = 0;
@@ -623,14 +720,18 @@ static void emit_wheels(int col, int row, int up, int ticks) {
 		--ticks;
 	}
 	if (off > 0) {
-		io_write_master_char(buf, off);
+		session_write_bytes(session, buf, off);
 	}
 	if (ticks > 0) {
-		emit_wheels(col, row, up, ticks);
+		emit_wheels(session, col, row, up, ticks);
 	}
 }
 
 static int render_ghostty(int force_full_repaint); /* defined below */
+static int pty_init(session_t *session);            /* defined below */
+void set_tty_window_size(void);                     /* defined below */
+void indicate_event_input(void);                    /* defined below */
+static void draw_tab_overlay(void);                 /* defined below */
 
 void rescreen(int w, int h){
 
@@ -797,6 +898,61 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_FONT_SIZE_RESET:
 			set_font_size(TERM_DEFAULT_FONT_SIZE);
 			return 1;
+		case TERM_BUILTIN_TAB_NEW: {
+			session_t *new_s = NULL;
+			if (app_session_open(app, (uint16_t)cols, (uint16_t)rows, 1000, &new_s) != 0) {
+				PRINT(stderr, "tab_new: registry full or alloc failed\n");
+				return 0;
+			}
+			if (pty_init(new_s) != TERM_SUCCESS) {
+				PRINT(stderr, "tab_new: pty_init failed; rolling back\n");
+				app_session_close_index(app, app_session_count(app) - 1);
+				return 0;
+			}
+			if (app_session_count(app) == 2) {
+				/* 1->2 transition: apply_tab_strip_layout reflows every
+				 * session (including the new one) through setup_screen_size. */
+				apply_tab_strip_layout();
+			} else {
+				ghostty_bridge_resize(session_bridge(new_s),
+				                      (uint16_t)cols, (uint16_t)rows,
+				                      (uint32_t)advance, (uint32_t)text_height);
+				set_tty_window_size();
+			}
+			tab_overlay_set(1);
+			mark_screen_dirty(1);
+			return 1;
+		}
+		case TERM_BUILTIN_TAB_NEXT:
+			if (app_session_count(app) > 1) {
+				app_session_select_next(app);
+				tab_overlay_set(1);
+				mark_screen_dirty(1);
+			}
+			return 1;
+		case TERM_BUILTIN_TAB_PREV:
+			if (app_session_count(app) > 1) {
+				app_session_select_prev(app);
+				tab_overlay_set(1);
+				mark_screen_dirty(1);
+			}
+			return 1;
+		case TERM_BUILTIN_TAB_CLOSE: {
+			session_t *s = app_active_session(app);
+			if (s == NULL) {
+				return 0;
+			}
+			/* SIGHUP the live child; the reaper will run but find no
+			 * session for the pid and harmlessly log. */
+			if (!session_is_exited(s)) {
+				pid_t cpid = session_child_pid(s);
+				if (cpid > 0) {
+					kill(cpid, SIGHUP);
+				}
+			}
+			close_session_and_reflow(app_active_index(app));
+			return 1;
+		}
 		case TERM_BUILTIN_LUA_CALL:
 			return prefs_lua_invoke(action->as.builtin.arg);
 		case TERM_BUILTIN_RELOAD_CONFIG:
@@ -1021,6 +1177,22 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			keymap = keymap_lookup((char)k->sym, prefs->metamode_func_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
+			} else {
+				/* Fallback for stale .term49.lua files that predate the
+				 * tab bindings: dispatch the current defaults when the
+				 * user's config has not claimed the key. */
+				action_t tab_action = {0};
+				tab_action.kind = TERM_ACTION_BUILTIN;
+				switch ((char)k->sym) {
+				case 'c': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEW; break;
+				case 'n': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEXT; break;
+				case 'p': tab_action.as.builtin.id = TERM_BUILTIN_TAB_PREV; break;
+				case 'x': tab_action.as.builtin.id = TERM_BUILTIN_TAB_CLOSE; break;
+				default: tab_action.kind = 0; break;
+				}
+				if (tab_action.kind == TERM_ACTION_BUILTIN) {
+					app_dispatch_action(app, &tab_action);
+				}
 			}
 			metamode_toggle();
 			return;
@@ -1117,9 +1289,14 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 	}
 }
 
-void set_tty_window_size(){
-	int master = io_get_master();
+/* Push the current cell grid into one session's pty + child shell. */
+static void apply_winsize_to(session_t *s){
 	struct winsize ws;
+	int master = session_master_fd(s);
+
+	if (master < 0) {
+		return;
+	}
 
 	memset(&ws, 0, sizeof(ws));
 	ws.ws_row = rows;
@@ -1128,28 +1305,31 @@ void set_tty_window_size(){
 	ws.ws_ypixel = fb_h;
 
 	if(tcsetsize(master, rows, cols) < 0){
-		PRINT(stderr, "ERROR: tcsetsize() returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
+		PRINT(stderr, "ERROR: tcsetsize() returned <0 (%s).\n", strerror(errno));
 	}
 	if(ioctl(master, TIOCSWINSZ, &ws) < 0){
-		PRINT(stderr, "ERROR: TIOCSWINSZ returned <0 (%s). Did not set child pty window size. \n", strerror(errno));
+		PRINT(stderr, "ERROR: TIOCSWINSZ returned <0 (%s).\n", strerror(errno));
 	}
 
 	/* Send SIGWINCH to the shell's process group. TIOCGPGRP on the pty
 	 * master fails on BB10/QNX, so fall back to the child process group
 	 * created by setsid() in pty_init(). Sending SIGWINCH to our own app
-	 * process group leaves mksh thinking it is still 80 columns wide, which
-	 * causes broken prompt/readline wrapping until something like tmux fixes
-	 * the size for its inner pty. */
+	 * process group leaves mksh thinking it is still 80 columns wide. */
 	int pgrp;
+	pid_t cpid = session_child_pid(s);
 	if(ioctl(master, TIOCGPGRP, &pgrp) != -1){
 		killpg(pgrp, SIGWINCH);
-	} else if(child_pid > 0){
-		PRINT(stderr, "Could not get pgrp of tty: %s; using child pgid %d\n", strerror(errno), child_pid);
-		if(killpg(child_pid, SIGWINCH) < 0){
-			kill(child_pid, SIGWINCH);
+	} else if(cpid > 0){
+		if(killpg(cpid, SIGWINCH) < 0){
+			kill(cpid, SIGWINCH);
 		}
-	} else {
-		PRINT(stderr, "Could not get pgrp of tty and no child exists: %s\n", strerror(errno));
+	}
+}
+
+void set_tty_window_size(){
+	unsigned count = app_session_count(g_app);
+	for (unsigned i = 0; i < count; ++i) {
+		apply_winsize_to(app_session_at(g_app, i));
 	}
 }
 
@@ -1161,13 +1341,25 @@ void setup_screen_size(int s_w, int s_h){
 		return;
 	}
 
-	rows = s_h / text_height;
+	int usable_h = s_h - grid_top_pad;
+	if (usable_h < text_height) {
+		usable_h = text_height;
+	}
+	rows = usable_h / text_height;
 	cols = s_w / text_width;
 	PRINT(stderr, "Rows: %d Cols: %d\n", rows, cols);
 
+	/* Fan out to every live session: pty TIOCSWINSZ + SIGWINCH AND each
+	 * bridge's ghostty_terminal_resize. Every session reflows so background
+	 * tabs don't desync from their child's idea of the geometry. */
 	set_tty_window_size();
-	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
-	                      (uint32_t)advance, (uint32_t)text_height);
+	unsigned count = app_session_count(g_app);
+	for (unsigned i = 0; i < count; ++i) {
+		session_t *s = app_session_at(g_app, i);
+		ghostty_bridge_resize(session_bridge(s),
+		                      (uint16_t)cols, (uint16_t)rows,
+		                      (uint32_t)advance, (uint32_t)text_height);
+	}
 }
 
 void lock_input(){
@@ -1199,11 +1391,16 @@ void set_screen_cols(int ncols){
 			exit_application = 1;
 		} else {
 			setup_screen_size(fb_w, fb_h);
-			/* and force the number of columns */
+			/* and force the number of columns; fan the override out to
+			 * every session so background tabs reflow too. */
 			cols = ncols;
 			set_tty_window_size();
-			ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
-			                      (uint32_t)advance, (uint32_t)text_height);
+			unsigned count = app_session_count(g_app);
+			for (unsigned i = 0; i < count; ++i) {
+				ghostty_bridge_resize(session_bridge(app_session_at(g_app, i)),
+				                      (uint16_t)cols, (uint16_t)rows,
+				                      (uint32_t)advance, (uint32_t)text_height);
+			}
 			mark_screen_dirty(1);
 		}
 	}
@@ -1249,13 +1446,9 @@ static int startup_init() {
 
 	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
 
-	if(ghostty_bridge_init((uint16_t)cols, (uint16_t)rows, 1000) != 0){
-		fprintf(stderr, "Unable to initialize libghostty-vt terminal\n");
-		return TERM_FAILURE;
-	}
-	ghostty_inited = 1;
-	ghostty_bridge_resize((uint16_t)cols, (uint16_t)rows,
-	                      (uint32_t)advance, (uint32_t)text_height);
+	/* The ghostty bridge is now owned by the session; it is constructed in
+	 * app_init() (which runs after startup_init() returns) and resized for
+	 * pixel dimensions in main() once the session exists. */
 
 	return TERM_SUCCESS;
 }
@@ -1271,9 +1464,10 @@ void app_shutdown(void){
 		input_mutex_inited = 0;
 	}
 
-	/* Tear down session state before ghostty_bridge_uninit()/io_uninit()
-	 * below, since the single session borrows both. NULL-safe on the
-	 * pre-renderer early-exit paths where g_app was never created. */
+	/* Tear down session state before io_uninit() below: the session owns
+	 * the ghostty bridge (freed here) and still borrows the io master fd
+	 * in this stage. NULL-safe on the pre-app_init early-exit paths where
+	 * g_app was never created. */
 	app_shutdown_state(g_app);
 	g_app = NULL;
 
@@ -1294,11 +1488,6 @@ void app_shutdown(void){
 
 	platform_destroy(g_platform);
 	g_platform = NULL;
-
-	if (ghostty_inited) {
-		ghostty_bridge_uninit();
-		ghostty_inited = 0;
-	}
 
 	if (event_pipe_open) {
 		close(event_pipe[0]);
@@ -1346,7 +1535,7 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
 
 	rect_t destrect;
 	destrect.x = x * advance;
-	destrect.y = y * text_height;
+	destrect.y = grid_top_pad + y * text_height;
 	destrect.w = advance;
 	destrect.h = text_height;
 	renderer_fill_rect(renderer, &destrect, bg);
@@ -1374,10 +1563,17 @@ static int render_ghostty(int force_full_repaint) {
 	static uint16_t prev_cursor_x = 0;
 	static uint16_t prev_cursor_y = 0;
 	struct ghostty_render_context ctx;
+	ghostty_bridge_t *bridge;
 	int cursor_visible;
 	int cursor_changed;
 
-	if (ghostty_bridge_begin_frame(&ctx.frame) != 0) {
+	bridge = session_bridge(app_active_session(g_app));
+	if (bridge == NULL) {
+		/* Pre-app_init or post-shutdown: nothing to paint yet. */
+		return 0;
+	}
+
+	if (ghostty_bridge_begin_frame(bridge, &ctx.frame) != 0) {
 		fprintf(stderr, "ghostty render: begin_frame failed\n");
 		return 0;
 	}
@@ -1407,7 +1603,7 @@ static int render_ghostty(int force_full_repaint) {
 		renderer_clear(renderer, bg);
 	}
 	if (force_full_repaint || ctx.frame.dirty != 0) {
-		if (ghostty_bridge_visit_cells(!force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
+		if (ghostty_bridge_visit_cells(bridge, !force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
 			fprintf(stderr, "ghostty render: visit_cells failed\n");
 			renderer_end_frame(renderer);
 			return 0;
@@ -1415,14 +1611,14 @@ static int render_ghostty(int force_full_repaint) {
 	}
 	if (!force_full_repaint && cursor_changed) {
 		if (prev_cursor_visible && prev_cursor_y < rows &&
-		    ghostty_bridge_visit_row(prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
+		    ghostty_bridge_visit_row(bridge, prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit old cursor row failed\n");
 			renderer_end_frame(renderer);
 			return 0;
 		}
 		if (cursor_visible && ctx.frame.cursor_y < rows &&
 		    (!prev_cursor_visible || prev_cursor_y != ctx.frame.cursor_y) &&
-		    ghostty_bridge_visit_row(ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
+		    ghostty_bridge_visit_row(bridge, ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit new cursor row failed\n");
 			renderer_end_frame(renderer);
 			return 0;
@@ -1433,20 +1629,27 @@ static int render_ghostty(int force_full_repaint) {
 	prev_cursor_x = ctx.frame.cursor_x;
 	prev_cursor_y = ctx.frame.cursor_y;
 
+	/* Tab overlay: drawn before the indicator column / symmenu so those
+	 * still show through if they overlap. Drawn after the main grid so
+	 * it always overlays the top row of cell content. */
+	if (tab_overlay_should_show()) {
+		draw_tab_overlay();
+	}
+
 	if (metamode && metamode_cursor != NULL) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 0, metamode_cursor);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 0, metamode_cursor);
 	}
 	if (vmodifiers & KEYMOD_CTRL) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 1 * text_height, ctrl_key_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 1 * text_height, ctrl_key_indicator);
 	}
 	if (vmodifiers & KEYMOD_ALT) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 2 * text_height, alt_key_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 2 * text_height, alt_key_indicator);
 	}
 	if (vmodifiers & KEYMOD_SHIFT) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 3 * text_height, shift_key_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, shift_key_indicator);
 	}
 	if (altsym_lock) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 3 * text_height, altsym_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, altsym_indicator);
 	}
 
 	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
@@ -1454,7 +1657,7 @@ static int render_ghostty(int force_full_repaint) {
 		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
 	}
 
-	ghostty_bridge_finish_frame();
+	ghostty_bridge_finish_frame(bridge);
 	renderer_end_frame(renderer);
 
 	if(flash){
@@ -1466,6 +1669,119 @@ static int render_ghostty(int force_full_repaint) {
 	return 1;
 }
 
+/* Per-pill layout: " N " (3 cells) for live tabs, " N. " (4 cells) for
+ * exited tabs. The dot is a stand-in for a strikethrough/dim style we
+ * can't easily render in monospace. */
+static int tab_overlay_pill_width_cells(unsigned slot) {
+	session_t *s = app_session_at(g_app, slot);
+	return session_is_exited(s) ? 4 : 3;
+}
+
+static void draw_pill(int pen_x, int cells, const char *label, rgb_t fg, rgb_t bg) {
+	rect_t r = { pen_x, 0, cells * advance, text_height };
+	renderer_fill_rect(renderer, &r, bg);
+	for (int j = 0; j < cells; ++j) {
+		renderer_draw_glyph(renderer, pen_x + j * advance, 0,
+		                    (uint32_t)(unsigned char)label[j],
+		                    FONT_STYLE_NORMAL, fg, bg);
+	}
+}
+
+/* Lays out the strip: pen_x_out[i] is the x of pill i, or -1 if it
+ * didn't fit. Returns the + button's pen_x, or -1 when the cap was hit
+ * or no room remains. The single walker shared by draw/hit-test paths. */
+static int tab_overlay_layout(int pen_x_out[APP_MAX_SESSIONS]) {
+	if (g_app == NULL) {
+		return -1;
+	}
+	unsigned count = app_session_count(g_app);
+	int x = 0;
+	int strip_w = fb_w;
+	int overflowed = 0;
+	for (unsigned i = 0; i < count; ++i) {
+		int pill_w = tab_overlay_pill_width_cells(i) * advance;
+		if (overflowed || x + pill_w > strip_w) {
+			pen_x_out[i] = -1;
+			overflowed = 1;
+			continue;
+		}
+		pen_x_out[i] = x;
+		x += pill_w + 1;  /* 1px hairline between pills */
+	}
+	if (overflowed || count >= APP_MAX_SESSIONS) {
+		return -1;
+	}
+	int plus_w = TAB_OVERLAY_PLUS_CELLS * advance;
+	return (x + plus_w <= strip_w) ? x : -1;
+}
+
+static void draw_tab_overlay(void) {
+	if (font == NULL || g_app == NULL) {
+		return;
+	}
+	unsigned count = app_session_count(g_app);
+	if (count == 0) {
+		return;
+	}
+	unsigned active = app_active_index(g_app);
+
+	rgb_t fg = TERM_COLOR_BLACK;
+	rgb_t base_bg = TERM_COLOR_BT_GRAY;
+	rgb_t hi_bg = TERM_COLOR_WHITE;
+	rgb_t plus_bg = TERM_COLOR_GREEN;
+
+	rect_t strip = { 0, 0, fb_w, text_height };
+	renderer_fill_rect(renderer, &strip, base_bg);
+
+	int pen_x[APP_MAX_SESSIONS];
+	int plus_x = tab_overlay_layout(pen_x);
+
+	for (unsigned i = 0; i < count; ++i) {
+		if (pen_x[i] < 0) {
+			continue;
+		}
+		int cells = tab_overlay_pill_width_cells(i);
+		char label[8];
+		if (session_is_exited(app_session_at(g_app, i))) {
+			snprintf(label, sizeof(label), " %u. ", i + 1);
+		} else {
+			snprintf(label, sizeof(label), " %u ", i + 1);
+		}
+		draw_pill(pen_x[i], cells, label, fg, (i == active) ? hi_bg : base_bg);
+	}
+
+	if (plus_x >= 0) {
+		draw_pill(plus_x, TAB_OVERLAY_PLUS_CELLS, " + ", fg, plus_bg);
+	}
+}
+
+static int tab_overlay_pill_at(int touch_x, unsigned *out_slot) {
+	int pen_x[APP_MAX_SESSIONS];
+	(void)tab_overlay_layout(pen_x);
+	unsigned count = (g_app != NULL) ? app_session_count(g_app) : 0;
+	for (unsigned i = 0; i < count; ++i) {
+		if (pen_x[i] < 0) {
+			continue;
+		}
+		int pill_w = tab_overlay_pill_width_cells(i) * advance;
+		if (touch_x >= pen_x[i] && touch_x < pen_x[i] + pill_w) {
+			if (out_slot != NULL) { *out_slot = i; }
+			return 1;
+		}
+	}
+	return 0;
+}
+
+static int tab_overlay_new_button_at(int touch_x) {
+	int pen_x[APP_MAX_SESSIONS];
+	int plus_x = tab_overlay_layout(pen_x);
+	if (plus_x < 0) {
+		return 0;
+	}
+	int plus_w = TAB_OVERLAY_PLUS_CELLS * advance;
+	return (touch_x >= plus_x && touch_x < plus_x + plus_w);
+}
+
 static void terminal_setenv(void) {
 	/* terminfo is located via $TERMINFO (an absolute path to the bundled
 	 * database, exported in main() before fork). */
@@ -1475,7 +1791,7 @@ static void terminal_setenv(void) {
 	}
 }
 
-static int pty_init() {
+static int pty_init(session_t *session) {
 	// Set up the ttys and fork
 
 	struct winsize winp;
@@ -1509,11 +1825,11 @@ static int pty_init() {
 	// turn off blocking on the master pty
 	fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL) | O_NONBLOCK);
 
-	// store the master_fd in IO
-	io_set_master(master_fd);
+	// store the master_fd on the session (#4 step 1.5)
+	session_set_master_fd(session, master_fd);
 
 	// fork and exec
-	child_pid = fork();
+	pid_t child_pid = fork();
 
 	if (child_pid == 0) {
 		// Child
@@ -1590,38 +1906,61 @@ static int pty_init() {
 	}
 	if (child_pid == -1){
 		PRINT(stderr, "fork returned: %s\n", strerror(errno));
+		close(master_fd);
+		session_set_master_fd(session, -1);
 		return TERM_FAILURE;
 	}
+
+	session_set_child_pid(session, child_pid);
 
 	// close the slave_fd, not needed anymore
 	close(slave_fd);
 	return TERM_SUCCESS;
 }
 
+/* Async-signal-safe SIGCHLD handler: must not touch the session registry
+ * (`input_mutex` is not signal-safe) or call any non-AS-safe libc routine.
+ * Just poke the self-pipe with a 'c' so the render thread can reap and
+ * mark the owning session exited under the lock. */
 void sig_child(int signo){
-	int status;
-
+	(void)signo;
 	int old_errno = errno;
-
-	if(waitpid(child_pid, &status, WNOHANG)){
-		if(WIFEXITED(status)){
-			PRINT(stderr, "Child %d exited normally with status %d\n", child_pid, WEXITSTATUS(status));
-		} else {
-			PRINT(stderr, "Child %d exited abnormally\n", child_pid);
-		}
-		exit_application = 1;
-		/* Poke the event pipe so the render thread's select() unblocks and
-		 * sees exit_application set. The main run loop is woken by the next
-		 * BPS event; for a faster shutdown a follow-up could push a user
-		 * BPS event here, but the existing flow is correct. */
-		if (event_pipe[1] >= 0) {
-			char w = 'q';
-			(void)write(event_pipe[1], &w, 1);
-		}
-	} else {
-		PRINT(stderr, "Got SIGCHILD for process other than %d\n", child_pid);
+	if (event_pipe[1] >= 0) {
+		char w = 'c';
+		(void)write(event_pipe[1], &w, 1);
 	}
 	errno = old_errno;
+}
+
+/* Drains pending children. Must be called with input_mutex held — looks up
+ * sessions in the registry and mutates them. SIGCHLDs coalesce, so the
+ * loop is mandatory: a single wake may correspond to multiple reapable
+ * children. */
+static void reap_exited_children(void){
+	int status;
+	pid_t pid;
+	while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+		session_t *s = app_session_by_child_pid(g_app, pid);
+		if (s == NULL) {
+			PRINT(stderr, "Got SIGCHLD for unknown pid %d\n", (int)pid);
+			continue;
+		}
+		if (WIFEXITED(status)) {
+			PRINT(stderr, "Child %d (session %u) exited normally with status %d\n",
+			      (int)pid, session_id(s), WEXITSTATUS(status));
+		} else {
+			PRINT(stderr, "Child %d (session %u) exited abnormally\n",
+			      (int)pid, session_id(s));
+		}
+
+		unsigned idx;
+		if (!app_session_index_of(g_app, s, &idx)) {
+			session_mark_exited(s, status);
+			mark_screen_dirty(1);
+			continue;
+		}
+		close_session_and_reflow(idx);
+	}
 }
 
 /* Runs in a dedicated pthread. Blocks in select() on the pty master and
@@ -1635,29 +1974,56 @@ void *run_render(void *data){
 	int n = 0;
 	char rawbuf[READ_BUFFER_SIZE];
 	ssize_t num_bytes = 0;
-	int master = io_get_master();
 	while(!exit_application){
 		FD_ZERO(&fds);
-		FD_SET(master, &fds);
+		int maxfd = event_pipe[0];
 		FD_SET(event_pipe[0], &fds);
-		n = select(1+max(master, event_pipe[0]), &fds, NULL, NULL, NULL);
+		/* Build the fd set fresh each iteration: TAB_NEW/CLOSE in
+		 * app_dispatch_action and session_mark_exited from the reaper
+		 * mutate the live-master set between iterations. */
+		unsigned count = app_session_count(g_app);
+		for (unsigned i = 0; i < count; ++i) {
+			int fd = session_master_fd(app_session_at(g_app, i));
+			if (fd >= 0) {
+				FD_SET(fd, &fds);
+				if (fd > maxfd) { maxfd = fd; }
+			}
+		}
+		n = select(maxfd + 1, &fds, NULL, NULL, NULL);
 		if(n < 0){
 			printf("Error calling select on inputs: %d\n", errno);
 		} else {
-			if(FD_ISSET(master, &fds)){
-				lock_input();
-				// Feed raw VT bytes directly to libghostty-vt.
-				while ((num_bytes = io_read_master_raw(rawbuf, READ_BUFFER_SIZE)) > 0){
-					ghostty_bridge_write((const uint8_t*)rawbuf, (size_t)num_bytes);
+			/* Drain every readable session's pty into its OWN bridge so
+			 * background tabs still grow their scrollback. */
+			int any_session_data = 0;
+			lock_input();
+			count = app_session_count(g_app);
+			for (unsigned i = 0; i < count; ++i) {
+				session_t *s = app_session_at(g_app, i);
+				int fd = session_master_fd(s);
+				if (fd < 0 || !FD_ISSET(fd, &fds)) { continue; }
+				ghostty_bridge_t *bridge = session_bridge(s);
+				while ((num_bytes = session_read_bytes(s, rawbuf, READ_BUFFER_SIZE)) > 0){
+					ghostty_bridge_write(bridge, (const uint8_t*)rawbuf, (size_t)num_bytes);
 				}
-				/* child produced output -> terminal rows changed; let Ghostty's
-				 * render-state dirty map decide whether this is full or partial. */
-				mark_screen_dirty(0);
-				unlock_input();
+				any_session_data = 1;
 			}
+			if (any_session_data) {
+				/* let Ghostty's render-state dirty map decide partial vs full */
+				mark_screen_dirty(0);
+			}
+			unlock_input();
 			if(FD_ISSET(event_pipe[0], &fds)){
-				// Just read the stuff and throw it away
-				read(event_pipe[0], (void*)ev_buf, 99);
+				int reap_needed = 0;
+				ssize_t got = read(event_pipe[0], (void*)ev_buf, sizeof(ev_buf));
+				for (ssize_t i = 0; i < got; ++i) {
+					if (ev_buf[i] == 'c') { reap_needed = 1; break; }
+				}
+				if (reap_needed) {
+					lock_input();
+					reap_exited_children();
+					unlock_input();
+				}
 			}
 		}
 		/* Only repaint when something visible actually changed. The pipe
@@ -1704,11 +2070,17 @@ int app_handle_event(app_t *app, const event_t *event) {
 	case TERM_EVENT_KEY:
 		if (event->as.key.pressed) {
 			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
-			ghostty_bridge_scroll_to_bottom();
+			ghostty_bridge_scroll_to_bottom(session_bridge(app_active_session(app)));
+		}
+		/* Clear the flash flag; tab actions re-set it. The persistent
+		 * count>1 strip stays up regardless via tab_overlay_should_show. */
+		if (tab_overlay_visible) {
+			tab_overlay_set(0);
 		}
 		app_handle_key(app, &event->as.key);
 		return 1;
-	case TERM_EVENT_TOUCH_DOWN:
+	case TERM_EVENT_TOUCH_DOWN: {
+		ghostty_bridge_t *bridge = session_bridge(app_active_session(app));
 		drag_reset();
 		g_drag.start_y = event->as.touch.y;
 		g_drag.last_y  = event->as.touch.y;
@@ -1716,9 +2088,9 @@ int app_handle_event(app_t *app, const event_t *event) {
 		 * that dismisses the menu mid-stroke can't start scrolling. */
 		if (current_symmenu != NULL) {
 			g_drag.mode = DRAG_LOCKED;
-		} else if (ghostty_bridge_mouse_wheel_ready()) {
+		} else if (ghostty_bridge_mouse_wheel_ready(bridge)) {
 			g_drag.mode = DRAG_WHEEL;
-		} else if (ghostty_bridge_is_alt_screen()) {
+		} else if (ghostty_bridge_is_alt_screen(bridge)) {
 			g_drag.mode = DRAG_LOCKED;
 		} else {
 			g_drag.mode = DRAG_SCROLL;
@@ -1726,6 +2098,7 @@ int app_handle_event(app_t *app, const event_t *event) {
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
 		return 1;
+	}
 	case TERM_EVENT_TOUCH_MOVE: {
 		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
 			return 1;
@@ -1750,11 +2123,13 @@ int app_handle_event(app_t *app, const event_t *event) {
 		 * Finger DOWN (rows > 0) reveals older content. */
 		if (g_drag.mode == DRAG_WHEEL) {
 			int col  = (text_width  > 0) ? (x / text_width)  + 1 : 1;
-			int rrow = (text_height > 0) ? (y / text_height) + 1 : 1;
-			emit_wheels(col, rrow, rows > 0, abs(rows));
+			int yrel = (int)y - grid_top_pad;
+			if (yrel < 0) { yrel = 0; }
+			int rrow = (text_height > 0) ? (yrel / text_height) + 1 : 1;
+			emit_wheels(app_active_session(app), col, rrow, rows > 0, abs(rows));
 		} else {
 			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
-			ghostty_bridge_scroll_view(-rows);
+			ghostty_bridge_scroll_view(session_bridge(app_active_session(app)), -rows);
 			mark_screen_dirty(1);
 		}
 		return 1;
@@ -1839,27 +2214,9 @@ int main(int argc, char **argv) {
 		app_shutdown();
 		return TERM_FAILURE;
 	}
-	
-	/* Initialize pty */
-	if (TERM_SUCCESS != pty_init()) {
-		PRINT(stderr, "Unable to initialize pty/tty\n");
-		app_shutdown();
-		return TERM_FAILURE;
-	}
 
-	/* Install signal handler for SIGCHILD */
-	struct sigaction act;
-	act.sa_handler = &sig_child;
-	sigemptyset(&act.sa_mask);
-	act.sa_flags = SA_NOCLDSTOP;
-	if (sigaction(SIGCHLD, &act, NULL) < 0) {
-		PRINT(stderr, "sigaction failed\n");
-		app_shutdown();
-		return TERM_FAILURE;
-	}
-
-	/* initialize FreeType, font, renderer, ghostty bridge. The native
-	 * Screen window was already created by platform_screen_create above. */
+	/* initialize FreeType, font, renderer. The native Screen window was
+	 * already created by platform_screen_create above. */
 	if (TERM_SUCCESS != startup_init()) {
 		PRINT(stderr, "Unable to initialize startup state\n");
 		app_shutdown();
@@ -1872,14 +2229,40 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
-	/* App state owns the (single) session. Created after pty_init() and
-	 * ghostty_bridge_init() (inside startup_init) so the session can adopt
-	 * the io master fd + ghostty singleton. */
-	if (app_init(&g_app, prefs) != 0) {
+	/* App state owns the session. Created after startup_init() so the
+	 * session's ghostty bridge can be built at the final cell grid (cols/
+	 * rows); pty_init() below adopts the master fd onto the session, so
+	 * app_init() must precede pty_init(). */
+	if (app_init(&g_app, prefs, (uint16_t)cols, (uint16_t)rows, 1000) != 0) {
 		PRINT(stderr, "Unable to initialize app state\n");
 		app_shutdown();
 		return TERM_FAILURE;
 	}
+
+	/* Initialize pty — opens the master, forks the shell, parks the fd on
+	 * the active session. */
+	if (TERM_SUCCESS != pty_init(app_active_session(g_app))) {
+		PRINT(stderr, "Unable to initialize pty/tty\n");
+		app_shutdown();
+		return TERM_FAILURE;
+	}
+
+	/* Install signal handler for SIGCHILD. Must come after pty_init: the
+	 * handler reads child_pid, which pty_init wrote. */
+	struct sigaction act;
+	act.sa_handler = &sig_child;
+	sigemptyset(&act.sa_mask);
+	act.sa_flags = SA_NOCLDSTOP;
+	if (sigaction(SIGCHLD, &act, NULL) < 0) {
+		PRINT(stderr, "sigaction failed\n");
+		app_shutdown();
+		return TERM_FAILURE;
+	}
+
+	/* Apply final geometry now that both bridge AND pty exist: bridge gets
+	 * its pixel cell dimensions (constructor only took cell counts), and
+	 * the pty gets the same size via TIOCSWINSZ. */
+	setup_screen_size(fb_w, fb_h);
 
 	maybe_show_vkb();
 

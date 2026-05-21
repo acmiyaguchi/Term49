@@ -66,6 +66,51 @@ live in `vendor/libghostty-vt/tests/`.
 * BB10 pty output may contain bare LF, so the bridge normalizes bare `\n` to
   `\r\n` before feeding Ghostty to avoid staircase newlines.
 
+## Tabs
+
+Term49 runs multiple shells in a single app instance. Each tab owns its
+own pty, child shell, and Ghostty bridge (so each tab has its own
+scrollback). Background tabs keep consuming output while you're focused
+on another tab.
+
+Default keybindings sit under metamode (double-tap `metamode_doubletap_key`
+— right shift by default — then the letter). The set mirrors tmux's
+window-management keys; all four are single unmodified letters, so no
+`sym` or `alt` is needed once you're in metamode:
+
+| Metamode key | Action      | tmux analogue   |
+|--------------|-------------|-----------------|
+| `c`          | `tab_new`   | `prefix c`      |
+| `n`          | `tab_next`  | `prefix n`      |
+| `p`          | `tab_prev`  | `prefix p`      |
+| `x`          | `tab_close` | `prefix &`      |
+
+To make room for `c` and `p`, the previous defaults moved: `ctrl_down`
+is now `d`, and `font_size_reset` is now `z`.
+
+A one-row tab strip sits at the top of the screen whenever more than
+one tab is open, so it's always there to track. With a single tab the
+strip stays hidden, but flashes in on any tab action and on a top-edge
+tap; the next non-tab keypress dismisses it. Each tab shows as a ` N `
+pill (1-indexed); the active tab inverts to white-on-black, and an
+exited tab renders as ` N. `. A green ` + ` pill follows the last tab
+while you're under the `APP_MAX_SESSIONS` cap (8).
+
+The strip is touchable: tap a numbered pill to jump to that tab, tap
+`+` to open a new tab, or tap the top edge while it's hidden to reveal
+it. Tapping anywhere else on the strip dismisses it.
+
+`tab_close` is a single-press kill: it SIGHUPs the live shell and
+drops the tab immediately. A shell that exits on its own (e.g. you
+type `exit`) closes the same way — the SIGCHLD reaper drops the tab
+as soon as the child is reaped. The app only quits once the last tab
+is gone.
+
+All four actions are also reachable from Lua as
+`term.action("tab_new")`, `"tab_next"`, `"tab_prev"`, `"tab_close"`, so
+custom keybindings or scripted tab opening from `.term49.lua` work with
+no extra wiring.
+
 ## Signing the release
 
 To distribute Term49 through the BlackBerry signing flow, run `make sign`
