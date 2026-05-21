@@ -38,6 +38,12 @@ void *platform_impl(platform_t *p) {
 }
 
 void platform_destroy(platform_t *p) {
+	if (p == NULL) {
+		return;
+	}
+	if (p->ops != NULL && p->ops->destroy != NULL) {
+		p->ops->destroy(p);
+	}
 	free(p);
 }
 

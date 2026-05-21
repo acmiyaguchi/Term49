@@ -260,6 +260,22 @@ static void screen_plat_apply_pending_resize(platform_t *p) {
 	self->pending_resize_valid = 0;
 }
 
+static void screen_plat_destroy(platform_t *p) {
+	platform_screen_t *self = self_of(p);
+	if (self == NULL) {
+		return;
+	}
+	/* Mirrors the fail-path teardown in platform_screen_create: drop
+	 * the window (which also unwinds the window buffers), the screen
+	 * context, the impl struct, and finally bps_shutdown to release
+	 * the screen / navigator / vkb event registrations. */
+	screen_destroy_window(self->window);
+	screen_destroy_context(self->ctx);
+	free(self);
+	platform_set_impl(p, NULL);
+	bps_shutdown();
+}
+
 static const platform_ops_t SCREEN_PLATFORM_OPS = {
 	.next_event           = screen_plat_next_event,
 	.vkb_show             = screen_plat_vkb_show,
@@ -269,6 +285,7 @@ static const platform_ops_t SCREEN_PLATFORM_OPS = {
 	.notify               = screen_plat_notify,
 	.open_url             = screen_plat_open_url,
 	.apply_pending_resize = screen_plat_apply_pending_resize,
+	.destroy              = screen_plat_destroy,
 };
 
 const platform_ops_t *platform_screen_ops(void) {

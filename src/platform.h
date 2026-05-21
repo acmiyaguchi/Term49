@@ -24,6 +24,10 @@ typedef struct platform_ops {
 	 * race the render thread's cached active_buffer pointer. No-op if
 	 * nothing is pending. */
 	void (*apply_pending_resize)(platform_t *p);
+	/* Release backend-owned resources (window/context, BPS init, impl
+	 * struct). Called from platform_destroy before the wrapper itself
+	 * is freed. May be NULL for backends with no per-instance state. */
+	void (*destroy)(platform_t *p);
 } platform_ops_t;
 
 /* Generic wrapper lifecycle (platform.c). */

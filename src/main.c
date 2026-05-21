@@ -747,6 +747,16 @@ void rescreen(int w, int h){
 		exit_application = 1;
 	}
 
+	/* Safe to run with current_symmenu set: it points into prefs, not
+	 * into the cache, and all rescreen callers hold input_mutex so no
+	 * paint races the teardown/rebuild. A non-zero return means the
+	 * cache is fully torn down, so bail before the next paint NULL-
+	 * derefs through it. */
+	if(renderer != NULL && renderer_init_symmenus(renderer, prefs) != 0){
+		fprintf(stderr, "rescreen: symmenu cache rebuild failed\n");
+		exit_application = 1;
+	}
+
 	setup_screen_size(width, height);
 	if(virtualkeyboard_visible){
 		vkb_h = platform_vkb_height(g_platform);
@@ -841,10 +851,11 @@ static void app_reload_config(void){
 	*prefs = *fresh;                     /* move new data into stable struct */
 	free(fresh);                         /* free only the empty container */
 
-	/* rebuild derived state from the new prefs */
-	if(renderer != NULL){
-		renderer_init_symmenus(renderer, prefs);
-	}
+	/* Decode the new symmenu labels before any code touches sk->uc. */
+	preferences_decode_symmenu_labels(prefs);
+
+	/* rescreen() handles the renderer's symmenu cache rebuild now,
+	 * so a single rebuild covers the font/grid/PTY refresh below. */
 	rescreen(-1, -1);                    /* font/grid/PTY + synchronous redraw */
 }
 
@@ -2215,6 +2226,11 @@ int main(int argc, char **argv) {
 		return TERM_FAILURE;
 	}
 
+	/* Decode symmenu labels into sk->uc now that the ICU UTF-8
+	 * converter is live (io_init opened it). The decoded buffer is
+	 * owned by symmenu_t and freed by destroy_symmenu. */
+	preferences_decode_symmenu_labels(prefs);
+
 	/* initialize FreeType, font, renderer. The native Screen window was
 	 * already created by platform_screen_create above. */
 	if (TERM_SUCCESS != startup_init()) {
@@ -2275,15 +2291,20 @@ int main(int argc, char **argv) {
 	indicate_event_input();
 	while (!exit_application) {
 
-		//Request and process the next event. platform_next_event blocks
-		//in bps_get_event outside the lock; only dispatch is locked. The
-		//render-thread poke stays unconditional, as before.
+		/* Request and process the next event. platform_next_event
+		 * blocks in bps_get_event outside the lock; only dispatch is
+		 * locked. The render-thread poke is gated on app_handle_event
+		 * returning 1 (handled) or a reload firing: BPS chatter that
+		 * produced no state change (e.g. orientation-check responses,
+		 * ignored bezel touches, TERM_EVENT_NONE defaults) used to
+		 * wake the render thread for nothing. */
 		event_t event;
 		int have = platform_next_event(g_platform, &event);
+		int handled = 0;
 
 		lock_input();
 		if (have) {
-			app_handle_event(g_app, &event);
+			handled = app_handle_event(g_app, &event);
 		}
 		/* Safe point: the triggering event (and any lua_pcall within
 		 * it) has fully returned; still under the input lock, same
@@ -2291,8 +2312,11 @@ int main(int argc, char **argv) {
 		if (g_reload_pending) {
 			g_reload_pending = 0;
 			app_reload_config();
+			handled = 1;
 		}
-		indicate_event_input();
+		if (handled) {
+			indicate_event_input();
+		}
 		unlock_input();
 	}
 

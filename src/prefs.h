@@ -34,6 +34,12 @@ void destroy_preferences(pref_t *pref);
  * borrowers (app/io/renderer) hold. */
 void destroy_preferences_members(pref_t *pref);
 
+/* Decode every symkey label (sk->map->to) into sk->uc once. Owned by
+ * the symmenu_t (freed by destroy_symmenu); must be called AFTER
+ * io_init so the ICU UTF-8 converter is live. Idempotent: re-running
+ * frees and re-decodes, so reload can call this after a prefs swap. */
+void preferences_decode_symmenu_labels(pref_t *prefs);
+
 /* Loader boundary. pref_t is the loader-agnostic plain-data contract;
  * the concrete config parser (Lua) stays PRIVATE to preferences.c -- no
  * other translation unit includes any lua headers. Lua is the only

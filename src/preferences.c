@@ -30,6 +30,7 @@
 #include "terminal.h"
 #include "accent_menus.h"
 #include "action.h"
+#include "io.h"
 #include "symmenu.h"
 #include "prefs.h"
 
@@ -458,6 +459,40 @@ static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
 		}
 	}
 	return menu;
+}
+
+/* Frees any pre-existing sk->uc first so a re-run doesn't leak --
+ * lets callers (notably app_reload_config) invoke this on an already
+ * decoded prefs struct. */
+static void decode_one_symmenu(symmenu_t *menu) {
+	if (menu == NULL || menu->keys == NULL) {
+		return;
+	}
+	for (symkey_t **row = menu->keys; *row != NULL; ++row) {
+		for (symkey_t *sk = *row; sk->map != NULL; ++sk) {
+			free(sk->uc);
+			sk->uc = NULL;
+			if (sk->map->to == NULL) {
+				continue;
+			}
+			size_t to_len = strlen(sk->map->to);
+			sk->uc = (UChar *)calloc(to_len + 1, sizeof(UChar));
+			if (sk->uc != NULL) {
+				io_read_utf8_string(sk->map->to, to_len, sk->uc);
+			}
+		}
+	}
+}
+
+void preferences_decode_symmenu_labels(pref_t *prefs) {
+	if (prefs == NULL) {
+		return;
+	}
+	decode_one_symmenu(prefs->main_symmenu);
+	for (int i = 0; i < 26; ++i) {
+		decode_one_symmenu(prefs->accent_menus[i][0]);
+		decode_one_symmenu(prefs->accent_menus[i][1]);
+	}
 }
 
 void destroy_preferences_members(pref_t *pref) {
