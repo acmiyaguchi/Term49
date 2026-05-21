@@ -31,6 +31,29 @@ typedef struct glyph_cache {
 	glyph_cache_entry_t entries[GLYPH_CACHE_SIZE];
 } glyph_cache_t;
 
+/* Per-buffer freshness for damage-aware paints. We treat a buffer as
+ * "fresh" once we have completed a full repaint to it; any partial paint
+ * leaves the other buffer(s) trailing the visible state, so the next
+ * latch onto one of those *must* force a full repaint to avoid the
+ * phantom-frame flicker described in #15. The known[] table is keyed by
+ * the screen_buffer_t pointers handed out by SCREEN_PROPERTY_RENDER_BUFFERS;
+ * we rebuild it whenever the buffer set changes (i.e. across a
+ * destroy/recreate on rotation or resize). */
+#define KNOWN_BUFFERS_MAX 4
+
+typedef struct known_buffer {
+	screen_buffer_t buf;
+	int             fresh;
+} known_buffer_t;
+
+/* Bounding box of pixels touched between begin_frame and end_frame.
+ * end_frame passes (x, y, w, h) to screen_post_window so the compositor
+ * only re-uploads the changed sub-rect. */
+typedef struct dirty_bbox {
+	int x0, y0, x1, y1;
+	int empty;
+} dirty_bbox_t;
+
 typedef struct renderer_screen {
 	platform_t       *plat;        /* borrowed */
 	font_t           *font;        /* borrowed */
@@ -42,10 +65,39 @@ typedef struct renderer_screen {
 	int               fb_h;
 	int               buffer_count;
 	screen_buffer_t   active_buffer;
+	known_buffer_t    known[KNOWN_BUFFERS_MAX];
+	int               known_count;
+	int               current_idx;   /* index into known[] for active_buffer */
+	int               current_stale; /* latched buffer was not fresh; force full */
+	dirty_bbox_t      dirty;         /* extended by each draw op in the frame */
 	glyph_cache_t     cache;
 	symmenu_render_t *main_symmenu;
 	symmenu_render_t *accent_menus[26][2];
 } renderer_screen_t;
+
+static void bbox_reset(dirty_bbox_t *b) {
+	b->x0 = b->y0 = b->x1 = b->y1 = 0;
+	b->empty = 1;
+}
+
+static void bbox_extend(dirty_bbox_t *b, int x, int y, int w, int h,
+                        int clip_w, int clip_h) {
+	if (w <= 0 || h <= 0) return;
+	int x0 = x < 0 ? 0 : x;
+	int y0 = y < 0 ? 0 : y;
+	int x1 = x + w; if (x1 > clip_w) x1 = clip_w;
+	int y1 = y + h; if (y1 > clip_h) y1 = clip_h;
+	if (x0 >= x1 || y0 >= y1) return;
+	if (b->empty) {
+		b->x0 = x0; b->y0 = y0; b->x1 = x1; b->y1 = y1;
+		b->empty = 0;
+	} else {
+		if (x0 < b->x0) b->x0 = x0;
+		if (y0 < b->y0) b->y0 = y0;
+		if (x1 > b->x1) b->x1 = x1;
+		if (y1 > b->y1) b->y1 = y1;
+	}
+}
 
 static renderer_screen_t *self_of(renderer_t *r) {
 	return (renderer_screen_t *)renderer_impl(r);
@@ -108,7 +160,7 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	 * (the next buffer ready for the application) and post that same
 	 * entry in end_frame. */
 	int count = self->buffer_count > 0 ? self->buffer_count : 2;
-	screen_buffer_t buffers[4] = {NULL, NULL, NULL, NULL};
+	screen_buffer_t buffers[KNOWN_BUFFERS_MAX] = {NULL};
 	if (count > (int)(sizeof(buffers) / sizeof(buffers[0]))) {
 		count = (int)(sizeof(buffers) / sizeof(buffers[0]));
 	}
@@ -116,6 +168,7 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	                                  (void **)buffers) != 0 || buffers[0] == NULL) {
 		self->fb_valid = 0;
 		self->active_buffer = NULL;
+		self->current_stale = 1;
 		return -1;
 	}
 	screen_buffer_t buffer = buffers[0];
@@ -128,8 +181,44 @@ static int latch_framebuffer(renderer_screen_t *self) {
 	    ptr == NULL || stride <= 0 || size[0] <= 0 || size[1] <= 0) {
 		self->fb_valid = 0;
 		self->active_buffer = NULL;
+		self->current_stale = 1;
 		return -1;
 	}
+
+	/* Refresh the known[] table against the current buffer set. If any
+	 * tracked buffer pointer disappeared (rotation/resize destroyed and
+	 * recreated the buffers) the table is now lying about freshness, so
+	 * drop everything and re-learn — every new buffer starts stale. */
+	for (int i = 0; i < self->known_count; ++i) {
+		int found = 0;
+		for (int j = 0; j < count && buffers[j] != NULL; ++j) {
+			if (self->known[i].buf == buffers[j]) { found = 1; break; }
+		}
+		if (!found) {
+			self->known_count = 0;
+			break;
+		}
+	}
+	int idx = -1;
+	for (int i = 0; i < self->known_count; ++i) {
+		if (self->known[i].buf == buffer) { idx = i; break; }
+	}
+	if (idx < 0) {
+		if (self->known_count < KNOWN_BUFFERS_MAX) {
+			idx = self->known_count++;
+		} else {
+			/* Defensive: with screen_create_window_buffers(2) we'll
+			 * never see more than 2 distinct buffers, and the table
+			 * holds 4. If somehow we did, reuse slot 0 — the table
+			 * will recover on the next set-change reset. */
+			idx = 0;
+		}
+		self->known[idx].buf   = buffer;
+		self->known[idx].fresh = 0;
+	}
+	self->current_idx   = idx;
+	self->current_stale = !self->known[idx].fresh;
+
 	bitmap_view(&self->fb, (uint8_t *)ptr, size[0], size[1], stride, BITMAP_FMT_RGBA8888);
 	self->fb_valid = 1;
 	self->fb_w = size[0];
@@ -163,21 +252,54 @@ static int screen_framebuffer_size(renderer_t *r, int *w, int *h) {
 	return 0;
 }
 
-static void screen_begin_frame(renderer_t *r) {
+static int screen_begin_frame(renderer_t *r) {
 	renderer_screen_t *self = self_of(r);
 	if (self == NULL) {
-		return;
+		return 0;
 	}
+	bbox_reset(&self->dirty);
+	/* A failed latch leaves current_stale set, so the caller still
+	 * picks "force full" — the safer default when we couldn't even
+	 * read the buffer. */
 	latch_framebuffer(self);
+	return self->current_stale ? 1 : 0;
 }
 
-static void screen_end_frame(renderer_t *r) {
+static void screen_end_frame(renderer_t *r, int was_full) {
 	renderer_screen_t *self = self_of(r);
 	if (self == NULL || !self->fb_valid || self->active_buffer == NULL) {
 		return;
 	}
-	int rect[4] = {0, 0, self->fb_w, self->fb_h};
-	screen_post_window(self->window, self->active_buffer, 1, rect, 0);
+	/* Skip the post when nothing was painted: the buffer is unchanged,
+	 * so a screen_post_window would just re-show what is already
+	 * visible. The dirty gate in main.c normally prevents this path
+	 * altogether — this is the belt-and-braces. */
+	if (!self->dirty.empty) {
+		int rect[4];
+		if (was_full) {
+			rect[0] = 0;
+			rect[1] = 0;
+			rect[2] = self->fb_w;
+			rect[3] = self->fb_h;
+		} else {
+			rect[0] = self->dirty.x0;
+			rect[1] = self->dirty.y0;
+			rect[2] = self->dirty.x1 - self->dirty.x0;
+			rect[3] = self->dirty.y1 - self->dirty.y0;
+		}
+		screen_post_window(self->window, self->active_buffer, 1, rect, 0);
+	}
+	/* A full paint brings the active buffer fully in sync with the
+	 * just-rendered state; the other buffer(s), still showing the
+	 * pre-paint frame, are now stale by definition. A partial paint
+	 * doesn't move us off "stale": the active buffer is closer to
+	 * truth but still missing whatever cells the partial pass skipped,
+	 * so leave its freshness flag where it was. */
+	if (was_full) {
+		for (int i = 0; i < self->known_count; ++i) {
+			self->known[i].fresh = (i == self->current_idx) ? 1 : 0;
+		}
+	}
 	self->fb_valid = 0;
 	self->active_buffer = NULL;
 }
@@ -188,6 +310,8 @@ static void screen_clear(renderer_t *r, rgb_t color) {
 		return;
 	}
 	bitmap_fill_rect(&self->fb, NULL, color);
+	bbox_extend(&self->dirty, 0, 0, self->fb_w, self->fb_h,
+	            self->fb_w, self->fb_h);
 }
 
 static void screen_fill_rect(renderer_t *r, const rect_t *dst, rgb_t color) {
@@ -196,6 +320,13 @@ static void screen_fill_rect(renderer_t *r, const rect_t *dst, rgb_t color) {
 		return;
 	}
 	bitmap_fill_rect(&self->fb, dst, color);
+	if (dst == NULL) {
+		bbox_extend(&self->dirty, 0, 0, self->fb_w, self->fb_h,
+		            self->fb_w, self->fb_h);
+	} else {
+		bbox_extend(&self->dirty, dst->x, dst->y, dst->w, dst->h,
+		            self->fb_w, self->fb_h);
+	}
 }
 
 static int screen_draw_glyph(renderer_t *r, int x, int y,
@@ -210,6 +341,7 @@ static int screen_draw_glyph(renderer_t *r, int x, int y,
 		return -1;
 	}
 	bitmap_blit(&self->fb, x, y, bm);
+	bbox_extend(&self->dirty, x, y, bm->w, bm->h, self->fb_w, self->fb_h);
 	return 0;
 }
 
@@ -219,6 +351,7 @@ static void screen_draw_bitmap(renderer_t *r, int x, int y, const bitmap_t *src)
 		return;
 	}
 	bitmap_blit(&self->fb, x, y, src);
+	bbox_extend(&self->dirty, x, y, src->w, src->h, self->fb_w, self->fb_h);
 }
 
 static void screen_set_font(renderer_t *r, font_t *font) {

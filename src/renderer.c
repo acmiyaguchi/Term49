@@ -55,15 +55,16 @@ int renderer_framebuffer_size(renderer_t *r, int *w, int *h) {
 	return r->ops->framebuffer_size(r, w, h);
 }
 
-void renderer_begin_frame(renderer_t *r) {
-	if (r != NULL && r->ops->begin_frame != NULL) {
-		r->ops->begin_frame(r);
+int renderer_begin_frame(renderer_t *r) {
+	if (r == NULL || r->ops->begin_frame == NULL) {
+		return 0;
 	}
+	return r->ops->begin_frame(r);
 }
 
-void renderer_end_frame(renderer_t *r) {
+void renderer_end_frame(renderer_t *r, int was_full) {
 	if (r != NULL && r->ops->end_frame != NULL) {
-		r->ops->end_frame(r);
+		r->ops->end_frame(r, was_full);
 	}
 }
 

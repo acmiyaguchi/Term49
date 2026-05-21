@@ -22,10 +22,15 @@ typedef struct renderer_ops {
 	void (*destroy)(renderer_t *r);
 	void (*set_font)(renderer_t *r, font_t *font);
 
-	/* frame composition */
+	/* frame composition. begin_frame returns 1 when the latched buffer is
+	 * stale (last fully painted before the buffers diverged), so the caller
+	 * must paint a full frame this iteration. end_frame's was_full flag
+	 * lets the backend mark the just-painted buffer fresh and any others
+	 * stale, which keeps partial paints safe once both buffers are caught
+	 * up. */
 	int  (*framebuffer_size)(renderer_t *r, int *w, int *h);
-	void (*begin_frame)(renderer_t *r);
-	void (*end_frame)(renderer_t *r);
+	int  (*begin_frame)(renderer_t *r);
+	void (*end_frame)(renderer_t *r, int was_full);
 	void (*clear)(renderer_t *r, rgb_t color);
 	void (*fill_rect)(renderer_t *r, const rect_t *dst, rgb_t color);
 	int  (*draw_glyph)(renderer_t *r, int x, int y,
@@ -46,8 +51,8 @@ void *renderer_impl(renderer_t *r);
 int   renderer_init_symmenus(renderer_t *r, pref_t *prefs);
 void  renderer_set_font(renderer_t *r, font_t *font);
 int   renderer_framebuffer_size(renderer_t *r, int *w, int *h);
-void  renderer_begin_frame(renderer_t *r);
-void  renderer_end_frame(renderer_t *r);
+int   renderer_begin_frame(renderer_t *r);
+void  renderer_end_frame(renderer_t *r, int was_full);
 void  renderer_clear(renderer_t *r, rgb_t color);
 void  renderer_fill_rect(renderer_t *r, const rect_t *dst, rgb_t color);
 int   renderer_draw_glyph(renderer_t *r, int x, int y,

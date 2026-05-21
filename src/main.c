@@ -28,12 +28,13 @@
 #include <sys/keycodes.h>
 #include <unistd.h>
 
+#include <bps/bps.h>
+#include <bps/event.h>
 #include <bps/screen.h>
 #include <bps/virtualkeyboard.h>
 #include <bps/deviceinfo.h>
 #include <unicode/utf.h>
 
-#include <pthread.h>
 #include <stdint.h>
 
 #include "bitmap.h"
@@ -156,8 +157,10 @@ static int grid_top_pad = 0;
 #define TAB_OVERLAY_PLUS_CELLS 3
 
 /* Frame-level dirty gate. A repaint is needed only when this is set.
- * Always written under input_mutex (every writer below already holds
- * lock_input()), so no atomics needed. Start dirty for the first frame. */
+ * Single-threaded loop (#16-H): every writer runs on the BPS pump
+ * thread — either in app_handle_event after bps_get_event returns, or
+ * inside one of our bps_add_fd io_handlers. No atomics or locks needed.
+ * Start dirty for the first frame. */
 static int screen_dirty = 1;
 static int screen_full_dirty = 1;
 
@@ -170,7 +173,7 @@ static void mark_screen_dirty(int full_repaint) {
 
 /* Tab overlay: one-row strip drawn over row 0. Always visible while
  * count > 1; with a single tab, this flag flashes it on tab actions and
- * top-edge taps. Written only under input_mutex. */
+ * top-edge taps. */
 static int tab_overlay_visible = 0;
 
 static void tab_overlay_set(int visible) {
@@ -197,14 +200,22 @@ static void apply_tab_strip_layout(void) {
 	mark_screen_dirty(1);
 }
 
-void indicate_event_input(void);  /* defined below */
-
 static void close_session_and_reflow(unsigned idx) {
+	/* Unregister the master fd from the BPS pump before app_session_close_index
+	 * calls session_destroy → close(): bps_remove_fd on an already-closed
+	 * fd errors out, and the live registration would otherwise dangle into
+	 * the pump's bookkeeping. */
+	session_t *closing = app_session_at(g_app, idx);
+	if (closing != NULL) {
+		int fd = session_master_fd(closing);
+		if (fd >= 0) {
+			bps_remove_fd(fd);
+		}
+	}
 	app_session_close_index(g_app, idx);
 	unsigned remaining = app_session_count(g_app);
 	if (remaining == 0) {
 		exit_application = 1;
-		indicate_event_input();
 		return;
 	}
 	if (remaining == 1) {
@@ -222,9 +233,19 @@ static bitmap_t *altsym_indicator;
 static char virtualkeyboard_visible = 0;
 static char key_repeat_done = 0;
 
-static pthread_mutex_t input_mutex;
+/* SIGCHLD self-pipe (#16-H). sig_child is async-signal-safe and may
+ * only write() one byte here; sigchld_io_handler is what BPS calls on
+ * pump-side activity to drain the pipe and reap children. The pipe's
+ * read end is registered with bps_add_fd in startup_init. */
+static int sigchld_pipe[2] = {-1, -1};
+static int sigchld_pipe_open = 0;
 
-static int event_pipe[2];
+/* Custom BPS domain (#16-H) used by pty_io_handler / sigchld_io_handler to
+ * push a no-op wake event after they've done their work — bps_get_event
+ * waits for an event to be available, not just for an io_handler to fire,
+ * so the wake event is what returns the pump to the main loop so it can
+ * notice screen_dirty and render. */
+static int pty_wake_domain = -1;
 
 static int rows;
 static int cols;
@@ -233,10 +254,19 @@ static int cols;
  * fire before startup_init() has set up the corresponding resources.
  * Destroying an uninitialized mutex, closing an unopened pipe, or
  * FT_Done_FreeType on a never-initialized library is undefined behaviour. */
-static int input_mutex_inited;
-static int event_pipe_open;
 static int font_library_inited;
 static int font_inited;
+
+static void post_wake_event(void) {
+	bps_event_t *ev = NULL;
+	if (pty_wake_domain < 0) {
+		return;
+	}
+	if (bps_event_create(&ev, (unsigned)pty_wake_domain, 0, NULL, NULL) != BPS_SUCCESS) {
+		return;
+	}
+	bps_push_event(ev);
+}
 
 
 int is_terminfo_keystrokes(const char* keystrokes){
@@ -730,7 +760,6 @@ static void emit_wheels(session_t *session, int col, int row, int up, int ticks)
 static int render_ghostty(int force_full_repaint); /* defined below */
 static int pty_init(session_t *session);            /* defined below */
 void set_tty_window_size(void);                     /* defined below */
-void indicate_event_input(void);                    /* defined below */
 static void draw_tab_overlay(void);                 /* defined below */
 
 void rescreen(int w, int h){
@@ -747,11 +776,8 @@ void rescreen(int w, int h){
 		exit_application = 1;
 	}
 
-	/* Safe to run with current_symmenu set: it points into prefs, not
-	 * into the cache, and all rescreen callers hold input_mutex so no
-	 * paint races the teardown/rebuild. A non-zero return means the
-	 * cache is fully torn down, so bail before the next paint NULL-
-	 * derefs through it. */
+	/* A non-zero return means the symmenu cache is fully torn down, so
+	 * bail before the next paint NULL-derefs through it. */
 	if(renderer != NULL && renderer_init_symmenus(renderer, prefs) != 0){
 		fprintf(stderr, "rescreen: symmenu cache rebuild failed\n");
 		exit_application = 1;
@@ -763,12 +789,11 @@ void rescreen(int w, int h){
 		setup_screen_size(width, height - vkb_h);
 	}
 	mark_screen_dirty(1);
-	/* Repaint synchronously now instead of waiting for the render thread
-	 * to wake on the next event. Twice: the window is double-buffered, so a
-	 * single full repaint refreshes only one of the two buffers and the
-	 * next post would briefly show the stale (old-size) buffer. We hold
-	 * lock_input() in every rescreen() caller, so this cannot race the
-	 * render thread (it also renders only under that lock). */
+	/* Repaint twice: the window is double-buffered and we just destroyed
+	 * + recreated the render buffers, so both are stale. Per-buffer
+	 * damage tracking in renderer_screen will force-full the second
+	 * paint onto the other buffer and bring both back in sync.
+	 * Single-thread loop so this can run inline. */
 	render_ghostty(1);
 	render_ghostty(1);
 }
@@ -1373,23 +1398,6 @@ void setup_screen_size(int s_w, int s_h){
 	}
 }
 
-void lock_input(){
-	pthread_mutex_lock(&input_mutex);
-}
-void unlock_input(){
-	pthread_mutex_unlock(&input_mutex);
-}
-
-void indicate_event_input(){
-	char *indicate_buf = "w";
-	/* indicate that the render thread should run. Note that
-	 * we are logging errors here, but aren't doing anything with them. */
-	if(write(event_pipe[1], (void*)indicate_buf, 1) < 0){
-		fprintf(stderr, "Error writing to event pipe: %d\n", errno);
-	}
-}
-
-
 /* This function is intended for resizing the number of
  * colums after app init */
 void set_screen_cols(int ncols){
@@ -1417,15 +1425,81 @@ void set_screen_cols(int ncols){
 	}
 }
 
-static int startup_init() {
-	pthread_mutex_init(&input_mutex, NULL);
-	input_mutex_inited = 1;
+/* Reads from the SIGCHLD self-pipe (one byte per signal, coalesced),
+ * then drains zombies via reap_exited_children. Runs on the BPS pump
+ * thread, so it can touch the session registry without locks. */
+static void reap_exited_children(void); /* defined below */
+static int sigchld_io_handler(int fd, int io_events, void *data) {
+	(void)data;
+	if (io_events & BPS_IO_EXCEPT) {
+		return BPS_FAILURE;
+	}
+	char drain[64];
+	while (read(fd, drain, sizeof(drain)) > 0) { /* drop coalesced bytes */ }
+	reap_exited_children();
+	post_wake_event();
+	return BPS_SUCCESS;
+}
 
-	if(pipe(event_pipe) == -1){
-		fprintf(stderr, "Couldn't create event pipe\n");
+/* PTY io_handler: drain everything readable from one session's master fd
+ * into its ghostty bridge, mark the screen dirty, and wake the main
+ * loop. Stays registered for the session's lifetime — the SIGCHLD path
+ * (close_session_and_reflow / reap_exited_children) owns deregistration.
+ * Returning BPS_FAILURE here would race those: an EOF or transient
+ * EXCEPT could permanently kill the handler while the fd is still
+ * usable, which is exactly the "renders once then frozen" regression. */
+static int pty_io_handler(int fd, int io_events, void *data) {
+	(void)fd;
+	(void)io_events;
+	session_t *s = (session_t *)data;
+	if (s == NULL) {
+		return BPS_SUCCESS;
+	}
+
+	char buf[READ_BUFFER_SIZE];
+	ghostty_bridge_t *bridge = session_bridge(s);
+	ssize_t n;
+	int got_any = 0;
+	while ((n = session_read_bytes(s, buf, sizeof(buf))) > 0) {
+		ghostty_bridge_write(bridge, (const uint8_t*)buf, (size_t)n);
+		got_any = 1;
+	}
+	/* n <= 0 here is either EAGAIN (drained, expected on O_NONBLOCK)
+	 * or EOF (shell exited — SIGCHLD reaper handles cleanup). Either
+	 * way: stay subscribed and let mark_screen_dirty + the wake event
+	 * push the just-arrived bytes to the screen. */
+	if (got_any) {
+		/* Let ghostty's per-cell dirty bits decide partial vs full. */
+		mark_screen_dirty(0);
+		post_wake_event();
+	}
+	return BPS_SUCCESS;
+}
+
+static int startup_init() {
+	/* SIGCHLD self-pipe: must exist BEFORE sigaction() in main() so a
+	 * signal arriving during startup has somewhere to land. The read
+	 * end joins the BPS pump via bps_add_fd and stays subscribed for
+	 * the process's lifetime. */
+	if (pipe(sigchld_pipe) == -1) {
+		fprintf(stderr, "Couldn't create SIGCHLD pipe\n");
 		return TERM_FAILURE;
 	}
-	event_pipe_open = 1;
+	sigchld_pipe_open = 1;
+	fcntl(sigchld_pipe[0], F_SETFL, fcntl(sigchld_pipe[0], F_GETFL) | O_NONBLOCK);
+	if (bps_add_fd(sigchld_pipe[0], BPS_IO_INPUT, sigchld_io_handler, NULL) != BPS_SUCCESS) {
+		fprintf(stderr, "bps_add_fd(SIGCHLD pipe) failed: %s\n", strerror(errno));
+		return TERM_FAILURE;
+	}
+
+	/* Custom domain for the no-op wake event io_handlers push to
+	 * return the BPS pump to the main loop after they've done work
+	 * that doesn't itself produce a navigator/screen/vkb event. */
+	pty_wake_domain = bps_register_domain();
+	if (pty_wake_domain < 0) {
+		fprintf(stderr, "bps_register_domain(pty wake) failed: %s\n", strerror(errno));
+		return TERM_FAILURE;
+	}
 
 	if(font_library_init() != 0){
 		fprintf(stderr, "Couldn't initialize FreeType\n");
@@ -1470,9 +1544,18 @@ void app_shutdown(void){
 	 * early-exit paths in main() (io_init / pty_init / sigaction / startup_init
 	 * failures) don't call destructors on resources that were never set up. */
 
-	if (input_mutex_inited) {
-		pthread_mutex_destroy(&input_mutex);
-		input_mutex_inited = 0;
+	/* Unsubscribe live pty masters from the BPS pump before
+	 * app_shutdown_state destroys each session and closes the fd —
+	 * bps_remove_fd on a closed descriptor errors. NULL-safe via the
+	 * count loop. */
+	if (g_app != NULL) {
+		unsigned count = app_session_count(g_app);
+		for (unsigned i = 0; i < count; ++i) {
+			int fd = session_master_fd(app_session_at(g_app, i));
+			if (fd >= 0) {
+				bps_remove_fd(fd);
+			}
+		}
 	}
 
 	/* Tear down session state before io_uninit() below: the session owns
@@ -1497,13 +1580,21 @@ void app_shutdown(void){
 		font_library_inited = 0;
 	}
 
+	/* SIGCHLD pipe must be deregistered before platform_destroy: that
+	 * call runs bps_shutdown() through the platform vtable, which
+	 * tears down the BPS channel the fd is registered on. */
+	if (sigchld_pipe_open) {
+		bps_remove_fd(sigchld_pipe[0]);
+	}
+
 	platform_destroy(g_platform);
 	g_platform = NULL;
 
-	if (event_pipe_open) {
-		close(event_pipe[0]);
-		close(event_pipe[1]);
-		event_pipe_open = 0;
+	if (sigchld_pipe_open) {
+		close(sigchld_pipe[0]);
+		close(sigchld_pipe[1]);
+		sigchld_pipe[0] = sigchld_pipe[1] = -1;
+		sigchld_pipe_open = 0;
 	}
 
 	/* prefs is assigned (or the process exit(1)s) before any app_shutdown()
@@ -1598,16 +1689,17 @@ static int render_ghostty(int force_full_repaint) {
 		 prev_cursor_x != ctx.frame.cursor_x ||
 		 prev_cursor_y != ctx.frame.cursor_y);
 
-	/* Force every repaint to be a full repaint. The native Screen backend
-	 * is double-buffered (screen_create_window_buffers(2)) and we have no
-	 * per-buffer damage tracking: a partial paint to buffer A leaves B
-	 * stale, so on the next flip the previous frame's content reappears,
-	 * producing flicker and a phantom cursor at the old position. Until
-	 * each buffer tracks its own dirty set, just paint everything every
-	 * frame — the terminal is small enough that this is cheap. */
-	force_full_repaint = 1;
-
-	renderer_begin_frame(renderer);
+	/* Latch the next render buffer and ask the renderer whether it must
+	 * be fully repainted this frame. With BB10's double-buffered window
+	 * a partial paint to A leaves B trailing the visible state, so the
+	 * next flip onto B would briefly show stale content. The renderer
+	 * tracks each known screen_buffer_t's freshness and returns 1 here
+	 * whenever the latched buffer hasn't been fully painted since the
+	 * other buffer was — that's our cue to upgrade this frame to a full
+	 * repaint, which then makes the buffer fresh and the other(s) stale. */
+	if (renderer_begin_frame(renderer)) {
+		force_full_repaint = 1;
+	}
 
 	rgb_t bg = to_rgb(ctx.frame.default_bg);
 	if (force_full_repaint) {
@@ -1616,7 +1708,7 @@ static int render_ghostty(int force_full_repaint) {
 	if (force_full_repaint || ctx.frame.dirty != 0) {
 		if (ghostty_bridge_visit_cells(bridge, !force_full_repaint, render_ghostty_cell, &ctx) != 0 || ctx.failed) {
 			fprintf(stderr, "ghostty render: visit_cells failed\n");
-			renderer_end_frame(renderer);
+			renderer_end_frame(renderer, force_full_repaint);
 			return 0;
 		}
 	}
@@ -1624,14 +1716,14 @@ static int render_ghostty(int force_full_repaint) {
 		if (prev_cursor_visible && prev_cursor_y < rows &&
 		    ghostty_bridge_visit_row(bridge, prev_cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit old cursor row failed\n");
-			renderer_end_frame(renderer);
+			renderer_end_frame(renderer, force_full_repaint);
 			return 0;
 		}
 		if (cursor_visible && ctx.frame.cursor_y < rows &&
 		    (!prev_cursor_visible || prev_cursor_y != ctx.frame.cursor_y) &&
 		    ghostty_bridge_visit_row(bridge, ctx.frame.cursor_y, render_ghostty_cell, &ctx) != 0) {
 			fprintf(stderr, "ghostty render: visit new cursor row failed\n");
-			renderer_end_frame(renderer);
+			renderer_end_frame(renderer, force_full_repaint);
 			return 0;
 		}
 	}
@@ -1669,12 +1761,15 @@ static int render_ghostty(int force_full_repaint) {
 	}
 
 	ghostty_bridge_finish_frame(bridge);
-	renderer_end_frame(renderer);
+	renderer_end_frame(renderer, force_full_repaint);
 
 	if(flash){
 		flash = 0;
 		mark_screen_dirty(1);
-		indicate_event_input();
+		/* Wake the BPS pump so the next bps_get_event returns and
+		 * the main loop picks the dirty flag back up for a follow-on
+		 * paint that clears the flash overlay. */
+		post_wake_event();
 	}
 
 	return 1;
@@ -1926,27 +2021,41 @@ static int pty_init(session_t *session) {
 
 	// close the slave_fd, not needed anymore
 	close(slave_fd);
+
+	/* Fold this session's pty master into the BPS event pump.
+	 * pty_io_handler drains readable bytes into the bridge, marks
+	 * screen_dirty, and pushes a wake event.
+	 *
+	 * BPS_IO_INPUT only — registering BPS_IO_EXCEPT alongside it caused
+	 * the handler to unsubscribe permanently on what looked like
+	 * transient pump events (the "renders once then frozen" regression).
+	 * The SIGCHLD reaper is the only path that should ever deregister a
+	 * pty fd. */
+	if (bps_add_fd(master_fd, BPS_IO_INPUT,
+	               pty_io_handler, session) != BPS_SUCCESS) {
+		fprintf(stderr, "bps_add_fd(pty master) failed: %s\n", strerror(errno));
+		/* Continue: navigator events still work; this session just
+		 * won't deliver pty output to the screen until restart. */
+	}
 	return TERM_SUCCESS;
 }
 
 /* Async-signal-safe SIGCHLD handler: must not touch the session registry
- * (`input_mutex` is not signal-safe) or call any non-AS-safe libc routine.
- * Just poke the self-pipe with a 'c' so the render thread can reap and
- * mark the owning session exited under the lock. */
+ * or call any non-AS-safe libc routine. Just poke the self-pipe so the
+ * BPS pump's sigchld_io_handler can reap on a normal call stack. */
 void sig_child(int signo){
 	(void)signo;
 	int old_errno = errno;
-	if (event_pipe[1] >= 0) {
+	if (sigchld_pipe[1] >= 0) {
 		char w = 'c';
-		(void)write(event_pipe[1], &w, 1);
+		(void)write(sigchld_pipe[1], &w, 1);
 	}
 	errno = old_errno;
 }
 
-/* Drains pending children. Must be called with input_mutex held — looks up
- * sessions in the registry and mutates them. SIGCHLDs coalesce, so the
- * loop is mandatory: a single wake may correspond to multiple reapable
- * children. */
+/* Drains pending children on the main / BPS-pump thread. SIGCHLDs
+ * coalesce, so the WNOHANG loop is mandatory: a single wake may
+ * correspond to multiple reapable children. */
 static void reap_exited_children(void){
 	int status;
 	pid_t pid;
@@ -1966,97 +2075,19 @@ static void reap_exited_children(void){
 
 		unsigned idx;
 		if (!app_session_index_of(g_app, s, &idx)) {
+			/* Defensive: app_session_by_child_pid only returns
+			 * sessions found via the same sessions[] vector, so this
+			 * is unreachable today. Kept in case the registry grows
+			 * an orphan path later. */
 			session_mark_exited(s, status);
 			mark_screen_dirty(1);
 			continue;
 		}
+		/* close_session_and_reflow does bps_remove_fd before
+		 * session_destroy closes the fd, so the pump never sees a
+		 * dangling registration. */
 		close_session_and_reflow(idx);
 	}
-}
-
-/* Runs in a dedicated pthread. Blocks in select() on the pty master and
- * the event pipe; either input triggers a dirty-gate check and, if set,
- * a render pass.
- */
-void *run_render(void *data){
-
-	fd_set fds;
-	char ev_buf[100];
-	int n = 0;
-	char rawbuf[READ_BUFFER_SIZE];
-	ssize_t num_bytes = 0;
-	while(!exit_application){
-		FD_ZERO(&fds);
-		int maxfd = event_pipe[0];
-		FD_SET(event_pipe[0], &fds);
-		/* Build the fd set fresh each iteration: TAB_NEW/CLOSE in
-		 * app_dispatch_action and session_mark_exited from the reaper
-		 * mutate the live-master set between iterations. */
-		unsigned count = app_session_count(g_app);
-		for (unsigned i = 0; i < count; ++i) {
-			int fd = session_master_fd(app_session_at(g_app, i));
-			if (fd >= 0) {
-				FD_SET(fd, &fds);
-				if (fd > maxfd) { maxfd = fd; }
-			}
-		}
-		n = select(maxfd + 1, &fds, NULL, NULL, NULL);
-		if(n < 0){
-			printf("Error calling select on inputs: %d\n", errno);
-		} else {
-			/* Drain every readable session's pty into its OWN bridge so
-			 * background tabs still grow their scrollback. */
-			int any_session_data = 0;
-			lock_input();
-			count = app_session_count(g_app);
-			for (unsigned i = 0; i < count; ++i) {
-				session_t *s = app_session_at(g_app, i);
-				int fd = session_master_fd(s);
-				if (fd < 0 || !FD_ISSET(fd, &fds)) { continue; }
-				ghostty_bridge_t *bridge = session_bridge(s);
-				while ((num_bytes = session_read_bytes(s, rawbuf, READ_BUFFER_SIZE)) > 0){
-					ghostty_bridge_write(bridge, (const uint8_t*)rawbuf, (size_t)num_bytes);
-				}
-				any_session_data = 1;
-			}
-			if (any_session_data) {
-				/* let Ghostty's render-state dirty map decide partial vs full */
-				mark_screen_dirty(0);
-			}
-			unlock_input();
-			if(FD_ISSET(event_pipe[0], &fds)){
-				int reap_needed = 0;
-				ssize_t got = read(event_pipe[0], (void*)ev_buf, sizeof(ev_buf));
-				for (ssize_t i = 0; i < got; ++i) {
-					if (ev_buf[i] == 'c') { reap_needed = 1; break; }
-				}
-				if (reap_needed) {
-					lock_input();
-					reap_exited_children();
-					unlock_input();
-				}
-			}
-		}
-		/* Only repaint when something visible actually changed. The pipe
-		 * poke wakes us for every platform event, but inert events
-		 * (orientation check, ignored touch, unknown) leave screen_dirty
-		 * clear, so we skip the full-screen clear + post that was causing
-		 * the white-flash storm. */
-		lock_input();
-		int do_render = screen_dirty;
-		int force_full_repaint = screen_full_dirty;
-		screen_dirty = 0;
-		screen_full_dirty = 0;
-		unlock_input();
-
-		if(do_render){
-			PRINT(stderr, "Render Loop\n");
-			lock_input();
-			render_ghostty(force_full_repaint);
-			unlock_input();
-		}
-	}
-	return NULL;
 }
 
 int app_handle_event(app_t *app, const event_t *event) {
@@ -2071,9 +2102,9 @@ int app_handle_event(app_t *app, const event_t *event) {
 	case TERM_EVENT_RESIZE:
 		/* Apply any pending platform-side geometry change (rotation: set
 		 * ROTATION/SIZE/SOURCE_SIZE and destroy+recreate the render
-		 * buffers) *before* rescreen reflows ghostty and re-paints. This
-		 * runs under input_mutex (lock_input held by the caller), so the
-		 * destructive buffer rebuild can't race the render thread. */
+		 * buffers) *before* rescreen reflows ghostty and re-paints.
+		 * Single-thread loop (#16-H): no other code path is touching
+		 * the buffers concurrently. */
 		platform_apply_pending_resize(g_platform);
 		rescreen(event->as.resize.w, event->as.resize.h);
 		mark_screen_dirty(1);
@@ -2282,49 +2313,35 @@ int main(int argc, char **argv) {
 
 	maybe_show_vkb();
 
-	/* start up main event loop */
-	pthread_t render_thread;
-	pthread_create(&render_thread, NULL, run_render, NULL);
-	/* screen_dirty starts set for the first frame, but the render thread
-	 * blocks in select() until either pty output or a platform event
-	 * arrives. Poke it once so launch never sits on an undrawn buffer. */
-	indicate_event_input();
+	/* Single-threaded event loop (#16-H). bps_get_event (called inside
+	 * platform_next_event) blocks until either a navigator/screen/vkb
+	 * event arrives OR one of our io_handlers (pty / SIGCHLD pipe)
+	 * fires AND pushes a wake event. When the call returns we dispatch
+	 * the event, run a deferred reload if one is pending, then check
+	 * screen_dirty and render synchronously. No render thread, no
+	 * input_mutex, no event_pipe. */
 	while (!exit_application) {
-
-		/* Request and process the next event. platform_next_event
-		 * blocks in bps_get_event outside the lock; only dispatch is
-		 * locked. The render-thread poke is gated on app_handle_event
-		 * returning 1 (handled) or a reload firing: BPS chatter that
-		 * produced no state change (e.g. orientation-check responses,
-		 * ignored bezel touches, TERM_EVENT_NONE defaults) used to
-		 * wake the render thread for nothing. */
 		event_t event;
 		int have = platform_next_event(g_platform, &event);
-		int handled = 0;
-
-		lock_input();
 		if (have) {
-			handled = app_handle_event(g_app, &event);
+			app_handle_event(g_app, &event);
 		}
 		/* Safe point: the triggering event (and any lua_pcall within
-		 * it) has fully returned; still under the input lock, same
-		 * thread as rescreen. */
+		 * it) has fully returned; rescreen / lua reload can run
+		 * without unwinding through an active dispatch. */
 		if (g_reload_pending) {
 			g_reload_pending = 0;
 			app_reload_config();
-			handled = 1;
 		}
-		if (handled) {
-			indicate_event_input();
+		if (screen_dirty) {
+			int force_full = screen_full_dirty;
+			screen_dirty = 0;
+			screen_full_dirty = 0;
+			render_ghostty(force_full);
 		}
-		unlock_input();
 	}
 
 	PRINT(stderr, "Exiting run loop\n");
-	/* exit_application is already set; poke the event pipe so the render
-	 * thread's select() unblocks and sees the flag, then join cleanly. */
-	indicate_event_input();
-	pthread_join(render_thread, NULL);
 	platform_vkb_hide(g_platform);
 	app_shutdown();
 
