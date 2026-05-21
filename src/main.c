@@ -747,6 +747,15 @@ void rescreen(int w, int h){
 		exit_application = 1;
 	}
 
+	/* Rebuild the symmenu bitmap cache against the new font size /
+	 * screen dimensions. Safe to run alongside an open symmenu: the
+	 * pointer in current_symmenu is into prefs, not into the cache,
+	 * and all rescreen callers hold input_mutex so no paint races
+	 * the teardown/rebuild. */
+	if(renderer != NULL){
+		renderer_init_symmenus(renderer, prefs);
+	}
+
 	setup_screen_size(width, height);
 	if(virtualkeyboard_visible){
 		vkb_h = platform_vkb_height(g_platform);
@@ -844,10 +853,8 @@ static void app_reload_config(void){
 	/* Decode the new symmenu labels before any code touches sk->uc. */
 	preferences_decode_symmenu_labels(prefs);
 
-	/* rebuild derived state from the new prefs */
-	if(renderer != NULL){
-		renderer_init_symmenus(renderer, prefs);
-	}
+	/* rescreen() handles the renderer's symmenu cache rebuild now,
+	 * so a single rebuild covers the font/grid/PTY refresh below. */
 	rescreen(-1, -1);                    /* font/grid/PTY + synchronous redraw */
 }
 
