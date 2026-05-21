@@ -2293,15 +2293,20 @@ int main(int argc, char **argv) {
 	indicate_event_input();
 	while (!exit_application) {
 
-		//Request and process the next event. platform_next_event blocks
-		//in bps_get_event outside the lock; only dispatch is locked. The
-		//render-thread poke stays unconditional, as before.
+		/* Request and process the next event. platform_next_event
+		 * blocks in bps_get_event outside the lock; only dispatch is
+		 * locked. The render-thread poke is gated on app_handle_event
+		 * returning 1 (handled) or a reload firing: BPS chatter that
+		 * produced no state change (e.g. orientation-check responses,
+		 * ignored bezel touches, TERM_EVENT_NONE defaults) used to
+		 * wake the render thread for nothing. */
 		event_t event;
 		int have = platform_next_event(g_platform, &event);
+		int handled = 0;
 
 		lock_input();
 		if (have) {
-			app_handle_event(g_app, &event);
+			handled = app_handle_event(g_app, &event);
 		}
 		/* Safe point: the triggering event (and any lua_pcall within
 		 * it) has fully returned; still under the input lock, same
@@ -2309,8 +2314,11 @@ int main(int argc, char **argv) {
 		if (g_reload_pending) {
 			g_reload_pending = 0;
 			app_reload_config();
+			handled = 1;
 		}
-		indicate_event_input();
+		if (handled) {
+			indicate_event_input();
+		}
 		unlock_input();
 	}
 
