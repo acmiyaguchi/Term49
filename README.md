@@ -88,19 +88,24 @@ window-management keys; all four are single unmodified letters, so no
 To make room for `c` and `p`, the previous defaults moved: `ctrl_down`
 is now `d`, and `font_size_reset` is now `z`.
 
-A one-row tab strip appears at the top of the screen whenever a tab
-action fires, and auto-dismisses on the next non-tab keypress. Each tab
-shows as a ` N ` pill (1-indexed); the active tab inverts to white-on-
-black, and an exited tab renders as ` N. `. A green ` + ` pill follows
-the last tab while you're under the `APP_MAX_SESSIONS` cap (8).
+A one-row tab strip sits at the top of the screen whenever more than
+one tab is open, so it's always there to track. With a single tab the
+strip stays hidden, but flashes in on any tab action and on a top-edge
+tap; the next non-tab keypress dismisses it. Each tab shows as a ` N `
+pill (1-indexed); the active tab inverts to white-on-black, and an
+exited tab renders as ` N. `. A green ` + ` pill follows the last tab
+while you're under the `APP_MAX_SESSIONS` cap (8).
 
 The strip is touchable: tap a numbered pill to jump to that tab, tap
 `+` to open a new tab, or tap the top edge while it's hidden to reveal
 it. Tapping anywhere else on the strip dismisses it.
 
-When a shell exits (e.g. you type `exit`), the tab stays put so you can
-read the final scrollback; `tab_close` dismisses it. The app only quits
-once the last tab is gone.
+`tab_close` is a single-press kill: it SIGHUPs the live shell and
+drops the tab immediately. If a shell exits on its own (e.g. you type
+`exit`), the tab stays put so you can read the final scrollback — the
+pill renders as ` N. ` (the `.` is a monospace stand-in for a struck-
+through label), and another `tab_close` dismisses it. The app only
+quits once the last tab is gone.
 
 All four actions are also reachable from Lua as
 `term.action("tab_new")`, `"tab_next"`, `"tab_prev"`, `"tab_close"`, so

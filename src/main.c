@@ -147,6 +147,14 @@ static int advance;
 static int fb_w;
 static int fb_h;
 
+/* Pixels reserved at the top of the framebuffer for the persistent tab
+ * strip. Non-zero only when the strip is the always-visible
+ * count-greater-than-one form; the flash-on-action overlay used in the
+ * single-tab case keeps the grid full-height and accepts that the strip
+ * covers row 0 momentarily. setup_screen_size() subtracts this from the
+ * height it sees, so rows is the grid-only row count. */
+static int grid_top_pad = 0;
+
 /* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
  * lock_input()), so no atomics needed. Start dirty for the first frame. */
@@ -161,8 +169,10 @@ static void mark_screen_dirty(int full_repaint) {
 }
 
 /* Tab overlay: a one-row strip drawn at y=0 over the active session's
- * frame. Toggled by tab actions and by a top-edge tap; hidden by any
- * other input. State written only under input_mutex. */
+ * frame. With more than one tab it stays visible so the user can keep
+ * track of them; with a single tab it flashes on tab actions and on
+ * top-edge taps, and any other input hides it. State written only under
+ * input_mutex. */
 static int tab_overlay_visible = 0;
 
 static void tab_overlay_set(int visible) {
@@ -170,6 +180,28 @@ static void tab_overlay_set(int visible) {
 		tab_overlay_visible = visible;
 		mark_screen_dirty(1);
 	}
+}
+
+static int tab_overlay_should_show(void) {
+	if (g_app != NULL && app_session_count(g_app) > 1) {
+		return 1;
+	}
+	return tab_overlay_visible;
+}
+
+/* Reconcile the persistent-strip layout with the current tab count.
+ * Idempotent: only does work on the 1<->2 transitions, where the strip
+ * appears or disappears. Calls setup_screen_size, which recomputes rows
+ * and fans SIGWINCH + ghostty_bridge_resize out to every live session
+ * so the shells reflow to the new geometry. */
+static void apply_tab_strip_layout(void) {
+	int want = (g_app != NULL && app_session_count(g_app) > 1) ? text_height : 0;
+	if (want == grid_top_pad) {
+		return;
+	}
+	grid_top_pad = want;
+	setup_screen_size(fb_w, fb_h);
+	mark_screen_dirty(1);
 }
 
 static bitmap_t *ctrl_key_indicator;
@@ -584,7 +616,7 @@ void handle_mousedown(uint16_t x, uint16_t y){
 	    (y <= prefs->metamode_hitbox->y + prefs->metamode_hitbox->h);
 
 	if (y < (uint16_t)text_height && !hit_metamode) {
-		if (tab_overlay_visible) {
+		if (tab_overlay_should_show()) {
 			unsigned slot;
 			if (tab_overlay_pill_at(x, &slot)) {
 				if (slot != app_active_index(g_app)) {
@@ -615,7 +647,8 @@ void handle_mousedown(uint16_t x, uint16_t y){
 		return;
 	}
 
-	/* Any tap below the strip dismisses it. */
+	/* Any tap below the strip clears the manual flag. The strip stays
+	 * visible if count > 1 (tab_overlay_should_show keeps returning 1). */
 	if (tab_overlay_visible) {
 		tab_overlay_set(0);
 	}
@@ -867,11 +900,14 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 				return 0;
 			}
 			/* Hand the new bridge its pixel cell dimensions + push
-			 * TIOCSWINSZ to the just-spawned child. */
+			 * TIOCSWINSZ to the just-spawned child. apply_tab_strip_layout
+			 * below will re-resize everyone if we just crossed 1->2 and the
+			 * grid lost a row to the persistent strip. */
 			ghostty_bridge_resize(session_bridge(new_s),
 			                      (uint16_t)cols, (uint16_t)rows,
 			                      (uint32_t)advance, (uint32_t)text_height);
 			set_tty_window_size();
+			apply_tab_strip_layout();
 			tab_overlay_set(1);
 			mark_screen_dirty(1);
 			return 1;
@@ -895,21 +931,29 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			if (s == NULL) {
 				return 0;
 			}
-			/* If the shell is still alive, ask it to leave; the reaper
-			 * will mark exited and a subsequent close drops the tab. If
-			 * already exited, drop the tab right away. */
+			/* Single-press kill: SIGHUP the live child and immediately
+			 * drop the tab. session_destroy closes the master_fd and
+			 * tears down the bridge; the SIGCHLD reaper will harmlessly
+			 * find no session for the pid and just log it. A tab that
+			 * has already self-exited (`. ` indicator) skips the kill. */
 			if (!session_is_exited(s)) {
 				pid_t cpid = session_child_pid(s);
 				if (cpid > 0) {
 					kill(cpid, SIGHUP);
 				}
-				return 1;
 			}
 			app_session_close_index(app, app_active_index(app));
 			if (app_session_count(app) == 0) {
 				exit_application = 1;
 				indicate_event_input();
 			} else {
+				/* Dropping back to a single tab — clear the manual
+				 * flash flag so the strip auto-hides instead of
+				 * lingering from the prior action's set(1). */
+				if (app_session_count(app) == 1) {
+					tab_overlay_set(0);
+				}
+				apply_tab_strip_layout();
 				mark_screen_dirty(1);
 			}
 			return 1;
@@ -1303,7 +1347,11 @@ void setup_screen_size(int s_w, int s_h){
 		return;
 	}
 
-	rows = s_h / text_height;
+	int usable_h = s_h - grid_top_pad;
+	if (usable_h < text_height) {
+		usable_h = text_height;
+	}
+	rows = usable_h / text_height;
 	cols = s_w / text_width;
 	PRINT(stderr, "Rows: %d Cols: %d\n", rows, cols);
 
@@ -1493,7 +1541,7 @@ static void render_ghostty_cell(uint16_t x, uint16_t y,
 
 	rect_t destrect;
 	destrect.x = x * advance;
-	destrect.y = y * text_height;
+	destrect.y = grid_top_pad + y * text_height;
 	destrect.w = advance;
 	destrect.h = text_height;
 	renderer_fill_rect(renderer, &destrect, bg);
@@ -1590,24 +1638,24 @@ static int render_ghostty(int force_full_repaint) {
 	/* Tab overlay: drawn before the indicator column / symmenu so those
 	 * still show through if they overlap. Drawn after the main grid so
 	 * it always overlays the top row of cell content. */
-	if (tab_overlay_visible) {
+	if (tab_overlay_should_show()) {
 		draw_tab_overlay();
 	}
 
 	if (metamode && metamode_cursor != NULL) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 0, metamode_cursor);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 0, metamode_cursor);
 	}
 	if (vmodifiers & KEYMOD_CTRL) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 1 * text_height, ctrl_key_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 1 * text_height, ctrl_key_indicator);
 	}
 	if (vmodifiers & KEYMOD_ALT) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 2 * text_height, alt_key_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 2 * text_height, alt_key_indicator);
 	}
 	if (vmodifiers & KEYMOD_SHIFT) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 3 * text_height, shift_key_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, shift_key_indicator);
 	}
 	if (altsym_lock) {
-		renderer_draw_bitmap(renderer, (cols - 1) * advance, 3 * text_height, altsym_indicator);
+		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, altsym_indicator);
 	}
 
 	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
@@ -2033,9 +2081,10 @@ int app_handle_event(app_t *app, const event_t *event) {
 			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
 			ghostty_bridge_scroll_to_bottom(session_bridge(app_active_session(app)));
 		}
-		/* Any key dismisses the overlay before dispatch; if the key is a
-		 * tab_new/next/prev/close binding, the action handler re-shows
-		 * it. Non-tab keys leave it hidden. */
+		/* Any key clears the manual flash flag before dispatch; if the
+		 * key is a tab_new/next/prev/close binding, the action handler
+		 * re-sets it. With more than one tab the strip stays visible
+		 * regardless (tab_overlay_should_show keeps returning 1). */
 		if (tab_overlay_visible) {
 			tab_overlay_set(0);
 		}
@@ -2085,7 +2134,9 @@ int app_handle_event(app_t *app, const event_t *event) {
 		 * Finger DOWN (rows > 0) reveals older content. */
 		if (g_drag.mode == DRAG_WHEEL) {
 			int col  = (text_width  > 0) ? (x / text_width)  + 1 : 1;
-			int rrow = (text_height > 0) ? (y / text_height) + 1 : 1;
+			int yrel = (int)y - grid_top_pad;
+			if (yrel < 0) { yrel = 0; }
+			int rrow = (text_height > 0) ? (yrel / text_height) + 1 : 1;
 			emit_wheels(app_active_session(app), col, rrow, rows > 0, abs(rows));
 		} else {
 			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
