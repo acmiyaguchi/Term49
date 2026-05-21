@@ -571,6 +571,7 @@ static void maybe_show_vkb(void) {
 }
 
 static int tab_overlay_pill_at(int touch_x, unsigned *out_slot);
+static int tab_overlay_new_button_at(int touch_x);
 
 void handle_mousedown(uint16_t x, uint16_t y){
 	/* Tab overlay handling sits FIRST so a tap on the strip neither leaks
@@ -598,7 +599,14 @@ void handle_mousedown(uint16_t x, uint16_t y){
 				}
 				return;
 			}
-			/* Hit the strip but outside any pill — dismiss it. */
+			if (tab_overlay_new_button_at(x)) {
+				action_t a = {0};
+				a.kind = TERM_ACTION_BUILTIN;
+				a.as.builtin.id = TERM_BUILTIN_TAB_NEW;
+				app_dispatch_action(g_app, &a);
+				return;
+			}
+			/* Hit the strip but outside any pill/button — dismiss it. */
 			tab_overlay_set(0);
 			return;
 		}
@@ -1130,6 +1138,23 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			keymap = keymap_lookup((char)k->sym, prefs->metamode_func_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
+			} else {
+				/* Back-compat for already-emitted .term49.lua files: older
+				 * configs predate the tab actions, so dispatch the current
+				 * tmux-style tab defaults (c/n/p/x) when the user's config
+				 * has not claimed the key. */
+				action_t tab_action = {0};
+				tab_action.kind = TERM_ACTION_BUILTIN;
+				switch ((char)k->sym) {
+				case 'c': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEW; break;
+				case 'n': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEXT; break;
+				case 'p': tab_action.as.builtin.id = TERM_BUILTIN_TAB_PREV; break;
+				case 'x': tab_action.as.builtin.id = TERM_BUILTIN_TAB_CLOSE; break;
+				default: tab_action.kind = 0; break;
+				}
+				if (tab_action.kind == TERM_ACTION_BUILTIN) {
+					app_dispatch_action(app, &tab_action);
+				}
 			}
 			metamode_toggle();
 			return;
@@ -1656,6 +1681,24 @@ static void draw_tab_overlay(void) {
 		}
 		pen_x += pill_w + 1;  /* 1px hairline between pills */
 	}
+
+	/* Visible affordance for creating tabs from touch: tap the + pill. */
+	if (count < APP_MAX_SESSIONS) {
+		int cells = 3;
+		int pill_w = cells * advance;
+		if (pen_x + pill_w <= strip_w) {
+			rgb_t plus_bg = TERM_COLOR_GREEN;
+			rgb_t plus_fg = TERM_COLOR_BLACK;
+			rect_t r = { pen_x, 0, pill_w, text_height };
+			renderer_fill_rect(renderer, &r, plus_bg);
+			const char *label = " + ";
+			for (int j = 0; j < cells; ++j) {
+				renderer_draw_glyph(renderer, pen_x + j * advance, 0,
+				                    (uint32_t)(unsigned char)label[j],
+				                    FONT_STYLE_NORMAL, plus_fg, plus_bg);
+			}
+		}
+	}
 }
 
 /* Translate an x coordinate within the overlay row into a tab slot. Mirrors
@@ -1680,6 +1723,30 @@ static int tab_overlay_pill_at(int touch_x, unsigned *out_slot) {
 		pen_x += pill_w + 1;
 	}
 	return 0;
+}
+
+/* Same layout as draw_tab_overlay(): the + pill appears immediately after
+ * the visible tab pills while there is room and the tab cap has not been hit. */
+static int tab_overlay_new_button_at(int touch_x) {
+	if (g_app == NULL) {
+		return 0;
+	}
+	unsigned count = app_session_count(g_app);
+	if (count >= APP_MAX_SESSIONS) {
+		return 0;
+	}
+	int pen_x = 0;
+	int strip_w = fb_w;
+	for (unsigned i = 0; i < count; ++i) {
+		int cells = tab_overlay_pill_width_cells(i);
+		int pill_w = cells * advance;
+		if (pen_x + pill_w > strip_w) {
+			return 0;
+		}
+		pen_x += pill_w + 1;
+	}
+	int plus_w = 3 * advance;
+	return (pen_x + plus_w <= strip_w && touch_x >= pen_x && touch_x < pen_x + plus_w);
 }
 
 static void terminal_setenv(void) {

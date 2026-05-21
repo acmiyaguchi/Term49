@@ -68,35 +68,44 @@ live in `vendor/libghostty-vt/tests/`.
 
 ## Tabs
 
-Term49 supports multiple shells in a single app instance. Each tab is its
-own pty + child shell, and Ghostty bridge with its own scrollback. Output
-from background tabs continues to be buffered (their scrollback grows) even
-while you're focused on a different tab.
+Term49 runs multiple shells in a single app instance. Each tab owns its
+own pty, child shell, and Ghostty bridge (so each tab has its own
+scrollback). Background tabs keep consuming output while you're focused
+on another tab.
 
-Default keybindings (all in metamode — tap `metamode_doubletap_key` twice
-or whatever you have bound, then the letter):
+Default keybindings sit under metamode (double-tap `metamode_doubletap_key`
+— right shift by default — then the letter). The set mirrors tmux's
+window-management keys; all four are single unmodified letters, so no
+`sym` or `alt` is needed once you're in metamode:
 
-| Metamode key | Action       |
-|--------------|--------------|
-| `t`          | `tab_new`    |
-| `]`          | `tab_next`   |
-| `[`          | `tab_prev`   |
-| `x`          | `tab_close`  |
+| Metamode key | Action      | tmux analogue   |
+|--------------|-------------|-----------------|
+| `c`          | `tab_new`   | `prefix c`      |
+| `n`          | `tab_next`  | `prefix n`      |
+| `p`          | `tab_prev`  | `prefix p`      |
+| `x`          | `tab_close` | `prefix &`      |
 
-A tab strip overlay appears at the top of the screen whenever a tab action
-fires. It shows a pill per tab (`1`, `2`, ...) with the active tab
-highlighted; exited tabs are marked `1.`. Tap the top edge of the screen
-to reveal it manually, or tap any visible pill to jump to that tab; tap
-elsewhere or press any key that isn't a tab binding to dismiss.
+To make room for `c` and `p`, the previous defaults moved: `ctrl_down`
+is now `d`, and `font_size_reset` is now `z`.
 
-When a shell exits (e.g. you type `exit`), the tab stays in the strip
-showing the shell's final scrollback. Press `tab_close` to dismiss the
-`[exited]` tab; the app only quits when the last tab is dismissed.
+A one-row tab strip appears at the top of the screen whenever a tab
+action fires, and auto-dismisses on the next non-tab keypress. Each tab
+shows as a ` N ` pill (1-indexed); the active tab inverts to white-on-
+black, and an exited tab renders as ` N. `. A green ` + ` pill follows
+the last tab while you're under the `APP_MAX_SESSIONS` cap (8).
 
-All tab actions are also reachable from Lua scripting via
-`term.action("tab_new")`, etc., so custom keybindings or programmatic tab
-opening from `.term49.lua` work without any extra wiring. The maximum
-number of simultaneous tabs is `APP_MAX_SESSIONS` (8 by default).
+The strip is touchable: tap a numbered pill to jump to that tab, tap
+`+` to open a new tab, or tap the top edge while it's hidden to reveal
+it. Tapping anywhere else on the strip dismisses it.
+
+When a shell exits (e.g. you type `exit`), the tab stays put so you can
+read the final scrollback; `tab_close` dismisses it. The app only quits
+once the last tab is gone.
+
+All four actions are also reachable from Lua as
+`term.action("tab_new")`, `"tab_next"`, `"tab_prev"`, `"tab_close"`, so
+custom keybindings or scripted tab opening from `.term49.lua` work with
+no extra wiring.
 
 ## Signing the release
 

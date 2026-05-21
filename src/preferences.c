@@ -63,16 +63,16 @@ static const int PREFS_VERSION = 9;
                                                   {'h', "kcub1"}}
 #define DEFAULT_METAMODE_FUNC_KEYS_LEN 12
 #define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
-                                                {'c', "ctrl_down"}, \
+                                                {'d', "ctrl_down"}, \
                                                 {'s', "rescreen"}, \
                                                 {'v', "paste_clipboard"}, \
                                                 {'i', "font_size_increase"}, \
                                                 {'o', "font_size_decrease"}, \
-                                                {'p', "font_size_reset"}, \
+                                                {'z', "font_size_reset"}, \
                                                 {'r', "reload_config"}, \
-                                                {'t', "tab_new"}, \
-                                                {']', "tab_next"}, \
-                                                {'[', "tab_prev"}, \
+                                                {'c', "tab_new"}, \
+                                                {'n', "tab_next"}, \
+                                                {'p', "tab_prev"}, \
                                                 {'x', "tab_close"}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
