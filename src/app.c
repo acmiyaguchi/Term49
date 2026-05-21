@@ -102,6 +102,19 @@ session_t *app_session_by_child_pid(app_t *app, pid_t pid) {
 	return NULL;
 }
 
+int app_session_index_of(app_t *app, const session_t *s, unsigned *out) {
+	if (app == NULL || s == NULL) {
+		return 0;
+	}
+	for (unsigned i = 0; i < app->count; ++i) {
+		if (app->sessions[i] == s) {
+			if (out != NULL) { *out = i; }
+			return 1;
+		}
+	}
+	return 0;
+}
+
 unsigned app_session_count(const app_t *app) {
 	return app ? app->count : 0;
 }

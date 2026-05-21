@@ -35,6 +35,7 @@ session_t *app_active_session(app_t *app);
 session_t *app_session_at(app_t *app, unsigned index);
 session_t *app_session_by_id(app_t *app, session_id_t id);     /* 0 => active */
 session_t *app_session_by_child_pid(app_t *app, pid_t pid);    /* NULL if none */
+int        app_session_index_of(app_t *app, const session_t *s, unsigned *out);
 unsigned   app_session_count(const app_t *app);
 unsigned   app_active_index(const app_t *app);                 /* 0..count-1 */
 

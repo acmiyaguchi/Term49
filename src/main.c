@@ -148,12 +148,12 @@ static int fb_w;
 static int fb_h;
 
 /* Pixels reserved at the top of the framebuffer for the persistent tab
- * strip. Non-zero only when the strip is the always-visible
- * count-greater-than-one form; the flash-on-action overlay used in the
- * single-tab case keeps the grid full-height and accepts that the strip
- * covers row 0 momentarily. setup_screen_size() subtracts this from the
- * height it sees, so rows is the grid-only row count. */
+ * strip. Zero in the single-tab case (the flash overlay just covers
+ * row 0 momentarily). setup_screen_size() subtracts this so `rows` is
+ * the grid-only count. */
 static int grid_top_pad = 0;
+
+#define TAB_OVERLAY_PLUS_CELLS 3
 
 /* Frame-level dirty gate. A repaint is needed only when this is set.
  * Always written under input_mutex (every writer below already holds
@@ -168,11 +168,9 @@ static void mark_screen_dirty(int full_repaint) {
 	}
 }
 
-/* Tab overlay: a one-row strip drawn at y=0 over the active session's
- * frame. With more than one tab it stays visible so the user can keep
- * track of them; with a single tab it flashes on tab actions and on
- * top-edge taps, and any other input hides it. State written only under
- * input_mutex. */
+/* Tab overlay: one-row strip drawn over row 0. Always visible while
+ * count > 1; with a single tab, this flag flashes it on tab actions and
+ * top-edge taps. Written only under input_mutex. */
 static int tab_overlay_visible = 0;
 
 static void tab_overlay_set(int visible) {
@@ -189,11 +187,6 @@ static int tab_overlay_should_show(void) {
 	return tab_overlay_visible;
 }
 
-/* Reconcile the persistent-strip layout with the current tab count.
- * Idempotent: only does work on the 1<->2 transitions, where the strip
- * appears or disappears. Calls setup_screen_size, which recomputes rows
- * and fans SIGWINCH + ghostty_bridge_resize out to every live session
- * so the shells reflow to the new geometry. */
 static void apply_tab_strip_layout(void) {
 	int want = (g_app != NULL && app_session_count(g_app) > 1) ? text_height : 0;
 	if (want == grid_top_pad) {
@@ -201,6 +194,23 @@ static void apply_tab_strip_layout(void) {
 	}
 	grid_top_pad = want;
 	setup_screen_size(fb_w, fb_h);
+	mark_screen_dirty(1);
+}
+
+void indicate_event_input(void);  /* defined below */
+
+static void close_session_and_reflow(unsigned idx) {
+	app_session_close_index(g_app, idx);
+	unsigned remaining = app_session_count(g_app);
+	if (remaining == 0) {
+		exit_application = 1;
+		indicate_event_input();
+		return;
+	}
+	if (remaining == 1) {
+		tab_overlay_set(0);
+	}
+	apply_tab_strip_layout();
 	mark_screen_dirty(1);
 }
 
@@ -647,8 +657,8 @@ void handle_mousedown(uint16_t x, uint16_t y){
 		return;
 	}
 
-	/* Any tap below the strip clears the manual flag. The strip stays
-	 * visible if count > 1 (tab_overlay_should_show keeps returning 1). */
+	/* Any tap below the strip clears the flash flag (the persistent
+	 * count>1 strip stays up via tab_overlay_should_show). */
 	if (tab_overlay_visible) {
 		tab_overlay_set(0);
 	}
@@ -899,15 +909,16 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 				app_session_close_index(app, app_session_count(app) - 1);
 				return 0;
 			}
-			/* Hand the new bridge its pixel cell dimensions + push
-			 * TIOCSWINSZ to the just-spawned child. apply_tab_strip_layout
-			 * below will re-resize everyone if we just crossed 1->2 and the
-			 * grid lost a row to the persistent strip. */
-			ghostty_bridge_resize(session_bridge(new_s),
-			                      (uint16_t)cols, (uint16_t)rows,
-			                      (uint32_t)advance, (uint32_t)text_height);
-			set_tty_window_size();
-			apply_tab_strip_layout();
+			if (app_session_count(app) == 2) {
+				/* 1->2 transition: apply_tab_strip_layout reflows every
+				 * session (including the new one) through setup_screen_size. */
+				apply_tab_strip_layout();
+			} else {
+				ghostty_bridge_resize(session_bridge(new_s),
+				                      (uint16_t)cols, (uint16_t)rows,
+				                      (uint32_t)advance, (uint32_t)text_height);
+				set_tty_window_size();
+			}
 			tab_overlay_set(1);
 			mark_screen_dirty(1);
 			return 1;
@@ -931,31 +942,15 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			if (s == NULL) {
 				return 0;
 			}
-			/* Single-press kill: SIGHUP the live child and immediately
-			 * drop the tab. session_destroy closes the master_fd and
-			 * tears down the bridge; the SIGCHLD reaper will harmlessly
-			 * find no session for the pid and just log it. A tab that
-			 * has already self-exited (`. ` indicator) skips the kill. */
+			/* SIGHUP the live child; the reaper will run but find no
+			 * session for the pid and harmlessly log. */
 			if (!session_is_exited(s)) {
 				pid_t cpid = session_child_pid(s);
 				if (cpid > 0) {
 					kill(cpid, SIGHUP);
 				}
 			}
-			app_session_close_index(app, app_active_index(app));
-			if (app_session_count(app) == 0) {
-				exit_application = 1;
-				indicate_event_input();
-			} else {
-				/* Dropping back to a single tab — clear the manual
-				 * flash flag so the strip auto-hides instead of
-				 * lingering from the prior action's set(1). */
-				if (app_session_count(app) == 1) {
-					tab_overlay_set(0);
-				}
-				apply_tab_strip_layout();
-				mark_screen_dirty(1);
-			}
+			close_session_and_reflow(app_active_index(app));
 			return 1;
 		}
 		case TERM_BUILTIN_LUA_CALL:
@@ -1183,10 +1178,9 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 			} else {
-				/* Back-compat for already-emitted .term49.lua files: older
-				 * configs predate the tab actions, so dispatch the current
-				 * tmux-style tab defaults (c/n/p/x) when the user's config
-				 * has not claimed the key. */
+				/* Fallback for stale .term49.lua files that predate the
+				 * tab bindings: dispatch the current defaults when the
+				 * user's config has not claimed the key. */
 				action_t tab_action = {0};
 				tab_action.kind = TERM_ACTION_BUILTIN;
 				switch ((char)k->sym) {
@@ -1677,11 +1671,48 @@ static int render_ghostty(int force_full_repaint) {
 
 /* Per-pill layout: " N " (3 cells) for live tabs, " N. " (4 cells) for
  * exited tabs. The dot is a stand-in for a strikethrough/dim style we
- * can't easily render in monospace. Tabs are 1-indexed in the label so
- * the user sees "1 2 3" matching how they conceive them. */
+ * can't easily render in monospace. */
 static int tab_overlay_pill_width_cells(unsigned slot) {
 	session_t *s = app_session_at(g_app, slot);
 	return session_is_exited(s) ? 4 : 3;
+}
+
+static void draw_pill(int pen_x, int cells, const char *label, rgb_t fg, rgb_t bg) {
+	rect_t r = { pen_x, 0, cells * advance, text_height };
+	renderer_fill_rect(renderer, &r, bg);
+	for (int j = 0; j < cells; ++j) {
+		renderer_draw_glyph(renderer, pen_x + j * advance, 0,
+		                    (uint32_t)(unsigned char)label[j],
+		                    FONT_STYLE_NORMAL, fg, bg);
+	}
+}
+
+/* Lays out the strip: pen_x_out[i] is the x of pill i, or -1 if it
+ * didn't fit. Returns the + button's pen_x, or -1 when the cap was hit
+ * or no room remains. The single walker shared by draw/hit-test paths. */
+static int tab_overlay_layout(int pen_x_out[APP_MAX_SESSIONS]) {
+	if (g_app == NULL) {
+		return -1;
+	}
+	unsigned count = app_session_count(g_app);
+	int x = 0;
+	int strip_w = fb_w;
+	int overflowed = 0;
+	for (unsigned i = 0; i < count; ++i) {
+		int pill_w = tab_overlay_pill_width_cells(i) * advance;
+		if (overflowed || x + pill_w > strip_w) {
+			pen_x_out[i] = -1;
+			overflowed = 1;
+			continue;
+		}
+		pen_x_out[i] = x;
+		x += pill_w + 1;  /* 1px hairline between pills */
+	}
+	if (overflowed || count >= APP_MAX_SESSIONS) {
+		return -1;
+	}
+	int plus_w = TAB_OVERLAY_PLUS_CELLS * advance;
+	return (x + plus_w <= strip_w) ? x : -1;
 }
 
 static void draw_tab_overlay(void) {
@@ -1694,107 +1725,61 @@ static void draw_tab_overlay(void) {
 	}
 	unsigned active = app_active_index(g_app);
 
-	int strip_w = fb_w;
-	rect_t strip = { 0, 0, strip_w, text_height };
+	rgb_t fg = TERM_COLOR_BLACK;
 	rgb_t base_bg = TERM_COLOR_BT_GRAY;
-	rgb_t base_fg = TERM_COLOR_BLACK;
-	rgb_t hi_bg   = TERM_COLOR_WHITE;
-	rgb_t hi_fg   = TERM_COLOR_BLACK;
+	rgb_t hi_bg = TERM_COLOR_WHITE;
+	rgb_t plus_bg = TERM_COLOR_GREEN;
+
+	rect_t strip = { 0, 0, fb_w, text_height };
 	renderer_fill_rect(renderer, &strip, base_bg);
 
-	int pen_x = 0;
-	for (unsigned i = 0; i < count; ++i) {
-		int cells = tab_overlay_pill_width_cells(i);
-		int pill_w = cells * advance;
-		if (pen_x + pill_w > strip_w) {
-			break;  /* out of room — last visible pill marks overflow */
-		}
-		int is_active = (i == active);
-		rgb_t pill_bg = is_active ? hi_bg : base_bg;
-		rgb_t pill_fg = is_active ? hi_fg : base_fg;
-		rect_t r = { pen_x, 0, pill_w, text_height };
-		renderer_fill_rect(renderer, &r, pill_bg);
+	int pen_x[APP_MAX_SESSIONS];
+	int plus_x = tab_overlay_layout(pen_x);
 
+	for (unsigned i = 0; i < count; ++i) {
+		if (pen_x[i] < 0) {
+			continue;
+		}
+		int cells = tab_overlay_pill_width_cells(i);
 		char label[8];
-		session_t *s = app_session_at(g_app, i);
-		if (session_is_exited(s)) {
+		if (session_is_exited(app_session_at(g_app, i))) {
 			snprintf(label, sizeof(label), " %u. ", i + 1);
 		} else {
 			snprintf(label, sizeof(label), " %u ", i + 1);
 		}
-		for (int j = 0; j < cells; ++j) {
-			renderer_draw_glyph(renderer, pen_x + j * advance, 0,
-			                    (uint32_t)(unsigned char)label[j],
-			                    FONT_STYLE_NORMAL, pill_fg, pill_bg);
-		}
-		pen_x += pill_w + 1;  /* 1px hairline between pills */
+		draw_pill(pen_x[i], cells, label, fg, (i == active) ? hi_bg : base_bg);
 	}
 
-	/* Visible affordance for creating tabs from touch: tap the + pill. */
-	if (count < APP_MAX_SESSIONS) {
-		int cells = 3;
-		int pill_w = cells * advance;
-		if (pen_x + pill_w <= strip_w) {
-			rgb_t plus_bg = TERM_COLOR_GREEN;
-			rgb_t plus_fg = TERM_COLOR_BLACK;
-			rect_t r = { pen_x, 0, pill_w, text_height };
-			renderer_fill_rect(renderer, &r, plus_bg);
-			const char *label = " + ";
-			for (int j = 0; j < cells; ++j) {
-				renderer_draw_glyph(renderer, pen_x + j * advance, 0,
-				                    (uint32_t)(unsigned char)label[j],
-				                    FONT_STYLE_NORMAL, plus_fg, plus_bg);
-			}
-		}
+	if (plus_x >= 0) {
+		draw_pill(plus_x, TAB_OVERLAY_PLUS_CELLS, " + ", fg, plus_bg);
 	}
 }
 
-/* Translate an x coordinate within the overlay row into a tab slot. Mirrors
- * draw_tab_overlay's layout exactly. Returns 1 + sets *out_slot on hit. */
 static int tab_overlay_pill_at(int touch_x, unsigned *out_slot) {
-	if (g_app == NULL) {
-		return 0;
-	}
-	unsigned count = app_session_count(g_app);
-	int pen_x = 0;
-	int strip_w = fb_w;
+	int pen_x[APP_MAX_SESSIONS];
+	(void)tab_overlay_layout(pen_x);
+	unsigned count = (g_app != NULL) ? app_session_count(g_app) : 0;
 	for (unsigned i = 0; i < count; ++i) {
-		int cells = tab_overlay_pill_width_cells(i);
-		int pill_w = cells * advance;
-		if (pen_x + pill_w > strip_w) {
-			break;
+		if (pen_x[i] < 0) {
+			continue;
 		}
-		if (touch_x >= pen_x && touch_x < pen_x + pill_w) {
+		int pill_w = tab_overlay_pill_width_cells(i) * advance;
+		if (touch_x >= pen_x[i] && touch_x < pen_x[i] + pill_w) {
 			if (out_slot != NULL) { *out_slot = i; }
 			return 1;
 		}
-		pen_x += pill_w + 1;
 	}
 	return 0;
 }
 
-/* Same layout as draw_tab_overlay(): the + pill appears immediately after
- * the visible tab pills while there is room and the tab cap has not been hit. */
 static int tab_overlay_new_button_at(int touch_x) {
-	if (g_app == NULL) {
+	int pen_x[APP_MAX_SESSIONS];
+	int plus_x = tab_overlay_layout(pen_x);
+	if (plus_x < 0) {
 		return 0;
 	}
-	unsigned count = app_session_count(g_app);
-	if (count >= APP_MAX_SESSIONS) {
-		return 0;
-	}
-	int pen_x = 0;
-	int strip_w = fb_w;
-	for (unsigned i = 0; i < count; ++i) {
-		int cells = tab_overlay_pill_width_cells(i);
-		int pill_w = cells * advance;
-		if (pen_x + pill_w > strip_w) {
-			return 0;
-		}
-		pen_x += pill_w + 1;
-	}
-	int plus_w = 3 * advance;
-	return (pen_x + plus_w <= strip_w && touch_x >= pen_x && touch_x < pen_x + plus_w);
+	int plus_w = TAB_OVERLAY_PLUS_CELLS * advance;
+	return (touch_x >= plus_x && touch_x < plus_x + plus_w);
 }
 
 static void terminal_setenv(void) {
@@ -1968,33 +1953,13 @@ static void reap_exited_children(void){
 			      (int)pid, session_id(s));
 		}
 
-		/* Drop the tab on the spot: when the user types `exit`, just
-		 * close the tab instead of leaving a [exited] ghost they'd
-		 * have to dismiss. session_mark_exited stays as a defensive
-		 * fallback for the should-never-happen lookup miss. */
-		unsigned count = app_session_count(g_app);
 		unsigned idx;
-		for (idx = 0; idx < count; ++idx) {
-			if (app_session_at(g_app, idx) == s) {
-				break;
-			}
-		}
-		if (idx >= count) {
+		if (!app_session_index_of(g_app, s, &idx)) {
 			session_mark_exited(s, status);
 			mark_screen_dirty(1);
 			continue;
 		}
-		app_session_close_index(g_app, idx);
-		if (app_session_count(g_app) == 0) {
-			exit_application = 1;
-			indicate_event_input();
-		} else {
-			if (app_session_count(g_app) == 1) {
-				tab_overlay_set(0);
-			}
-			apply_tab_strip_layout();
-			mark_screen_dirty(1);
-		}
+		close_session_and_reflow(idx);
 	}
 }
 
@@ -2107,10 +2072,8 @@ int app_handle_event(app_t *app, const event_t *event) {
 			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
 			ghostty_bridge_scroll_to_bottom(session_bridge(app_active_session(app)));
 		}
-		/* Any key clears the manual flash flag before dispatch; if the
-		 * key is a tab_new/next/prev/close binding, the action handler
-		 * re-sets it. With more than one tab the strip stays visible
-		 * regardless (tab_overlay_should_show keeps returning 1). */
+		/* Clear the flash flag; tab actions re-set it. The persistent
+		 * count>1 strip stays up regardless via tab_overlay_should_show. */
 		if (tab_overlay_visible) {
 			tab_overlay_set(0);
 		}
