@@ -747,13 +747,11 @@ void rescreen(int w, int h){
 		exit_application = 1;
 	}
 
-	/* Rebuild the symmenu bitmap cache against the new font size /
-	 * screen dimensions. Safe to run alongside an open symmenu: the
-	 * pointer in current_symmenu is into prefs, not into the cache,
-	 * and all rescreen callers hold input_mutex so no paint races
-	 * the teardown/rebuild. A non-zero return means the cache is
-	 * fully torn down -- a subsequent paint through the symmenu
-	 * would NULL-deref, so bail. */
+	/* Safe to run with current_symmenu set: it points into prefs, not
+	 * into the cache, and all rescreen callers hold input_mutex so no
+	 * paint races the teardown/rebuild. A non-zero return means the
+	 * cache is fully torn down, so bail before the next paint NULL-
+	 * derefs through it. */
 	if(renderer != NULL && renderer_init_symmenus(renderer, prefs) != 0){
 		fprintf(stderr, "rescreen: symmenu cache rebuild failed\n");
 		exit_application = 1;

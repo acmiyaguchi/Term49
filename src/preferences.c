@@ -461,10 +461,9 @@ static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
 	return menu;
 }
 
-/* Decode a single symmenu_t's labels in place. Walks the same nested
- * structure as destroy_symmenu (rows terminated by NULL ptr, cols by
- * sk->map == NULL). Frees any pre-existing sk->uc so a re-run on the
- * same struct doesn't leak. */
+/* Frees any pre-existing sk->uc first so a re-run doesn't leak --
+ * lets callers (notably app_reload_config) invoke this on an already
+ * decoded prefs struct. */
 static void decode_one_symmenu(symmenu_t *menu) {
 	if (menu == NULL || menu->keys == NULL) {
 		return;
