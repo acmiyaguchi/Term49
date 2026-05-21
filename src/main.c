@@ -751,9 +751,12 @@ void rescreen(int w, int h){
 	 * screen dimensions. Safe to run alongside an open symmenu: the
 	 * pointer in current_symmenu is into prefs, not into the cache,
 	 * and all rescreen callers hold input_mutex so no paint races
-	 * the teardown/rebuild. */
-	if(renderer != NULL){
-		renderer_init_symmenus(renderer, prefs);
+	 * the teardown/rebuild. A non-zero return means the cache is
+	 * fully torn down -- a subsequent paint through the symmenu
+	 * would NULL-deref, so bail. */
+	if(renderer != NULL && renderer_init_symmenus(renderer, prefs) != 0){
+		fprintf(stderr, "rescreen: symmenu cache rebuild failed\n");
+		exit_application = 1;
 	}
 
 	setup_screen_size(width, height);

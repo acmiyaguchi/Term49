@@ -260,8 +260,13 @@ static int screen_init_symmenus(renderer_t *r, pref_t *prefs) {
 
 	destroy_symmenus(self);
 
+	/* On any partial-failure path below, fully tear down the cache
+	 * before returning so we never leave the renderer half-built
+	 * (which find_symmenu_render and screen_symmenu_surface_for
+	 * would happily walk into). */
 	self->main_symmenu = symmenu_render_create(w, h, prefs, prefs->main_symmenu);
 	if (self->main_symmenu == NULL) {
+		destroy_symmenus(self);
 		return -1;
 	}
 	for (char c = 'a'; c <= 'z'; ++c) {
@@ -270,6 +275,7 @@ static int screen_init_symmenus(renderer_t *r, pref_t *prefs) {
 		if (m->entries[1].to != NULL) {
 			self->accent_menus[idx][0] = symmenu_render_create(w, h, prefs, m);
 			if (self->accent_menus[idx][0] == NULL) {
+				destroy_symmenus(self);
 				return -1;
 			}
 		}
@@ -277,6 +283,7 @@ static int screen_init_symmenus(renderer_t *r, pref_t *prefs) {
 		if (m->entries[1].to != NULL) {
 			self->accent_menus[idx][1] = symmenu_render_create(w, h, prefs, m);
 			if (self->accent_menus[idx][1] == NULL) {
+				destroy_symmenus(self);
 				return -1;
 			}
 		}
