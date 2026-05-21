@@ -841,6 +841,9 @@ static void app_reload_config(void){
 	*prefs = *fresh;                     /* move new data into stable struct */
 	free(fresh);                         /* free only the empty container */
 
+	/* Decode the new symmenu labels before any code touches sk->uc. */
+	preferences_decode_symmenu_labels(prefs);
+
 	/* rebuild derived state from the new prefs */
 	if(renderer != NULL){
 		renderer_init_symmenus(renderer, prefs);
@@ -2214,6 +2217,11 @@ int main(int argc, char **argv) {
 		app_shutdown();
 		return TERM_FAILURE;
 	}
+
+	/* Decode symmenu labels into sk->uc now that the ICU UTF-8
+	 * converter is live (io_init opened it). The decoded buffer is
+	 * owned by symmenu_t and freed by destroy_symmenu. */
+	preferences_decode_symmenu_labels(prefs);
 
 	/* initialize FreeType, font, renderer. The native Screen window was
 	 * already created by platform_screen_create above. */

@@ -2,13 +2,11 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 
 #include <unicode/utf.h>
 
 #include "bitmap.h"
 #include "font.h"
-#include "io.h"
 #include "prefs.h"
 #include "symmenu.h"
 #include "terminal.h"
@@ -64,11 +62,14 @@ symmenu_render_t *symmenu_render_create(int screen_w, int screen_h,
 		return NULL;
 	}
 
-	/* Sizing matches symmenu_sdl.c: one cell height = test-glyph height plus
-	 * a top fret and two border lines. */
+	/* One cell height = test-glyph height plus a top fret and two
+	 * border lines. */
 	int bg_h = font_line_skip(fg_font) + (2 * TERM_SYMKEY_BORDER_SIZE) + TERM_SYMMENU_FRET_SIZE;
 	int bg_w = screen_w / longest_row_len;
 
+	/* sk->uc is owned by the symmenu_t and decoded once by
+	 * preferences_decode_symmenu_labels at prefs-load / reload time;
+	 * only the screen-dimension-dependent hitbox is recomputed here. */
 	for (int row = 0; menu->keys[row] != NULL; ++row) {
 		for (int col = 0; menu->keys[row][col].map != NULL; ++col) {
 			symkey_t *sk = &menu->keys[row][col];
@@ -76,10 +77,6 @@ symmenu_render_t *symmenu_render_create(int screen_w, int screen_h,
 			sk->hitbox.y = (screen_h - num_rows * bg_h) + row * bg_h;
 			sk->hitbox.w = bg_w;
 			sk->hitbox.h = bg_h;
-
-			int to_len = strlen(sk->map->to);
-			sk->uc = (UChar *)calloc(to_len + 1, sizeof(UChar));
-			io_read_utf8_string(sk->map->to, to_len, sk->uc);
 		}
 	}
 
