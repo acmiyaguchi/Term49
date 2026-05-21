@@ -1967,8 +1967,34 @@ static void reap_exited_children(void){
 			PRINT(stderr, "Child %d (session %u) exited abnormally\n",
 			      (int)pid, session_id(s));
 		}
-		session_mark_exited(s, status);
-		mark_screen_dirty(1);
+
+		/* Drop the tab on the spot: when the user types `exit`, just
+		 * close the tab instead of leaving a [exited] ghost they'd
+		 * have to dismiss. session_mark_exited stays as a defensive
+		 * fallback for the should-never-happen lookup miss. */
+		unsigned count = app_session_count(g_app);
+		unsigned idx;
+		for (idx = 0; idx < count; ++idx) {
+			if (app_session_at(g_app, idx) == s) {
+				break;
+			}
+		}
+		if (idx >= count) {
+			session_mark_exited(s, status);
+			mark_screen_dirty(1);
+			continue;
+		}
+		app_session_close_index(g_app, idx);
+		if (app_session_count(g_app) == 0) {
+			exit_application = 1;
+			indicate_event_input();
+		} else {
+			if (app_session_count(g_app) == 1) {
+				tab_overlay_set(0);
+			}
+			apply_tab_strip_layout();
+			mark_screen_dirty(1);
+		}
 	}
 }
 

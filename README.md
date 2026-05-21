@@ -101,11 +101,10 @@ The strip is touchable: tap a numbered pill to jump to that tab, tap
 it. Tapping anywhere else on the strip dismisses it.
 
 `tab_close` is a single-press kill: it SIGHUPs the live shell and
-drops the tab immediately. If a shell exits on its own (e.g. you type
-`exit`), the tab stays put so you can read the final scrollback — the
-pill renders as ` N. ` (the `.` is a monospace stand-in for a struck-
-through label), and another `tab_close` dismisses it. The app only
-quits once the last tab is gone.
+drops the tab immediately. A shell that exits on its own (e.g. you
+type `exit`) closes the same way — the SIGCHLD reaper drops the tab
+as soon as the child is reaped. The app only quits once the last tab
+is gone.
 
 All four actions are also reachable from Lua as
 `term.action("tab_new")`, `"tab_next"`, `"tab_prev"`, `"tab_close"`, so
