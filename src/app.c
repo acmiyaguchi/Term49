@@ -4,8 +4,9 @@
  * boundary), and dispatches TAB_* actions through the helpers here.
  *
  * App/window UI state (metamode, vmodifiers, current_symmenu, ...) stays
- * file-static in main.c: it is read by the render thread under
- * input_mutex, and relocating it would change that locking.
+ * file-static in main.c: the single-threaded event loop reads/writes it
+ * from event handlers and the render path on the same thread, so moving
+ * it here would just split UI logic across files for no gain.
  */
 
 #include <stdlib.h>

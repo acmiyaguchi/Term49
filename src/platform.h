@@ -20,8 +20,9 @@ typedef struct platform_ops {
 	int  (*open_url)(platform_t *p, const char *url);  /* -1 stub until #5 */
 	/* Apply any pending window-geometry changes (rotation + size + render
 	 * buffer rebuild) stashed by next_event. Called from the main thread
-	 * under the app's input lock so the destructive buffer rebuild cannot
-	 * race the render thread's cached active_buffer pointer. No-op if
+	 * during the TERM_EVENT_RESIZE handler, before the renderer's next
+	 * begin_frame latches a new buffer. Single-thread loop (#16-H), so
+	 * there is no longer a separate render thread to race. No-op if
 	 * nothing is pending. */
 	void (*apply_pending_resize)(platform_t *p);
 	/* Release backend-owned resources (window/context, BPS init, impl

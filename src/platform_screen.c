@@ -24,10 +24,11 @@ typedef struct platform_screen {
 	int              orientation_angle;
 	int              last_w;
 	int              last_h;
-	/* Pending orientation/geometry change stashed by translate_navigator and
-	 * applied by screen_plat_apply_pending_resize on the main thread under
-	 * the app's input lock. See apply_pending_resize in platform.h for why
-	 * the destructive parts can't run inside translate_*. */
+	/* Pending orientation/geometry change stashed by translate_navigator
+	 * and applied by screen_plat_apply_pending_resize on the main thread
+	 * during the TERM_EVENT_RESIZE handler. Stashed (not applied
+	 * directly) so the destructive buffer rebuild happens at a known
+	 * point in the loop, not inside the platform event translator. */
 	int              pending_resize_valid;
 	int              pending_resize_angle;
 	int              pending_resize_w;
@@ -129,13 +130,12 @@ static int translate_navigator(platform_screen_t *self, bps_event_t *event, even
 			new_w = self->last_h;
 			new_h = self->last_w;
 		}
-		/* Stash the new geometry but don't touch the window or the render
-		 * buffers here: translate_navigator runs on the main thread *outside*
-		 * the app's input lock, while the render thread may be mid-frame
-		 * with a cached buffer pointer. The main thread will call
-		 * platform_apply_pending_resize() under the lock during the
-		 * TERM_EVENT_RESIZE handler — that's the safe spot to mutate
-		 * ROTATION/SIZE and destroy+recreate buffers. */
+		/* Stash the new geometry but don't touch the window or the
+		 * render buffers here: the resize is destructive (it tears
+		 * down + recreates the render buffers, invalidating the
+		 * renderer's per-buffer freshness table) and we want it to
+		 * happen at the well-defined TERM_EVENT_RESIZE handler point
+		 * in the main loop, not partway through this event translator. */
 		self->pending_resize_valid = 1;
 		self->pending_resize_angle = angle;
 		self->pending_resize_w     = new_w;
