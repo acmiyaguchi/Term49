@@ -1443,17 +1443,16 @@ static int sigchld_io_handler(int fd, int io_events, void *data) {
 
 /* PTY io_handler: drain everything readable from one session's master fd
  * into its ghostty bridge, mark the screen dirty, and wake the main
- * loop. Returns BPS_FAILURE on EOF / error to unsubscribe automatically. */
+ * loop. Stays registered for the session's lifetime — the SIGCHLD path
+ * (close_session_and_reflow / reap_exited_children) owns deregistration.
+ * Returning BPS_FAILURE here would race those: an EOF or transient
+ * EXCEPT could permanently kill the handler while the fd is still
+ * usable, which is exactly the "renders once then frozen" regression. */
 static int pty_io_handler(int fd, int io_events, void *data) {
 	(void)fd;
+	(void)io_events;
 	session_t *s = (session_t *)data;
 	if (s == NULL) {
-		return BPS_FAILURE;
-	}
-	if (io_events & BPS_IO_EXCEPT) {
-		return BPS_FAILURE;
-	}
-	if (!(io_events & BPS_IO_INPUT)) {
 		return BPS_SUCCESS;
 	}
 
@@ -1461,26 +1460,20 @@ static int pty_io_handler(int fd, int io_events, void *data) {
 	ghostty_bridge_t *bridge = session_bridge(s);
 	ssize_t n;
 	int got_any = 0;
-	int hit_eof = 0;
-	while ((n = session_read_bytes(s, buf, sizeof(buf))) != 0) {
-		if (n < 0) {
-			/* O_NONBLOCK pty returns -1/EAGAIN when fully drained;
-			 * any other errno means the fd is dead and the SIGCHLD
-			 * reaper will clean up the session shortly. */
-			break;
-		}
+	while ((n = session_read_bytes(s, buf, sizeof(buf))) > 0) {
 		ghostty_bridge_write(bridge, (const uint8_t*)buf, (size_t)n);
 		got_any = 1;
 	}
-	if (n == 0) {
-		hit_eof = 1;
-	}
+	/* n <= 0 here is either EAGAIN (drained, expected on O_NONBLOCK)
+	 * or EOF (shell exited — SIGCHLD reaper handles cleanup). Either
+	 * way: stay subscribed and let mark_screen_dirty + the wake event
+	 * push the just-arrived bytes to the screen. */
 	if (got_any) {
 		/* Let ghostty's per-cell dirty bits decide partial vs full. */
 		mark_screen_dirty(0);
 		post_wake_event();
 	}
-	return hit_eof ? BPS_FAILURE : BPS_SUCCESS;
+	return BPS_SUCCESS;
 }
 
 static int startup_init() {
@@ -2029,11 +2022,16 @@ static int pty_init(session_t *session) {
 	// close the slave_fd, not needed anymore
 	close(slave_fd);
 
-	/* Fold this session's pty master into the BPS event pump (#16-H).
+	/* Fold this session's pty master into the BPS event pump.
 	 * pty_io_handler drains readable bytes into the bridge, marks
-	 * screen_dirty, and pushes a wake event. EXCEPT or EOF returns
-	 * BPS_FAILURE which unsubscribes automatically. */
-	if (bps_add_fd(master_fd, BPS_IO_INPUT | BPS_IO_EXCEPT,
+	 * screen_dirty, and pushes a wake event.
+	 *
+	 * BPS_IO_INPUT only — registering BPS_IO_EXCEPT alongside it caused
+	 * the handler to unsubscribe permanently on what looked like
+	 * transient pump events (the "renders once then frozen" regression).
+	 * The SIGCHLD reaper is the only path that should ever deregister a
+	 * pty fd. */
+	if (bps_add_fd(master_fd, BPS_IO_INPUT,
 	               pty_io_handler, session) != BPS_SUCCESS) {
 		fprintf(stderr, "bps_add_fd(pty master) failed: %s\n", strerror(errno));
 		/* Continue: navigator events still work; this session just

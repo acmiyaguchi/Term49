@@ -194,7 +194,14 @@ static int screen_plat_next_event(platform_t *p, event_t *out) {
 		return 0;
 	}
 	bps_event_t *event = NULL;
-	if (bps_get_event(&event, -1) != BPS_SUCCESS || event == NULL) {
+	/* 250 ms timeout instead of indefinite block: belt-and-braces for
+	 * the bps_add_fd path. The pty / SIGCHLD io_handlers push a no-op
+	 * wake event after dirtying state, which should return the pump
+	 * immediately — but if that mechanism ever drops a wake, the timeout
+	 * still pulls the loop back so the render check can fire. Idle cost
+	 * is 4 wakes/sec; the main loop fast-paths through them when nothing
+	 * is dirty. */
+	if (bps_get_event(&event, 250) != BPS_SUCCESS || event == NULL) {
 		memset(out, 0, sizeof(*out));
 		out->type = TERM_EVENT_NONE;
 		return 0;
