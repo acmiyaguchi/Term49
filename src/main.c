@@ -926,6 +926,22 @@ void toggle_vkeymod(int mod){
 	mark_screen_dirty(1);
 }
 
+/* The live modifier mask for chord matching, reconciling state that is
+ * otherwise split across vmodifiers (ctrl/alt/shift bits), altsym_lock
+ * (the symbol-layer alt), and the sym-menu state (no NDK KEYMOD_*, so we
+ * synthesize CHORD_MOD_SYM). Stuck and held both land here because the
+ * BB modifier keys are tap-to-stick. */
+static unsigned current_modmask(void){
+	unsigned m = (unsigned)vmodifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT);
+	if (altsym_lock) {
+		m |= KEYMOD_ALT;
+	}
+	if (current_symmenu != NULL || symmenu_lock) {
+		m |= CHORD_MOD_SYM;
+	}
+	return m;
+}
+
 int app_dispatch_action(app_t *app, const action_t *action) {
 	session_t *session;
 
@@ -1311,6 +1327,23 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			mark_screen_dirty(1);
 		}
 		vmodifiers = 0;
+
+		/* Site B: ordinary-key chords -- a real modifier (an external
+		 * keyboard's ctrl/alt, or a merged sticky vmodifier) plus a key.
+		 * Consulted after the sticky merge and before plain-key dispatch,
+		 * so a matched ctrl+t fires the action instead of emitting its
+		 * control byte. Exact mask match; initial press only. Modifier-key
+		 * triggers (sym/alt/shift) returned earlier at Site A and never
+		 * reach here. */
+		if (!k->repeat) {
+			chord_t *chord = chord_lookup(k->sym,
+			        (unsigned)modifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT),
+			        prefs->chord_bindings);
+			if (chord != NULL) {
+				app_dispatch_action(app, &chord->action);
+				return;
+			}
+		}
 
 		/* now process the keypress */
 		switch (k->sym) {
