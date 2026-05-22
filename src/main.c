@@ -132,6 +132,9 @@ static int g_reload_pending = 0;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
+/* On-screen keybinding cheat sheet. The blit is wired in render_ghostty
+ * (Stage 5); until then this flag is inert. */
+static int current_help_overlay = 0;
 
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
@@ -483,6 +486,11 @@ void metamode_toggle(){
 
 void altsym_toggle() {
 	altsym_lock = altsym_lock ? 0 : 1;
+	mark_screen_dirty(1);
+}
+
+void help_overlay_toggle() {
+	current_help_overlay = current_help_overlay ? 0 : 1;
 	mark_screen_dirty(1);
 }
 
@@ -1029,6 +1037,12 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			 * frees keymaps this keypress may still be unwinding
 			 * through. Applied at the run-loop safe point. */
 			g_reload_pending = 1;
+			return 1;
+		case TERM_BUILTIN_METAMODE_TOGGLE:
+			metamode_toggle();
+			return 1;
+		case TERM_BUILTIN_HELP_OVERLAY:
+			help_overlay_toggle();
 			return 1;
 		default:
 			return 0;

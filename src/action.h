@@ -46,6 +46,11 @@ typedef enum builtin_action {
 	TERM_BUILTIN_LUA_CALL,
 	/* re-run .term49.lua and re-apply it live (deferred to a safe point) */
 	TERM_BUILTIN_RELOAD_CONFIG,
+	/* toggle metamode (the modal meta layer); a chordable alternative to
+	 * the doubletap entry. */
+	TERM_BUILTIN_METAMODE_TOGGLE,
+	/* toggle the on-screen keybinding help overlay. */
+	TERM_BUILTIN_HELP_OVERLAY,
 } builtin_action_t;
 
 typedef struct action {
