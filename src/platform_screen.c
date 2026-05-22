@@ -8,6 +8,7 @@
 
 #include <bps/bps.h>
 #include <bps/deviceinfo.h>
+#include <bps/dialog.h>
 #include <bps/event.h>
 #include <bps/navigator.h>
 #include <bps/screen.h>
@@ -241,8 +242,43 @@ static int screen_plat_is_passport(platform_t *p) {
 	return passport;
 }
 
-static int screen_plat_notify(platform_t *p, const char *msg)   { (void)p; (void)msg; return -1; }
-static int screen_plat_open_url(platform_t *p, const char *url) { (void)p; (void)url; return -1; }
+/* Transient toast via the navigator. The toast auto-dismisses, but the
+ * dialog object lives until destroyed; we keep a single handle and tear
+ * down the previous toast before showing the next so at most one leaks
+ * (reclaimed at process exit). No dialog events are requested -- a toast
+ * has no buttons, so there is nothing to handle. */
+static int screen_plat_notify(platform_t *p, const char *msg) {
+	(void)p;
+	static dialog_instance_t toast = NULL;
+	if (msg == NULL || msg[0] == '\0') {
+		return -1;
+	}
+	if (toast != NULL) {
+		dialog_destroy(toast);
+		toast = NULL;
+	}
+	if (dialog_create_toast(&toast) != BPS_SUCCESS) {
+		toast = NULL;
+		return -1;
+	}
+	if (dialog_set_toast_message_text(toast, msg) != BPS_SUCCESS ||
+	    dialog_show(toast) != BPS_SUCCESS) {
+		dialog_destroy(toast);
+		toast = NULL;
+		return -1;
+	}
+	return 0;
+}
+
+/* Hand the URI to the platform default handler (browser, file viewer,
+ * etc.) via the legacy one-shot navigator_invoke. */
+static int screen_plat_open_url(platform_t *p, const char *url) {
+	(void)p;
+	if (url == NULL || url[0] == '\0') {
+		return -1;
+	}
+	return navigator_invoke(url, NULL) == BPS_SUCCESS ? 0 : -1;
+}
 
 static void screen_plat_apply_pending_resize(platform_t *p) {
 	platform_screen_t *self = self_of(p);

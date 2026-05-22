@@ -1,0 +1,223 @@
+-- ============================================================================
+-- Term49 reference configuration (.term49.lua)
+-- ============================================================================
+--
+-- This is a COMPLETE, annotated reference. It is NOT loaded by Term49 -- it
+-- ships under share/ as documentation. To use it, copy it to your home dir:
+--
+--     cp term49.lua.reference $HOME/.term49.lua
+--
+-- (Term49 also writes a short starter .term49.lua on first run if none exists;
+-- this file is the fully fleshed-out version showing every available knob.)
+--
+-- Every value below is set to its compiled-in DEFAULT, so loading this file
+-- as-is reproduces stock behaviour. Edit freely and reload with the
+-- "reload_config" action (bound to metamode + r by default).
+--
+-- SECURITY: this file is executed as a full Lua program at startup and on
+-- every reload, with the complete standard library (including os and io).
+-- Treat it like a shell rc -- only run a .term49.lua you wrote or trust.
+--
+-- A note on the scripting/control surface (issue #5): a Unix-domain control
+-- socket is exposed to child shells via the $TERM49_CONTROL environment
+-- variable, and the bundled `termctl` CLI ($TERM49CTL) speaks to it. See the
+-- "Scripting" section at the bottom for the Lua `term.*` API.
+-- ============================================================================
+
+prefs_version = 9
+
+-- ----------------------------------------------------------------------------
+-- Scalars
+-- ----------------------------------------------------------------------------
+
+-- Path to the TrueType font used for the grid. Any monospaced TTF works.
+font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
+
+-- Font size in points. metamode + i / o / z adjust this live (see func keys).
+font_size = 24
+
+-- Keep the screen awake (suppress the idle dim/lock) while Term49 is focused.
+screen_idle_awake = false
+
+-- Pop the virtual keyboard automatically when a session gains focus.
+auto_show_vkb = true
+
+-- Physical key that toggles metamode on a double-tap, and the max gap between
+-- the two taps (nanoseconds). Default key is right shift.
+metamode_doubletap_key = 18
+metamode_doubletap_delay = 500000000
+
+-- Allow key-HOLD to fire metamode_func actions / accent menus (see below).
+keyhold_actions = true
+
+-- Physical key that enters metamode while held down. Default is space.
+metamode_hold_key = 61
+
+-- Let terminal apps resize the column count (vs locking to the device width).
+allow_resize_columns = false
+
+-- Encoding handed to the child's locale (LANG/LC_*) and used for decode.
+tty_encoding = "UTF-8"
+
+-- Sticky-key behaviour: a "sticky" modifier stays armed for the next keypress
+-- instead of needing to be held. sym defaults off; shift and alt default on.
+sticky_sym_key = false
+sticky_shift_key = true
+sticky_alt_key = true
+
+-- After committing a SYM-menu pick, rebuild the screen (clears the overlay).
+rescreen_for_symmenu = true
+
+-- Holding a letter key opens its accent menu (see e_accents example below).
+keyhold_accents = true
+
+-- ----------------------------------------------------------------------------
+-- Colors (RGB, 0-255)
+-- ----------------------------------------------------------------------------
+
+text_color = { 255, 255, 255 }
+background_color = { 0, 0, 0 }
+
+-- ----------------------------------------------------------------------------
+-- Metamode hit-box: the on-screen rectangle (percent of the window: x, y, w, h)
+-- that toggles metamode when tapped. Default covers the whole screen.
+-- ----------------------------------------------------------------------------
+
+metamode_hitbox = { 0, 0, 100, 100 }
+
+-- ----------------------------------------------------------------------------
+-- Keycodes exempt from key-hold repeat handling (so holding them auto-repeats
+-- normally instead of triggering hold actions). Defaults: backspace, return.
+-- ----------------------------------------------------------------------------
+
+keyhold_actions_exempt = { 8, 13 }
+
+-- ----------------------------------------------------------------------------
+-- metamode_keys: in metamode, these letters send a literal byte string.
+-- Each entry is { "<letter>", "<bytes>" }. \x.. is a Lua hex escape.
+-- ----------------------------------------------------------------------------
+
+metamode_keys = {
+  { "e", "\x1b" },  -- ESC
+  { "t", "\x09" },  -- TAB
+}
+
+-- ----------------------------------------------------------------------------
+-- metamode_sticky_keys: in metamode, these send a terminfo-named key (arrow
+-- keys here) and KEEP metamode armed so you can chain movements.
+-- ----------------------------------------------------------------------------
+
+metamode_sticky_keys = {
+  { "k", "kcuu1" },  -- up
+  { "j", "kcud1" },  -- down
+  { "l", "kcuf1" },  -- right
+  { "h", "kcub1" },  -- left
+}
+
+-- ----------------------------------------------------------------------------
+-- metamode_func_keys: in metamode, these run a named built-in ACTION.
+--
+-- Available built-ins:
+--   alt_down, ctrl_down            toggle a sticky modifier
+--   rescreen                       rebuild the screen
+--   paste_clipboard                paste the system clipboard
+--   font_size_increase/decrease/reset
+--   reload_config                  re-run this file live
+--   tab_new / tab_next / tab_prev / tab_close
+--   keyboard_show / keyboard_hide  show/hide the virtual keyboard   (#5)
+--   notify:<message>               transient toast notification     (#5)
+--   open_url:<uri>                 open a URI in its default handler (#5)
+--   lua:<function>                 call a global Lua function (see Scripting)
+-- ----------------------------------------------------------------------------
+
+metamode_func_keys = {
+  { "a", "alt_down" },
+  { "d", "ctrl_down" },
+  { "s", "rescreen" },
+  { "v", "paste_clipboard" },
+  { "i", "font_size_increase" },
+  { "o", "font_size_decrease" },
+  { "z", "font_size_reset" },
+  { "r", "reload_config" },
+  { "c", "tab_new" },
+  { "n", "tab_next" },
+  { "p", "tab_prev" },
+  { "x", "tab_close" },
+
+  -- New in #5 -- demonstrated on otherwise-unused metamode letters. The two
+  -- argument-bearing actions use a ":" to separate the action from its arg.
+  { "g", "keyboard_show" },
+  { "b", "keyboard_hide" },
+  { "m", "notify:Hello from Term49" },
+  { "u", "open_url:https://www.blackberry.com/" },
+}
+
+-- ----------------------------------------------------------------------------
+-- main_symmenu: the SYM overlay. A list of ROWS; each row is a list of
+-- { "<letter>", "<symbol>" } pairs laid out left-to-right.
+-- ----------------------------------------------------------------------------
+
+main_symmenu = {
+  { { "q", "~" }, { "w", "`" }, { "e", "{" }, { "r", "}" }, { "t", "[" },
+    { "y", "]" }, { "u", "<" }, { "i", ">" }, { "o", "^" }, { "p", "%" } },
+  { { "a", "=" }, { "s", "-" }, { "d", "*" }, { "f", "/" }, { "g", "\\" },
+    { "h", "|" }, { "j", "&" }, { "k", "'" }, { "l", "\"" } },
+}
+
+-- ----------------------------------------------------------------------------
+-- altsym_entries: the ALT-SYM layer (a flat { "<letter>", "<symbol>" } list,
+-- not rows). These are the symbols reached via the alt modifier.
+-- ----------------------------------------------------------------------------
+
+altsym_entries = {
+  { "q", "#" }, { "w", "1" }, { "e", "2" }, { "r", "3" }, { "t", "(" },
+  { "y", ")" }, { "u", "_" }, { "i", "-" }, { "o", "+" }, { "p", "@" },
+  { "a", "*" }, { "s", "4" }, { "d", "5" }, { "f", "6" }, { "g", "/" },
+  { "h", ":" }, { "j", ";" }, { "k", "'" }, { "l", "\"" },
+  { "z", "7" }, { "x", "8" }, { "c", "9" }, { "v", "?" }, { "b", "!" },
+  { "n", "," }, { "m", "." },
+  { "0", "0" },
+}
+
+-- ----------------------------------------------------------------------------
+-- Accent menus (optional; off by default). For any letter a-z, define
+-- "<letter>_accents" as a single-row SYM menu of { "<key>", "<glyph>" } pairs.
+-- Holding the letter (with keyhold_accents = true) opens this overlay.
+-- Example for "e":
+-- ----------------------------------------------------------------------------
+
+e_accents = {
+  { { "e", "e" }, { "1", "\u{00E9}" }, { "2", "\u{00E8}" },
+    { "3", "\u{00EA}" }, { "4", "\u{00EB}" } },
+}
+
+-- ----------------------------------------------------------------------------
+-- Scripting
+-- ----------------------------------------------------------------------------
+--
+-- The `term` table is available at top level and inside any function you bind
+-- with "lua:<name>". Functions:
+--
+--   term.font_size_get()        -> current font size (int)
+--   term.font_size_set(n)       set the font size
+--   term.action("<name>")       run any built-in action string (returns bool),
+--                               e.g. term.action("reload_config")
+--   term.notify("<message>")    transient toast                          (#5)
+--   term.open_url("<uri>")      open a URI in its default handler        (#5)
+--   term.keyboard_show()        show the virtual keyboard                (#5)
+--   term.keyboard_hide()        hide the virtual keyboard                (#5)
+--
+-- Bind a key to a Lua function by using a "lua:<name>" action. The function
+-- takes no arguments and its return value is ignored.
+
+function zoom_in()
+  term.font_size_set(term.font_size_get() + 3)
+end
+
+function greet()
+  term.notify("font size is " .. term.font_size_get())
+end
+
+-- To wire these up, add bindings to metamode_func_keys above, e.g.:
+--   { "w", "lua:zoom_in" },
+--   { "f", "lua:greet" },

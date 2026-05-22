@@ -666,10 +666,35 @@ static int luaC_action(lua_State *L) {
 	lua_pushboolean(L, app_run_action_string(luaL_checkstring(L, 1)));
 	return 1;
 }
+/* term.notify(msg) / term.open_url(uri): build the prefixed action string
+ * (lua_pushfstring keeps it alive on the stack across the synchronous
+ * dispatch) and route through the one action path. */
+static int luaC_notify(lua_State *L) {
+	const char *s = lua_pushfstring(L, "notify:%s", luaL_checkstring(L, 1));
+	lua_pushboolean(L, app_run_action_string(s));
+	return 1;
+}
+static int luaC_open_url(lua_State *L) {
+	const char *s = lua_pushfstring(L, "open_url:%s", luaL_checkstring(L, 1));
+	lua_pushboolean(L, app_run_action_string(s));
+	return 1;
+}
+static int luaC_keyboard_show(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string("keyboard_show"));
+	return 1;
+}
+static int luaC_keyboard_hide(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string("keyboard_hide"));
+	return 1;
+}
 static const luaL_Reg TERM_LUA_LIB[] = {
 	{ "font_size_set", luaC_font_size_set },
 	{ "font_size_get", luaC_font_size_get },
 	{ "action",        luaC_action },
+	{ "notify",        luaC_notify },
+	{ "open_url",      luaC_open_url },
+	{ "keyboard_show", luaC_keyboard_show },
+	{ "keyboard_hide", luaC_keyboard_hide },
 	{ NULL, NULL }
 };
 

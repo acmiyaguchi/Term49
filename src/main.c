@@ -925,6 +925,16 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_PASTE_CLIPBOARD:
 			return session_dispatch_action(session, action);
+		case TERM_BUILTIN_KEYBOARD_SHOW:
+			platform_vkb_show(g_platform);
+			return 1;
+		case TERM_BUILTIN_KEYBOARD_HIDE:
+			platform_vkb_hide(g_platform);
+			return 1;
+		case TERM_BUILTIN_NOTIFY:
+			return platform_notify(g_platform, action->as.builtin.arg) == 0;
+		case TERM_BUILTIN_OPEN_URL:
+			return platform_open_url(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_FONT_SIZE_INCREASE:
 			set_font_size(prefs->font_size + 1);
 			return 1;
