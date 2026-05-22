@@ -51,6 +51,7 @@
 #include "platform_screen.h"
 #include "io.h"
 #include "ghostty_bridge.h"
+#include "control.h"
 
 static int exit_application = 0;
 
@@ -839,6 +840,23 @@ int app_run_action_string(const char *s){
 	return app_dispatch_action(g_app, &a);
 }
 
+/* Glue for the control socket (src/control.c). Kept here so control.c stays a
+ * leaf TU with no view of g_app / cols / rows / the BPS wake domain. */
+int ctl_run_action_string(const char *s) {
+	return app_run_action_string(s);
+}
+void ctl_wake(void) {
+	post_wake_event();
+}
+int ctl_screen_size(int *out_cols, int *out_rows) {
+	if (out_cols) *out_cols = cols;
+	if (out_rows) *out_rows = rows;
+	return 1;
+}
+unsigned ctl_session_count(void) {
+	return g_app != NULL ? app_session_count(g_app) : 0;
+}
+
 /* Re-run .term49.lua and re-apply it live. MUST be called only from the
  * deferred safe point in the run loop (never from action dispatch / a
  * lua_pcall): the loader closes and reopens the lua_State, and frees the
@@ -855,11 +873,16 @@ static void app_reload_config(void){
 	if(fresh == NULL){
 		/* Parse error / OOM: prefs_lua_reload() left the running config
 		 * and scripting state fully intact, so a broken edit can't wipe
-		 * a working setup to defaults. No transient on-screen cue: this
-		 * backend only composites on the next event pump, so a flash
-		 * would not show until an unrelated tap (confusing). The
-		 * feedback is simply that nothing changes -- the rejected edit
-		 * is logged to stderr for dev builds. */
+		 * a working setup to defaults. Surface the failure via a navigator
+		 * toast (a system overlay, not an in-app composite, so it shows
+		 * immediately without waiting on the next event pump) carrying the
+		 * Lua error -- otherwise a rejected reload looks like nothing
+		 * happened. The full message is also on stderr for dev builds. */
+		const char *err = prefs_lua_last_error();
+		char msg[256];
+		snprintf(msg, sizeof(msg), "notify:config reload failed: %s",
+		         err != NULL ? err : "unknown error");
+		app_run_action_string(msg);
 		return;
 	}
 	/* Drop transient UI state derived from / pointing into the config
@@ -925,6 +948,16 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_PASTE_CLIPBOARD:
 			return session_dispatch_action(session, action);
+		case TERM_BUILTIN_KEYBOARD_SHOW:
+			platform_vkb_show(g_platform);
+			return 1;
+		case TERM_BUILTIN_KEYBOARD_HIDE:
+			platform_vkb_hide(g_platform);
+			return 1;
+		case TERM_BUILTIN_NOTIFY:
+			return platform_notify(g_platform, action->as.builtin.arg) == 0;
+		case TERM_BUILTIN_OPEN_URL:
+			return platform_open_url(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_FONT_SIZE_INCREASE:
 			set_font_size(prefs->font_size + 1);
 			return 1;
@@ -1501,6 +1534,11 @@ static int startup_init() {
 		return TERM_FAILURE;
 	}
 
+	/* Control socket (#5). Best-effort: a failure here logs and leaves the
+	 * app fully usable, just without the scripting socket. Runs before the
+	 * pty fork so child shells inherit $TERM49_CONTROL. */
+	control_init();
+
 	if(font_library_init() != 0){
 		fprintf(stderr, "Couldn't initialize FreeType\n");
 		return TERM_FAILURE;
@@ -1586,6 +1624,10 @@ void app_shutdown(void){
 	if (sigchld_pipe_open) {
 		bps_remove_fd(sigchld_pipe[0]);
 	}
+
+	/* Control socket fds are likewise registered on the BPS channel, so
+	 * deregister + close + unlink them before bps_shutdown. */
+	control_shutdown();
 
 	platform_destroy(g_platform);
 	g_platform = NULL;
@@ -2333,6 +2375,9 @@ int main(int argc, char **argv) {
 			g_reload_pending = 0;
 			app_reload_config();
 		}
+		/* Same safe point: deferred control-socket `eval` runs the
+		 * lua_State here, never from inside a client io_handler. */
+		control_drain_deferred();
 		if (screen_dirty) {
 			int force_full = screen_full_dirty;
 			screen_dirty = 0;

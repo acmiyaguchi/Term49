@@ -652,6 +652,10 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 
 static lua_State *g_lua_state = NULL;
 
+/* Last config load/reload error, for queryable validation feedback (the
+ * control `validate`/error path) and a reload-failure toast. Empty = none. */
+static char g_last_config_error[512];
+
 /* Minimal Lua-callable surface. Glue (terminal.h) keeps app/renderer
  * internals out of this TU. Broader APIs are intentionally deferred. */
 static int luaC_font_size_set(lua_State *L) {
@@ -666,10 +670,35 @@ static int luaC_action(lua_State *L) {
 	lua_pushboolean(L, app_run_action_string(luaL_checkstring(L, 1)));
 	return 1;
 }
+/* term.notify(msg) / term.open_url(uri): build the prefixed action string
+ * (lua_pushfstring keeps it alive on the stack across the synchronous
+ * dispatch) and route through the one action path. */
+static int luaC_notify(lua_State *L) {
+	const char *s = lua_pushfstring(L, "notify:%s", luaL_checkstring(L, 1));
+	lua_pushboolean(L, app_run_action_string(s));
+	return 1;
+}
+static int luaC_open_url(lua_State *L) {
+	const char *s = lua_pushfstring(L, "open_url:%s", luaL_checkstring(L, 1));
+	lua_pushboolean(L, app_run_action_string(s));
+	return 1;
+}
+static int luaC_keyboard_show(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string("keyboard_show"));
+	return 1;
+}
+static int luaC_keyboard_hide(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string("keyboard_hide"));
+	return 1;
+}
 static const luaL_Reg TERM_LUA_LIB[] = {
 	{ "font_size_set", luaC_font_size_set },
 	{ "font_size_get", luaC_font_size_get },
 	{ "action",        luaC_action },
+	{ "notify",        luaC_notify },
+	{ "open_url",      luaC_open_url },
+	{ "keyboard_show", luaC_keyboard_show },
+	{ "keyboard_hide", luaC_keyboard_hide },
 	{ NULL, NULL }
 };
 
@@ -685,6 +714,39 @@ static lua_State *lua_new_state(void) {
 	luaL_newlib(L, TERM_LUA_LIB);
 	lua_setglobal(L, "term");
 	return L;
+}
+
+/* lua_pcall message handler: prepend a Lua-level traceback (file:line + call
+ * stack) to the error so config/eval failures locate the fault, not just name
+ * it. Mirrors the standard lua.c msgh. */
+static int lua_traceback_msgh(lua_State *L) {
+	const char *msg = lua_tostring(L, 1);
+	if (msg == NULL) {
+		if (luaL_callmeta(L, 1, "__tostring") &&
+		    lua_type(L, -1) == LUA_TSTRING) {
+			return 1;
+		}
+		msg = lua_pushfstring(L, "(error object is a %s value)",
+		                      luaL_typename(L, 1));
+	}
+	luaL_traceback(L, L, msg, 1);
+	return 1;
+}
+
+/* luaL_dofile, but with lua_traceback_msgh installed for the execution phase.
+ * Compile errors carry no stack so they pass through unchanged; runtime errors
+ * gain a traceback. Matches luaL_dofile's contract: nothing left on the stack
+ * on success, the (traceback-augmented) error message on top on failure. */
+static int lua_dofile_traceback(lua_State *L, const char *path) {
+	lua_pushcfunction(L, lua_traceback_msgh);
+	int msgh = lua_gettop(L);
+	if (luaL_loadfile(L, path) != LUA_OK) {
+		lua_remove(L, msgh);   /* compile error on top; drop the handler under it */
+		return LUA_ERRSYNTAX;
+	}
+	int rc = lua_pcall(L, 0, 0, msgh);
+	lua_remove(L, msgh);       /* on error this leaves the error object on top */
+	return rc;
 }
 
 /* Shared core for the startup loader and the live reloader. Creates a
@@ -710,7 +772,7 @@ static pref_t *prefs_lua_try_build(const char *path, int build_on_parse_error,
 	if (L == NULL) {
 		return NULL;
 	}
-	if (luaL_dofile(L, path) != LUA_OK) {
+	if (lua_dofile_traceback(L, path) != LUA_OK) {
 		if (!build_on_parse_error) {
 			return NULL;  /* error message left at L's stack top */
 		}
@@ -745,9 +807,13 @@ pref_t *prefs_lua_load(const char *path) {
 		exit(1);
 	}
 	if (!parsed) {
+		snprintf(g_last_config_error, sizeof(g_last_config_error), "%s",
+		         lua_tostring(L, -1));
 		fprintf(stderr, "term49: error loading %s: %s\n",
 		        path, lua_tostring(L, -1));
 		lua_pop(L, 1);
+	} else {
+		g_last_config_error[0] = '\0';
 	}
 
 	g_lua_state = L; /* retained for scripting; closed in prefs_lua_destroy */
@@ -766,21 +832,64 @@ pref_t *prefs_lua_reload(void) {
 	pref_t *prefs = prefs_lua_try_build(PREFS_LUA_FILE_PATH, 0, &L, &parsed);
 	if (prefs == NULL) {
 		if (L == NULL) {
+			snprintf(g_last_config_error, sizeof(g_last_config_error),
+			         "out of memory");
 			fprintf(stderr, "term49: reload aborted: out of memory\n");
 		} else if (!parsed) {
+			snprintf(g_last_config_error, sizeof(g_last_config_error), "%s",
+			         lua_tostring(L, -1));
 			fprintf(stderr, "term49: reload rejected, keeping current config: %s\n",
 			        lua_tostring(L, -1));
 			lua_close(L);
 		} else {
+			snprintf(g_last_config_error, sizeof(g_last_config_error),
+			         "out of memory building prefs");
 			lua_close(L);  /* calloc OOM after a good parse */
 		}
 		return NULL;
 	}
 
 	/* Commit the scripting state only now that the file parsed. */
+	g_last_config_error[0] = '\0';   /* parsed clean; clear any stale error */
 	if (g_lua_state) { lua_close(g_lua_state); }
 	g_lua_state = L;
 	return prefs;
+}
+
+const char *prefs_lua_last_error(void) {
+	return g_last_config_error[0] != '\0' ? g_last_config_error : NULL;
+}
+
+int prefs_lua_validate(const char *path, char *out, size_t outsz) {
+	if (out != NULL && outsz > 0) {
+		out[0] = '\0';
+	}
+	if (path == NULL || path[0] == '\0') {
+		path = PREFS_LUA_FILE_PATH;
+	}
+	/* Compile-check only: luaL_loadfile parses without executing, so no config
+	 * side effects (term.* calls, font changes) fire -- safe to run inline off
+	 * the control socket. Catches syntax errors; runtime errors surface on the
+	 * real reload, which is non-destructive and now reports via the toast. */
+	lua_State *L = lua_new_state();
+	if (L == NULL) {
+		if (out != NULL && outsz > 0) {
+			snprintf(out, outsz, "out of memory");
+		}
+		return -1;
+	}
+	if (luaL_loadfile(L, path) != LUA_OK) {
+		if (out != NULL && outsz > 0) {
+			snprintf(out, outsz, "%s", lua_tostring(L, -1));
+		}
+		lua_close(L);
+		return -1;
+	}
+	lua_close(L);
+	if (out != NULL && outsz > 0) {
+		snprintf(out, outsz, "ok");
+	}
+	return 0;
 }
 
 /* .term49.lua is hand-authored; Term49 never writes it back (a first-run
@@ -810,6 +919,51 @@ int prefs_lua_invoke(const char *name) {
 		return 0;
 	}
 	return 1;
+}
+
+int prefs_lua_eval(const char *src, char *out, size_t outsz) {
+	if (out != NULL && outsz > 0) {
+		out[0] = '\0';
+	}
+	if (g_lua_state == NULL || src == NULL) {
+		if (out != NULL && outsz > 0) {
+			snprintf(out, outsz, "lua scripting unavailable");
+		}
+		return -1;
+	}
+	lua_State *L = g_lua_state;
+	int base = lua_gettop(L);
+	lua_pushcfunction(L, lua_traceback_msgh);   /* msgh at base+1 */
+
+	if (luaL_loadstring(L, src) != LUA_OK ||
+	    lua_pcall(L, 0, LUA_MULTRET, base + 1) != LUA_OK) {
+		if (out != NULL && outsz > 0) {
+			snprintf(out, outsz, "%s", lua_tostring(L, -1));
+		}
+		lua_settop(L, base);
+		return -1;
+	}
+
+	/* Stringify any return values, tab-separated, into out. Results sit above
+	 * the msgh slot (base+1), so they start at base+2. */
+	int nres = lua_gettop(L) - (base + 1);
+	if (out != NULL && outsz > 0 && nres > 0) {
+		size_t off = 0;
+		for (int i = 1; i <= nres && off + 1 < outsz; ++i) {
+			if (i > 1) {
+				out[off++] = '\t';
+			}
+			const char *s = luaL_tolstring(L, base + 1 + i, NULL); /* pushes a string */
+			int n = snprintf(out + off, outsz - off, "%s", s != NULL ? s : "");
+			lua_pop(L, 1); /* drop the luaL_tolstring result */
+			if (n > 0) {
+				off += (size_t)n < outsz - off ? (size_t)n : outsz - off - 1;
+			}
+		}
+		out[off] = '\0';
+	}
+	lua_settop(L, base);
+	return 0;
 }
 
 /* --- pref_t -> .term49.lua emitter (first-run default config) --------

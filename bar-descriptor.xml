@@ -20,6 +20,7 @@
     <asset path="share/LICENSE">LICENSE</asset>
     <asset path="share/README">README</asset>
     <asset path="share/README45">README45</asset>
+    <asset path="share/term49.lua.reference">term49.lua.reference</asset>
     <asset path="icons/term4986x86.png">term4986x86.png</asset>
     <asset path="icons/term4990x90.png">term4990x90.png</asset>
     <asset path="icons/term4996x96.png">term4996x96.png</asset>
@@ -29,10 +30,12 @@
     <configuration name="Device-Debug">
        <platformArchitecture>armle-v7</platformArchitecture>
        <asset path="Device-Debug/Term49" entry="true" type="Qnx/Elf">Term49</asset>
+       <asset path="Device-Debug/termctl" entry="false" type="Qnx/Elf">root/bin/termctl</asset>
     </configuration>
     <configuration name="Device-Release">
        <platformArchitecture>armle-v7</platformArchitecture>
        <asset path="Device-Release/Term49" entry="true" type="Qnx/Elf">Term49</asset>
+       <asset path="Device-Release/termctl" entry="false" type="Qnx/Elf">root/bin/termctl</asset>
     </configuration>
 
     <name>Term49</name>

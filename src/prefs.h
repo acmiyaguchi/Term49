@@ -19,6 +19,7 @@
 #define PREFS_H_
 
 
+#include <stddef.h>
 #include <unicode/utf.h>
 #include "types.h"
 
@@ -67,6 +68,24 @@ void prefs_first_run_readme(void);
  * Returns 1 on success, 0 if unavailable or the call errored. The Lua
  * state is owned by, and stays private to, the loader TU. */
 int prefs_lua_invoke(const char *name);
+
+/* Run an arbitrary Lua chunk on the persistent scripting state (via
+ * luaL_loadstring + lua_pcall, so a Lua error cannot longjmp through C).
+ * Any return values are written to `out` (tab-separated, truncated to
+ * outsz), as is the error message on failure. Returns 0 on success, -1 on
+ * load/runtime error or if scripting is unavailable. MUST be called from a
+ * safe point -- never from inside an active lua_pcall. */
+int prefs_lua_eval(const char *src, char *out, size_t outsz);
+
+/* Compile-check a config file without executing it or touching the live
+ * scripting state. `path` NULL/"" => the user's PREFS_LUA_FILE_PATH. Writes
+ * "ok" or the parse error to `out`. Returns 0 if it compiles, -1 otherwise.
+ * Safe to call inline (no config side effects run). */
+int prefs_lua_validate(const char *path, char *out, size_t outsz);
+
+/* Last config load/reload error message, or NULL if the last load/reload
+ * succeeded. Points into static storage owned by the loader TU. */
+const char *prefs_lua_last_error(void);
 
 keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);

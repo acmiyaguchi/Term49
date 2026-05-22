@@ -16,8 +16,8 @@ typedef struct platform_ops {
 	void (*vkb_hide)(platform_t *p);
 	int  (*vkb_height)(platform_t *p);
 	int  (*is_passport)(platform_t *p);
-	int  (*notify)(platform_t *p, const char *msg);    /* -1 stub until #5 */
-	int  (*open_url)(platform_t *p, const char *url);  /* -1 stub until #5 */
+	int  (*notify)(platform_t *p, const char *msg);    /* 0 ok, -1 fail */
+	int  (*open_url)(platform_t *p, const char *url);  /* 0 ok, -1 fail */
 	/* Apply any pending window-geometry changes (rotation + size + render
 	 * buffer rebuild) stashed by next_event. Called from the main thread
 	 * during the TERM_EVENT_RESIZE handler, before the renderer's next

@@ -44,6 +44,14 @@ static int parse_builtin(const char *value, builtin_action_t *out) {
 		*out = TERM_BUILTIN_PASTE_CLIPBOARD;
 		return 1;
 	}
+	if (strcmp(value, "keyboard_show") == 0) {
+		*out = TERM_BUILTIN_KEYBOARD_SHOW;
+		return 1;
+	}
+	if (strcmp(value, "keyboard_hide") == 0) {
+		*out = TERM_BUILTIN_KEYBOARD_HIDE;
+		return 1;
+	}
 	if (strcmp(value, "font_size_increase") == 0) {
 		*out = TERM_BUILTIN_FONT_SIZE_INCREASE;
 		return 1;
@@ -98,6 +106,24 @@ int action_parse(const char *value, action_t *out) {
 		out->as.builtin.id = TERM_BUILTIN_LUA_CALL;
 		out->as.builtin.arg = value + 4;
 		out->as.builtin.arg_len = strlen(value + 4);
+		return 1;
+	}
+
+	/* "notify:<msg>" / "open_url:<uri>" carry an argument the same way
+	 * "lua:<fn>" does: arg points into `value` (the keymap's heap-owned
+	 * ->to string), so it lives as long as the binding. */
+	if (strncmp(value, "notify:", 7) == 0) {
+		out->kind = TERM_ACTION_BUILTIN;
+		out->as.builtin.id = TERM_BUILTIN_NOTIFY;
+		out->as.builtin.arg = value + 7;
+		out->as.builtin.arg_len = strlen(value + 7);
+		return 1;
+	}
+	if (strncmp(value, "open_url:", 9) == 0) {
+		out->kind = TERM_ACTION_BUILTIN;
+		out->as.builtin.id = TERM_BUILTIN_OPEN_URL;
+		out->as.builtin.arg = value + 9;
+		out->as.builtin.arg_len = strlen(value + 9);
 		return 1;
 	}
 
