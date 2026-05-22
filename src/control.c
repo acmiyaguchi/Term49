@@ -28,9 +28,13 @@
 #define CTL_DEFER_MAX   8
 #define CTL_REPLY_MAX   8192
 
-/* Subscription event bits (reserved for async %-notifications). */
+/* Subscription event bits (reserved for async %-notifications). No publisher
+ * emits these yet; subscribe/unsubscribe only track the per-client mask so the
+ * wire command is stable for when an emitter lands. CTL_EVENTS_HELP is the
+ * single source of truth for the names, shared by `help` and the error path. */
 #define CTL_EV_BELL  (1u << 0)
 #define CTL_EV_TITLE (1u << 1)
+#define CTL_EVENTS_HELP "bell, title (accepted, but no emitter delivers them yet)"
 
 typedef struct ctl_client {
 	int      fd;        /* -1 = free slot */
@@ -217,10 +221,11 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "  clipboard read      print current clipboard text\n"
 		          "  action <name>       run an action (keybinding/builtin/lua:fn)\n"
 		          "  send-text <text>    send text to the active session\n"
-		          "  subscribe <event>   enable async events (bell|title)\n"
+		          "  subscribe <event>   enable async events\n"
 		          "  unsubscribe <event> disable async events\n"
 		          "  validate [path]     compile-check a config file (default: yours)\n"
-		          "  eval [lua] <chunk>  run a Lua chunk, print its return value");
+		          "  eval [lua] <chunk>  run a Lua chunk, print its return value\n"
+		          "events (for subscribe/unsubscribe): " CTL_EVENTS_HELP);
 		return;
 	}
 	if (strcmp(argv[0], "screen") == 0 && argc >= 2 && strcmp(argv[1], "size") == 0) {
@@ -261,8 +266,6 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		return;
 	}
 	if (strcmp(argv[0], "subscribe") == 0 || strcmp(argv[0], "unsubscribe") == 0) {
-		/* No publisher emits CTL_EV_* notifications yet; this only tracks the
-		 * per-client mask so the wire command is stable for when one lands. */
 		int on = (strcmp(argv[0], "subscribe") == 0);
 		uint32_t bit = 0;
 		if (argc >= 2) {
@@ -270,7 +273,9 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 			else if (strcmp(argv[1], "title") == 0) bit = CTL_EV_TITLE;
 		}
 		if (bit == 0) {
-			ctl_reply(c, id, 1, "unknown event");
+			ctl_reply(c, id, 1,
+			          argc >= 2 ? "unknown event; valid events: " CTL_EVENTS_HELP
+			                    : "missing event; valid events: " CTL_EVENTS_HELP);
 		} else {
 			if (on) c->sub_mask |= bit; else c->sub_mask &= ~bit;
 			ctl_reply(c, id, 0, NULL);
