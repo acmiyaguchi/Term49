@@ -219,6 +219,7 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "  send-text <text>    send text to the active session\n"
 		          "  subscribe <event>   enable async events (bell|title)\n"
 		          "  unsubscribe <event> disable async events\n"
+		          "  validate [path]     compile-check a config file (default: yours)\n"
 		          "  eval [lua] <chunk>  run a Lua chunk, print its return value");
 		return;
 	}
@@ -274,6 +275,16 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 			if (on) c->sub_mask |= bit; else c->sub_mask &= ~bit;
 			ctl_reply(c, id, 0, NULL);
 		}
+		return;
+	}
+	if (strcmp(argv[0], "validate") == 0) {
+		/* Compile-check a config file without executing it (no side effects),
+		 * so this is safe inline -- unlike eval, it never touches the live
+		 * scripting state. Default target is the user's config. */
+		char body[CTL_REPLY_MAX / 2];
+		int rc = prefs_lua_validate(argc >= 2 ? argv[1] : NULL,
+		                            body, sizeof(body));
+		ctl_reply(c, id, rc == 0 ? 0 : 1, body);
 		return;
 	}
 	if (strcmp(argv[0], "eval") == 0) {

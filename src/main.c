@@ -873,11 +873,16 @@ static void app_reload_config(void){
 	if(fresh == NULL){
 		/* Parse error / OOM: prefs_lua_reload() left the running config
 		 * and scripting state fully intact, so a broken edit can't wipe
-		 * a working setup to defaults. No transient on-screen cue: this
-		 * backend only composites on the next event pump, so a flash
-		 * would not show until an unrelated tap (confusing). The
-		 * feedback is simply that nothing changes -- the rejected edit
-		 * is logged to stderr for dev builds. */
+		 * a working setup to defaults. Surface the failure via a navigator
+		 * toast (a system overlay, not an in-app composite, so it shows
+		 * immediately without waiting on the next event pump) carrying the
+		 * Lua error -- otherwise a rejected reload looks like nothing
+		 * happened. The full message is also on stderr for dev builds. */
+		const char *err = prefs_lua_last_error();
+		char msg[256];
+		snprintf(msg, sizeof(msg), "notify:config reload failed: %s",
+		         err != NULL ? err : "unknown error");
+		app_run_action_string(msg);
 		return;
 	}
 	/* Drop transient UI state derived from / pointing into the config
@@ -1533,24 +1538,6 @@ static int startup_init() {
 	 * app fully usable, just without the scripting socket. Runs before the
 	 * pty fork so child shells inherit $TERM49_CONTROL. */
 	control_init();
-
-	/* Advertise the bundled termctl client, which the BAR unpacks beside the
-	 * binary in the app's native dir. The launch cwd is NOT that dir, and
-	 * set_persistent_home() has already repointed $HOME away from the sandbox
-	 * -- but it also set $TERMINFO to <native>/terminfo, so swap that leaf to
-	 * locate termctl as terminfo's sibling. */
-	{
-		const char *terminfo = getenv("TERMINFO");
-		const char *leaf = (terminfo != NULL) ? strrchr(terminfo, '/') : NULL;
-		if (leaf != NULL) {
-			char ctlpath[600];
-			int n = snprintf(ctlpath, sizeof(ctlpath), "%.*s/termctl",
-			                 (int)(leaf - terminfo), terminfo);
-			if (n > 0 && n < (int)sizeof(ctlpath)) {
-				setenv("TERM49CTL", ctlpath, 1);
-			}
-		}
-	}
 
 	if(font_library_init() != 0){
 		fprintf(stderr, "Couldn't initialize FreeType\n");

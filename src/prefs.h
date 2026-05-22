@@ -77,6 +77,16 @@ int prefs_lua_invoke(const char *name);
  * safe point -- never from inside an active lua_pcall. */
 int prefs_lua_eval(const char *src, char *out, size_t outsz);
 
+/* Compile-check a config file without executing it or touching the live
+ * scripting state. `path` NULL/"" => the user's PREFS_LUA_FILE_PATH. Writes
+ * "ok" or the parse error to `out`. Returns 0 if it compiles, -1 otherwise.
+ * Safe to call inline (no config side effects run). */
+int prefs_lua_validate(const char *path, char *out, size_t outsz);
+
+/* Last config load/reload error message, or NULL if the last load/reload
+ * succeeded. Points into static storage owned by the loader TU. */
+const char *prefs_lua_last_error(void);
+
 keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);
 int is_int_member(int const* list, int target);

@@ -20,8 +20,9 @@
 --
 -- A note on the scripting/control surface (issue #5): a Unix-domain control
 -- socket is exposed to child shells via the $TERM49_CONTROL environment
--- variable, and the bundled `termctl` CLI ($TERM49CTL) speaks to it. See the
--- "Scripting" section at the bottom for the Lua `term.*` API.
+-- variable, and the bundled `termctl` CLI (on $PATH; try `termctl help`)
+-- speaks to it. See the "Scripting" section at the bottom for the Lua
+-- `term.*` API.
 -- ============================================================================
 
 prefs_version = 9
