@@ -237,6 +237,50 @@ metamode_func_keys = {
 --   end
 -- and add  { "z", "lua:zoom_in" }  above.
 
+chord_bindings = {
+  { key = "alt", mods = {"shift"}, action = "ctrl_down",       label = "shift+alt = Ctrl" },
+  { key = "sym", mods = {"shift"}, action = "metamode_toggle", label = "shift+sym = Meta" },
+}
+-- Modifier-aware chords: a trigger key plus a set of held
+-- or stuck modifiers dispatch to an action. Distinct from
+-- metamode (a mode you toggle) -- a chord fires directly.
+--
+-- Each record has:
+--   key     the trigger. A single character ("t", "1") is
+--           that key; named keys are "sym", "alt", "shift",
+--           "space", "enter", "tab", "escape", "backspace".
+--   mods    a list of "ctrl", "alt", "shift", "sym". The
+--           match is exact (ctrl+t does not fire on
+--           ctrl+shift+t). An empty/absent mods = no
+--           modifiers. Order in the list is irrelevant.
+--   action  any value metamode_func_keys accepts: raw
+--           bytes, a terminfo name, a builtin, or
+--           "lua:<fn>". Two builtins are chord-oriented:
+--             metamode_toggle  toggle metamode
+--             help_overlay     toggle the on-screen list
+--                              of chord bindings (uses the
+--                              label fields)
+--   label   optional text shown in the help overlay.
+--
+-- The bare BlackBerry keyboard has no Ctrl key (only
+-- shift/alt/sym, all sticky tap-to-stick), so the two
+-- defaults above reclaim two otherwise-unused modifier
+-- combinations: tap shift then alt to arm Ctrl for the
+-- next key; tap shift then sym to toggle metamode. Because
+-- the modifiers are sticky, either order works.
+--
+-- ctrl/alt-prefixed chords are aimed at an external
+-- keyboard (which has a real Ctrl); on the built-in
+-- keyboard use the shift+alt / shift+sym combinations or
+-- metamode. Set chord_bindings = {} to disable the
+-- defaults. A chord on a modifier key only fires when an
+-- extra modifier is already stuck, so plain shift/alt/sym
+-- keep their normal text-entry behavior.
+--
+-- show_help_on_startup (a boolean, with the other settings
+-- near the top of this file) pops the help overlay once on
+-- launch, like a hotkey cheat sheet.
+
 rescreen_for_symmenu = true
 -- If true, opening a symbol menu causes the screen to
 -- readjust to the new visible dimensions.
