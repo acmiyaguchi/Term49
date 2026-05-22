@@ -942,6 +942,23 @@ static unsigned current_modmask(void){
 	return m;
 }
 
+/* Consume the stuck prefix modifiers a Site A chord matched on. Site A
+ * returns before the vmodifiers=0 auto-clear, so an unconsumed prefix
+ * would otherwise linger and shadow the next keystroke. The sym clear is
+ * light (resets the menu state without symmenu_toggle's rescreen) so a
+ * manufactured Ctrl/Meta chord doesn't flash the screen. */
+static void chord_clear_prefix(unsigned mask){
+	vmodifiers &= ~((int)mask & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT));
+	if (mask & KEYMOD_ALT) {
+		altsym_lock = 0;
+	}
+	if (mask & CHORD_MOD_SYM) {
+		current_symmenu = NULL;
+		symmenu_lock = 0;
+	}
+	mark_screen_dirty(1);
+}
+
 int app_dispatch_action(app_t *app, const action_t *action) {
 	session_t *session;
 
@@ -1174,6 +1191,47 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 				metamode_just_set = 1;
 			}
 			metamode_last = now;
+		}
+
+		/* Site A: modifier-key chords. A modifier key pressed while
+		 * another modifier is already stuck (the BB keys are tap-to-stick)
+		 * fires a chord instead of its default toggle -- e.g. shift then
+		 * alt -> Ctrl, shift then sym -> metamode. Runs before the sticky
+		 * sym/alt/shift handlers below and independent of the sticky_*_key
+		 * prefs, so the default behavior survives only when no chord
+		 * matches. Initial press only. */
+		if (!k->repeat) {
+			int trig = k->sym;
+			unsigned self = 0;
+			int is_mod_trigger = 1;
+			switch (trig) {
+			case KEYCODE_BB_SYM_KEY: self = CHORD_MOD_SYM; break;
+			case KEYCODE_BB_ALT_KEY: self = KEYMOD_ALT;    break;
+			case KEYCODE_RIGHT_SHIFT:
+			case KEYCODE_LEFT_SHIFT:
+				/* match the shift handler below: only a trigger with the
+				 * physical keyboard up; normalize L/R to one keycode. */
+				if (virtualkeyboard_visible) {
+					is_mod_trigger = 0;
+				} else {
+					trig = KEYCODE_LEFT_SHIFT;
+					self = KEYMOD_SHIFT;
+				}
+				break;
+			default: is_mod_trigger = 0; break;
+			}
+			if (is_mod_trigger) {
+				unsigned prefix = current_modmask() & ~self;
+				if (prefix != 0) {
+					chord_t *chord = chord_lookup(trig, prefix,
+					                              prefs->chord_bindings);
+					if (chord != NULL) {
+						chord_clear_prefix(prefix);
+						app_dispatch_action(app, &chord->action);
+						return;
+					}
+				}
+			}
 		}
 
 		/* handle sticky keys */
