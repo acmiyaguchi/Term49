@@ -1097,21 +1097,19 @@ static void chord_clear_prefix(unsigned mask){
 	mark_screen_dirty(1);
 }
 
-/* Metamode binding lookup. Tries the base key first, then -- if the user
- * armed the symbol layer with alt to reach an alt-layer glyph such as
- * '?' (= alt+v) -- resolves k->sym through Term49's own altsym_entries to
- * the produced character and binds on that. That path is reliable because
- * it uses our alt table rather than the platform's alternate_sym, which is
- * not dependably populated on this device; consuming the layer here clears
- * the one-shot lock so it cannot leak onto the next key. The platform
- * alternate_sym is kept only as a last resort, restricted to printable
- * ASCII so a large special-key keycode can't truncate into a spurious
- * char match. */
+/* Metamode binding lookup, in resolution order: the alt-layer glyph (when
+ * the symbol layer is armed), then the base key, then the platform's
+ * alternate_sym. alternate_sym is restricted to printable ASCII so a large
+ * special-key keycode can't truncate into a spurious char match, and is a
+ * last resort because it is not dependably populated on this device --
+ * hence resolving the glyph through our own altsym_entries instead. */
 static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
-	keymap_t *m = keymap_lookup((char)k->sym, table);
-	if (m != NULL) {
-		return m;
-	}
+	keymap_t *m;
+	/* Alt armed: the user reached for the alt-layer glyph (e.g. alt+v =
+	 * '?'), so resolve it before the base key, which may itself be bound
+	 * (v = paste_clipboard) and would otherwise shadow it. Clear the
+	 * one-shot lock on a hit so it can't leak onto the next key -- the
+	 * metamode branch returns before the normal altsym-clear path. */
 	if (altsym_lock) {
 		keymap_t *sym = keymap_lookup((char)k->sym, prefs->altsym_entries);
 		if (sym != NULL && sym->to != NULL
@@ -1122,6 +1120,10 @@ static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
 				return m;
 			}
 		}
+	}
+	m = keymap_lookup((char)k->sym, table);
+	if (m != NULL) {
+		return m;
 	}
 	if (k->alternate_sym >= 0x20 && k->alternate_sym < 0x7f
 	    && k->alternate_sym != k->sym) {
