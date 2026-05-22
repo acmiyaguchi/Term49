@@ -1097,15 +1097,33 @@ static void chord_clear_prefix(unsigned mask){
 	mark_screen_dirty(1);
 }
 
-/* Metamode binding lookup. Tries the base key first, then the key's
- * alt-layer symbol (SCREEN_PROPERTY_KEY_ALTERNATE_SYM), so an alt-layer
- * character such as '?' is bindable in metamode even though metamode
- * bypasses the symbol layer. The alt-sym fallback is restricted to
- * printable ASCII so a large special-key keycode can't truncate into a
- * spurious char match. */
+/* Metamode binding lookup. Tries the base key first, then -- if the user
+ * armed the symbol layer with alt to reach an alt-layer glyph such as
+ * '?' (= alt+v) -- resolves k->sym through Term49's own altsym_entries to
+ * the produced character and binds on that. That path is reliable because
+ * it uses our alt table rather than the platform's alternate_sym, which is
+ * not dependably populated on this device; consuming the layer here clears
+ * the one-shot lock so it cannot leak onto the next key. The platform
+ * alternate_sym is kept only as a last resort, restricted to printable
+ * ASCII so a large special-key keycode can't truncate into a spurious
+ * char match. */
 static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
 	keymap_t *m = keymap_lookup((char)k->sym, table);
-	if (m == NULL && k->alternate_sym >= 0x20 && k->alternate_sym < 0x7f
+	if (m != NULL) {
+		return m;
+	}
+	if (altsym_lock) {
+		keymap_t *sym = keymap_lookup((char)k->sym, prefs->altsym_entries);
+		if (sym != NULL && sym->to != NULL
+		    && sym->to[0] != '\0' && sym->to[1] == '\0') {
+			m = keymap_lookup(sym->to[0], table);
+			if (m != NULL) {
+				altsym_lock = 0;
+				return m;
+			}
+		}
+	}
+	if (k->alternate_sym >= 0x20 && k->alternate_sym < 0x7f
 	    && k->alternate_sym != k->sym) {
 		m = keymap_lookup((char)k->alternate_sym, table);
 	}
