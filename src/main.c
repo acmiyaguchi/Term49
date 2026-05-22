@@ -132,9 +132,13 @@ static int g_reload_pending = 0;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
-/* On-screen keybinding cheat sheet. The blit is wired in render_ghostty
- * (Stage 5); until then this flag is inert. */
+/* On-screen keybinding cheat sheet: a pre-composed panel of the
+ * chord_bindings labels, blitted in render_ghostty when current_help_overlay
+ * is set. Surface is rebuilt by font_init (startup / font-size / reload via
+ * rescreen) and NULL when there are no bindings. */
 static int current_help_overlay = 0;
+static bitmap_t *help_overlay_surface = NULL;
+static int help_startup_shown = 0;
 
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
@@ -547,6 +551,66 @@ static keymap_t* symkey_for_mousedown(symmenu_t *menu, uint16_t x, uint16_t y) {
 	return NULL;
 }
 
+/* Render an ASCII line glyph-by-glyph (labels are ASCII) into dst. */
+static void help_overlay_draw_line(bitmap_t *dst, const char *s, int x, int y,
+                                   rgb_t fg, rgb_t bg){
+	for (int i = 0; s[i] != '\0'; ++i) {
+		bitmap_t *g = font_render_glyph_shaded(font, (uint32_t)(unsigned char)s[i],
+		                                       FONT_STYLE_NORMAL, fg, bg);
+		if (g != NULL) {
+			bitmap_blit(dst, x + i * advance, y, g);
+			bitmap_free(g);
+		}
+	}
+}
+
+/* (Re)compose the help-overlay panel from prefs->chord_bindings. Each line
+ * is a chord's label (or its action spec if unlabeled), under a title row.
+ * Leaves help_overlay_surface NULL when there is nothing to show, so the
+ * render gate naturally skips it. Requires a live `font` and `advance`. */
+static void help_overlay_build(void){
+	bitmap_free(help_overlay_surface);
+	help_overlay_surface = NULL;
+	if (prefs == NULL || prefs->chord_bindings == NULL || font == NULL ||
+	    advance <= 0) {
+		return;
+	}
+
+	static const char *title = "Chord bindings";
+	int n = 0;
+	size_t maxlen = strlen(title);
+	for (chord_t *c = prefs->chord_bindings; c->keycode != 0; ++c) {
+		const char *s = c->label ? c->label : (c->spec ? c->spec : "");
+		size_t l = strlen(s);
+		if (l > maxlen) { maxlen = l; }
+		++n;
+	}
+	if (n == 0) {
+		return;
+	}
+
+	int line_h = font_line_skip(font);
+	int pad = advance;
+	int panel_w = (int)maxlen * advance + 2 * pad;
+	int panel_h = (n + 1) * line_h + 2 * pad;
+	bitmap_t *surface = bitmap_alloc(panel_w, panel_h, BITMAP_FMT_RGBA8888);
+	if (surface == NULL) {
+		return;
+	}
+
+	rgb_t bg = metamode_cursor_bg;
+	rgb_t fg = metamode_cursor_fg;
+	bitmap_fill_rect(surface, NULL, bg);
+
+	help_overlay_draw_line(surface, title, pad, pad, fg, bg);
+	int row = 1;
+	for (chord_t *c = prefs->chord_bindings; c->keycode != 0; ++c, ++row) {
+		const char *s = c->label ? c->label : (c->spec ? c->spec : "");
+		help_overlay_draw_line(surface, s, pad, pad + row * line_h, fg, bg);
+	}
+	help_overlay_surface = surface;
+}
+
 int font_init(int font_size){
 	if(font_size < MIN_FONT_SIZE){
 		fprintf(stderr, "Refusing to set font size to %d - too small\n",font_size);
@@ -618,10 +682,19 @@ int font_init(int font_size){
 	if (renderer != NULL) {
 		renderer_set_font(renderer, font);
 	}
+
+	/* Build the help overlay now that `font`/`advance` are live. Pop it
+	 * once at startup if the user opted in (niri-style cheat sheet). */
+	help_overlay_build();
+	if (!help_startup_shown && prefs != NULL && prefs->show_help_on_startup) {
+		current_help_overlay = 1;
+		help_startup_shown = 1;
+	}
 	return TERM_SUCCESS;
 }
 
 void font_uninit(){
+	bitmap_free(help_overlay_surface); help_overlay_surface = NULL;
 
 	if (renderer != NULL) {
 		renderer_set_font(renderer, NULL);
@@ -902,6 +975,7 @@ static void app_reload_config(void){
 	metamode = 0;
 	altsym_lock = 0;
 	symmenu_lock = 0;
+	current_help_overlay = 0;            /* surface is rebuilt by rescreen below */
 
 	destroy_preferences_members(prefs);  /* free old arrays, keep struct */
 	*prefs = *fresh;                     /* move new data into stable struct */
@@ -1905,6 +1979,14 @@ static int render_ghostty(int force_full_repaint) {
 	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
 	if (symmenu_surface != NULL) {
 		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
+	}
+
+	if (current_help_overlay && help_overlay_surface != NULL) {
+		int hx = (fb_w - help_overlay_surface->w) / 2;
+		int hy = (fb_h - help_overlay_surface->h) / 2;
+		if (hx < 0) { hx = 0; }
+		if (hy < 0) { hy = 0; }
+		renderer_draw_bitmap(renderer, hx, hy, help_overlay_surface);
 	}
 
 	ghostty_bridge_finish_frame(bridge);
