@@ -552,62 +552,126 @@ static keymap_t* symkey_for_mousedown(symmenu_t *menu, uint16_t x, uint16_t y) {
 }
 
 /* Render an ASCII line glyph-by-glyph (labels are ASCII) into dst. */
-static void help_overlay_draw_line(bitmap_t *dst, const char *s, int x, int y,
+#define HELP_MAX_LINES 64
+#define HELP_LINE_MAX  64
+
+static void help_overlay_draw_line(bitmap_t *dst, font_t *f, int adv,
+                                   const char *s, int x, int y,
                                    rgb_t fg, rgb_t bg){
 	for (int i = 0; s[i] != '\0'; ++i) {
-		bitmap_t *g = font_render_glyph_shaded(font, (uint32_t)(unsigned char)s[i],
+		bitmap_t *g = font_render_glyph_shaded(f, (uint32_t)(unsigned char)s[i],
 		                                       FONT_STYLE_NORMAL, fg, bg);
 		if (g != NULL) {
-			bitmap_blit(dst, x + i * advance, y, g);
+			bitmap_blit(dst, x + i * adv, y, g);
 			bitmap_free(g);
 		}
 	}
 }
 
-/* (Re)compose the help-overlay panel from prefs->chord_bindings. Each line
- * is a chord's label (or its action spec if unlabeled), under a title row.
- * Leaves help_overlay_surface NULL when there is nothing to show, so the
- * render gate naturally skips it. Requires a live `font` and `advance`. */
+/* Render a keymap target for display: control chars become ESC/TAB/^X so
+ * the metamode bindings (e.g. "\x1b", "kcuu1") read cleanly. */
+static void keymap_to_display(const char *to, char *buf, size_t cap){
+	size_t o = 0;
+	for (const char *p = to; p && *p && o + 4 < cap; ++p){
+		unsigned char ch = (unsigned char)*p;
+		if (ch == 0x1b)      { buf[o++]='E'; buf[o++]='S'; buf[o++]='C'; }
+		else if (ch == '\t') { buf[o++]='T'; buf[o++]='A'; buf[o++]='B'; }
+		else if (ch < 0x20)  { buf[o++]='^'; buf[o++]=(char)('@'+ch); }
+		else                 { buf[o++]=(char)ch; }
+	}
+	buf[o] = '\0';
+}
+
+/* (Re)compose the help-overlay cheat sheet: the chord_bindings plus the
+ * metamode key tables, with section headers. Drawn in a smaller font than
+ * the terminal so the full list fits on screen. NULL when there is nothing
+ * to show, so the render gate skips it. Requires a live `font`. */
 static void help_overlay_build(void){
 	bitmap_free(help_overlay_surface);
 	help_overlay_surface = NULL;
-	if (prefs == NULL || prefs->chord_bindings == NULL || font == NULL ||
-	    advance <= 0) {
+	if (prefs == NULL || font == NULL) {
 		return;
 	}
 
-	static const char *title = "Chord bindings";
+	char lines[HELP_MAX_LINES][HELP_LINE_MAX];
 	int n = 0;
-	size_t maxlen = strlen(title);
-	for (chord_t *c = prefs->chord_bindings; c->keycode != 0; ++c) {
-		const char *s = c->label ? c->label : (c->spec ? c->spec : "");
-		size_t l = strlen(s);
-		if (l > maxlen) { maxlen = l; }
-		++n;
+	#define HELP_PUSH(...) do { \
+		if (n < HELP_MAX_LINES) { \
+			snprintf(lines[n], HELP_LINE_MAX, __VA_ARGS__); ++n; } \
+	} while (0)
+
+	HELP_PUSH("%s", "Term49 keybindings  (any key closes)");
+
+	if (prefs->chord_bindings && prefs->chord_bindings->keycode != 0) {
+		HELP_PUSH("%s", "");
+		HELP_PUSH("%s", "Chords:");
+		for (chord_t *c = prefs->chord_bindings; c->keycode != 0; ++c) {
+			HELP_PUSH("  %s", c->label ? c->label
+			                           : (c->spec ? c->spec : ""));
+		}
 	}
+
+	const keymap_t *meta_groups[] = {
+		prefs->metamode_keys, prefs->metamode_func_keys,
+		prefs->metamode_sticky_keys,
+	};
+	int meta_header = 0;
+	for (size_t g = 0; g < sizeof(meta_groups) / sizeof(meta_groups[0]); ++g) {
+		for (const keymap_t *km = meta_groups[g]; km && km->to != NULL; ++km) {
+			if (!meta_header) {
+				HELP_PUSH("%s", "");
+				HELP_PUSH("%s", "Metamode (then key):");
+				meta_header = 1;
+			}
+			char td[32];
+			keymap_to_display(km->to, td, sizeof(td));
+			HELP_PUSH("  %c   %s", km->from, td);
+		}
+	}
+	#undef HELP_PUSH
+
 	if (n == 0) {
 		return;
 	}
 
-	int line_h = font_line_skip(font);
-	int pad = advance;
-	int panel_w = (int)maxlen * advance + 2 * pad;
-	int panel_h = (n + 1) * line_h + 2 * pad;
-	bitmap_t *surface = bitmap_alloc(panel_w, panel_h, BITMAP_FMT_RGBA8888);
+	/* Smaller font so the fuller list fits a ~720px screen. */
+	int pt = (prefs->font_size * 2) / 3;
+	if (pt < 12) { pt = 12; }
+	font_t *of = font_open(prefs->font_path, pt);
+	if (of == NULL) {
+		return;
+	}
+	int oadv = 0, dummy;
+	if (font_glyph_metrics(of, 'X', &dummy, &dummy, &dummy, &dummy, &oadv) != 0
+	    || oadv <= 0) {
+		font_close(of);
+		return;
+	}
+	int line_h = font_line_skip(of);
+
+	size_t maxlen = 0;
+	for (int i = 0; i < n; ++i) {
+		size_t l = strlen(lines[i]);
+		if (l > maxlen) { maxlen = l; }
+	}
+
+	int pad = oadv;
+	bitmap_t *surface = bitmap_alloc((int)maxlen * oadv + 2 * pad,
+	                                 n * line_h + 2 * pad,
+	                                 BITMAP_FMT_RGBA8888);
 	if (surface == NULL) {
+		font_close(of);
 		return;
 	}
 
 	rgb_t bg = metamode_cursor_bg;
 	rgb_t fg = metamode_cursor_fg;
 	bitmap_fill_rect(surface, NULL, bg);
-
-	help_overlay_draw_line(surface, title, pad, pad, fg, bg);
-	int row = 1;
-	for (chord_t *c = prefs->chord_bindings; c->keycode != 0; ++c, ++row) {
-		const char *s = c->label ? c->label : (c->spec ? c->spec : "");
-		help_overlay_draw_line(surface, s, pad, pad + row * line_h, fg, bg);
+	for (int i = 0; i < n; ++i) {
+		help_overlay_draw_line(surface, of, oadv, lines[i],
+		                       pad, pad + i * line_h, fg, bg);
 	}
+	font_close(of);
 	help_overlay_surface = surface;
 }
 
@@ -1253,6 +1317,14 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 	if (k->pressed) {
 		PRINT(stderr, "The '%d' key was pressed (modifiers: %d) (char %c) (alt %d)\n", (int)k->sym, modifiers, (char)k->sym, (int)k->alternate_sym);
 		fflush(stdout);
+
+		/* The help overlay is modal: any keypress dismisses it and is
+		 * consumed (so the dismiss key doesn't also fire its action). */
+		if (current_help_overlay && !k->repeat) {
+			current_help_overlay = 0;
+			mark_screen_dirty(1);
+			return;
+		}
 
 		/* if we're toggling metamode on or off with doubletap */
 		if((k->sym == metamode_doubletap_key) && !k->repeat){
