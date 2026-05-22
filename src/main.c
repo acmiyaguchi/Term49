@@ -1534,14 +1534,18 @@ static int startup_init() {
 	 * pty fork so child shells inherit $TERM49_CONTROL. */
 	control_init();
 
-	/* Advertise the bundled termctl client. cwd is still the app's native
-	 * dir here (the chdir to $HOME happens later), so getcwd() gives the
-	 * directory the BAR unpacked termctl into. */
+	/* Advertise the bundled termctl client, which the BAR unpacks beside the
+	 * binary in the app's native dir. The launch cwd is NOT that dir, and
+	 * set_persistent_home() has already repointed $HOME away from the sandbox
+	 * -- but it also set $TERMINFO to <native>/terminfo, so swap that leaf to
+	 * locate termctl as terminfo's sibling. */
 	{
-		char cwd[512];
-		if (getcwd(cwd, sizeof(cwd)) != NULL) {
+		const char *terminfo = getenv("TERMINFO");
+		const char *leaf = (terminfo != NULL) ? strrchr(terminfo, '/') : NULL;
+		if (leaf != NULL) {
 			char ctlpath[600];
-			int n = snprintf(ctlpath, sizeof(ctlpath), "%s/termctl", cwd);
+			int n = snprintf(ctlpath, sizeof(ctlpath), "%.*s/termctl",
+			                 (int)(leaf - terminfo), terminfo);
 			if (n > 0 && n < (int)sizeof(ctlpath)) {
 				setenv("TERM49CTL", ctlpath, 1);
 			}
