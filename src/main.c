@@ -1097,6 +1097,21 @@ static void chord_clear_prefix(unsigned mask){
 	mark_screen_dirty(1);
 }
 
+/* Metamode binding lookup. Tries the base key first, then the key's
+ * alt-layer symbol (SCREEN_PROPERTY_KEY_ALTERNATE_SYM), so an alt-layer
+ * character such as '?' is bindable in metamode even though metamode
+ * bypasses the symbol layer. The alt-sym fallback is restricted to
+ * printable ASCII so a large special-key keycode can't truncate into a
+ * spurious char match. */
+static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
+	keymap_t *m = keymap_lookup((char)k->sym, table);
+	if (m == NULL && k->alternate_sym >= 0x20 && k->alternate_sym < 0x7f
+	    && k->alternate_sym != k->sym) {
+		m = keymap_lookup((char)k->alternate_sym, table);
+	}
+	return m;
+}
+
 int app_dispatch_action(app_t *app, const action_t *action) {
 	session_t *session;
 
@@ -1416,7 +1431,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 
 		/* metamode sticky keys don't trigger repreat */
 		if (metamode && !metamode_just_set) {
-			keymap = keymap_lookup((char)k->sym, prefs->metamode_sticky_keys);
+			keymap = metamode_lookup(k, prefs->metamode_sticky_keys);
 			if (keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 				return;
@@ -1470,14 +1485,14 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		if(metamode && !metamode_just_set){
-			keymap = keymap_lookup((char)k->sym, prefs->metamode_keys);
+			keymap = metamode_lookup(k, prefs->metamode_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 				metamode_toggle();
 				return;
 			}
 			// else
-			keymap = keymap_lookup((char)k->sym, prefs->metamode_func_keys);
+			keymap = metamode_lookup(k, prefs->metamode_func_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 			} else {
