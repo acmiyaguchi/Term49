@@ -130,7 +130,9 @@ static int read_response(int fd) {
 				flag = (sp != NULL) ? atoi(sp + 1) : -1;
 				done = 1;
 			} else if (in_frame) {
-				puts(line);
+				/* Body line: a leading '%' was doubled by the server (so it
+				 * could not look like a frame marker); recover the original. */
+				puts(proto_unescape_line(line));
 			} else if (line[0] == '%') {
 				/* async notification outside a frame: surface it on stderr */
 				fprintf(stderr, "%s\n", line);

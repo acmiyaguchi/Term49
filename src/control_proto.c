@@ -73,3 +73,7 @@ int proto_argv_join(char *out, size_t cap, int argc, char *const *argv) {
 	out[len] = '\0';
 	return (int)len;
 }
+
+const char *proto_unescape_line(const char *line) {
+	return (line != NULL && line[0] == '%') ? line + 1 : line;
+}

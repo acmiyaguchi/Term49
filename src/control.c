@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -33,7 +34,7 @@
 
 typedef struct ctl_client {
 	int      fd;        /* -1 = free slot */
-	unsigned gen;       /* bumped on reuse; guards deferred replies */
+	uint32_t conn_id;   /* unique per accepted connection; guards deferred replies */
 	char     inbuf[CTL_LINE_MAX];
 	size_t   inlen;
 	int      oversize;  /* current line overran inbuf; drop to next '\n' */
@@ -42,7 +43,7 @@ typedef struct ctl_client {
 
 typedef struct ctl_defer {
 	int      fd;
-	unsigned gen;
+	uint32_t conn_id;
 	uint32_t reqid;
 	char    *chunk;     /* heap-owned lua source */
 } ctl_defer_t;
@@ -51,6 +52,7 @@ static int          g_listen_fd = -1;
 static char         g_sock_path[108];
 static ctl_client_t g_clients[CTL_MAX_CLIENTS];
 static uint32_t     g_next_reqid = 1;
+static uint32_t     g_next_conn = 1;
 
 static ctl_defer_t  g_defer[CTL_DEFER_MAX];
 static int          g_defer_head;  /* next to pop */
@@ -59,10 +61,8 @@ static int          g_defer_count;
 /* ---------------------------------------------------------------------- */
 
 static void client_clear(ctl_client_t *c) {
-	unsigned gen = c->gen;
 	memset(c, 0, sizeof(*c));
-	c->fd = -1;
-	c->gen = gen;
+	c->fd = -1;            /* conn_id := 0: a free slot never matches a defer */
 }
 
 static ctl_client_t *client_for_fd(int fd) {
@@ -79,6 +79,7 @@ static ctl_client_t *client_alloc(int fd) {
 		if (g_clients[i].fd < 0) {
 			client_clear(&g_clients[i]);
 			g_clients[i].fd = fd;
+			g_clients[i].conn_id = g_next_conn++;
 			return &g_clients[i];
 		}
 	}
@@ -91,16 +92,16 @@ static void client_close(ctl_client_t *c) {
 	}
 	bps_remove_fd(c->fd);
 	close(c->fd);
-	c->gen++;            /* invalidate any deferred reply aimed at this slot */
-	client_clear(c);
+	client_clear(c);     /* conn_id := 0 invalidates any deferred reply for it */
 }
 
-/* Best-effort full write to a nonblocking client fd. Control replies are tiny,
- * so a transient EAGAIN is retried a bounded number of times; persistent
- * back-pressure drops the byte stream (caller closes the client). */
+/* Best-effort full write to a nonblocking client fd. Runs on the single BPS
+ * pump thread, so it must never sleep/spin: control replies are tiny and the
+ * socket buffer is large, so a full write is the norm. If a client pushes back
+ * (EAGAIN) we abandon the write and return -1 rather than stall the whole UI;
+ * that client may then see a truncated frame, but only it is affected. */
 static int write_all(int fd, const char *buf, size_t len) {
 	size_t off = 0;
-	int eagain_budget = 100;
 	while (off < len) {
 		ssize_t n = write(fd, buf + off, len - off);
 		if (n > 0) {
@@ -110,15 +111,7 @@ static int write_all(int fd, const char *buf, size_t len) {
 		if (n < 0 && errno == EINTR) {
 			continue;
 		}
-		if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-			if (--eagain_budget <= 0) {
-				return -1;
-			}
-			struct timespec ts = { 0, 1000000 }; /* 1ms */
-			nanosleep(&ts, NULL);
-			continue;
-		}
-		return -1;
+		return -1;  /* EAGAIN/EWOULDBLOCK or hard error: drop, caller closes */
 	}
 	return 0;
 }
@@ -126,7 +119,10 @@ static int write_all(int fd, const char *buf, size_t len) {
 /* Frame a reply: %begin <ts> <id> 0 / <body> / %end <ts> <id> <flag>.
  * `body` may be NULL/empty (no body line) or contain embedded newlines. */
 static void ctl_reply_fd(int fd, uint32_t id, int flag, const char *body) {
-	char buf[CTL_REPLY_MAX];
+	/* static: replies are only ever framed on the single-threaded BPS pump
+	 * (client io_handlers + control_drain_deferred), so this scratch buffer is
+	 * non-reentrant -- keeping it off the stack saves ~8KB per call frame. */
+	static char buf[CTL_REPLY_MAX];
 	long ts = (long)time(NULL);
 	int n = snprintf(buf, sizeof(buf), "%%begin %ld %u 0\n", ts, id);
 	if (n < 0 || n >= (int)sizeof(buf)) {
@@ -134,10 +130,24 @@ static void ctl_reply_fd(int fd, uint32_t id, int flag, const char *body) {
 	}
 	size_t len = (size_t)n;
 	if (body != NULL && body[0] != '\0') {
-		size_t blen = strlen(body);
-		if (len + blen + 1 < sizeof(buf)) {
-			memcpy(buf + len, body, blen);
-			len += blen;
+		/* Copy the body, escaping any line that begins with '%' (double the
+		 * leading percent) so a body line like "%end ..." cannot be mistaken
+		 * for a frame marker by the client. proto_unescape_line() reverses it.
+		 * Reserve tail room for the trailing "%end ..." line. */
+		const size_t tail_reserve = 64;
+		size_t cap = sizeof(buf) > tail_reserve ? sizeof(buf) - tail_reserve : 0;
+		int at_line_start = 1;
+		for (const char *p = body; *p != '\0' && len < cap; ++p) {
+			if (at_line_start && *p == '%') {
+				if (len + 1 >= cap) {
+					break;
+				}
+				buf[len++] = '%';
+			}
+			buf[len++] = *p;
+			at_line_start = (*p == '\n');
+		}
+		if (len < cap) {
 			buf[len++] = '\n';
 		}
 	}
@@ -171,7 +181,7 @@ static int read_clipboard(char *out, size_t cap) {
 	return (int)copy;
 }
 
-static int defer_push(int fd, unsigned gen, uint32_t reqid, const char *chunk) {
+static int defer_push(int fd, uint32_t conn_id, uint32_t reqid, const char *chunk) {
 	if (g_defer_count >= CTL_DEFER_MAX) {
 		return -1;
 	}
@@ -181,7 +191,7 @@ static int defer_push(int fd, unsigned gen, uint32_t reqid, const char *chunk) {
 	}
 	int slot = (g_defer_head + g_defer_count) % CTL_DEFER_MAX;
 	g_defer[slot].fd = fd;
-	g_defer[slot].gen = gen;
+	g_defer[slot].conn_id = conn_id;
 	g_defer[slot].reqid = reqid;
 	g_defer[slot].chunk = dup;
 	g_defer_count++;
@@ -225,13 +235,18 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		return;
 	}
 	if (strcmp(argv[0], "send-text") == 0 && argc >= 2) {
-		/* Raw bytes straight to the active session via the SEND_BYTES path. */
+		/* Routes through the action parser, which sends unrecognised strings
+		 * to the session as SEND_BYTES -- so plain text is delivered verbatim,
+		 * but a reserved builtin/terminfo name (e.g. "rescreen", "kcuu1") is
+		 * interpreted as that action rather than sent literally. */
 		int ok = ctl_run_action_string(argv[1]);
 		ctl_reply(c, id, ok ? 0 : 1, NULL);
 		return;
 	}
 	if (strcmp(argv[0], "subscribe") == 0 || strcmp(argv[0], "unsubscribe") == 0) {
-		int on = (argv[0][0] == 's');
+		/* No publisher emits CTL_EV_* notifications yet; this only tracks the
+		 * per-client mask so the wire command is stable for when one lands. */
+		int on = (strcmp(argv[0], "subscribe") == 0);
 		uint32_t bit = 0;
 		if (argc >= 2) {
 			if (strcmp(argv[1], "bell") == 0)  bit = CTL_EV_BELL;
@@ -255,7 +270,7 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		}
 		if (chunk == NULL) {
 			ctl_reply(c, id, 1, "eval: missing chunk");
-		} else if (defer_push(c->fd, c->gen, id, chunk) != 0) {
+		} else if (defer_push(c->fd, c->conn_id, id, chunk) != 0) {
 			ctl_reply(c, id, 1, "eval: queue full");
 		}
 		/* success path replies later from control_drain_deferred */
@@ -396,6 +411,10 @@ static int build_sock_path(char *out, size_t cap) {
 int control_init(void) {
 	struct sockaddr_un addr;
 
+	/* Writing a reply to a client that already closed its end would otherwise
+	 * raise SIGPIPE and kill the whole app; turn those writes into EPIPE. */
+	signal(SIGPIPE, SIG_IGN);
+
 	for (int i = 0; i < CTL_MAX_CLIENTS; ++i) {
 		g_clients[i].fd = -1;
 	}
@@ -459,9 +478,11 @@ void control_drain_deferred(void) {
 		int rc = prefs_lua_eval(d.chunk, out, sizeof(out));
 		free(d.chunk);
 
-		/* Only reply if the client slot still holds the same connection. */
+		/* Only reply if the fd still belongs to the exact connection that
+		 * issued the eval -- a unique conn_id, so an fd reused by a later
+		 * client (even in a different slot) will not match. */
 		ctl_client_t *c = client_for_fd(d.fd);
-		if (c != NULL && c->gen == d.gen) {
+		if (c != NULL && c->conn_id == d.conn_id) {
 			ctl_reply(c, d.reqid, rc == 0 ? 0 : 1, out);
 		}
 	}
