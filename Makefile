@@ -46,6 +46,17 @@ BINARY_PATH	:= $(ASSET)/$(BINARY)
 SRCS := $(wildcard src/*.c)
 OBJS := $(SRCS:.c=.o )
 
+# termctl: a standalone control-socket client (#5). It links NONE of the app
+# libs -- only libsocket and the shared framing parser src/control_proto.c.
+# Its objects use a distinct .ctl.o suffix so they stay out of the server's
+# OBJS and never collide with the generic %.o rule (which applies app DEFINES).
+CTL_DIR  := tools/termctl
+CTL_BIN  := termctl
+CTL_PATH := $(ASSET)/$(CTL_BIN)
+CTL_SRCS := $(CTL_DIR)/main.c src/control_proto.c
+CTL_OBJS := $(CTL_SRCS:.c=.ctl.o)
+CTL_LIBS := -lsocket -lm
+
 include ./signing/bbpass
 
 # deploy/connect call the BlackBerry NDK tools directly (like qcc and
@@ -55,7 +66,7 @@ check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPAS
 
 .PHONY: all clean libghostty-vt package-dev package-release deploy connect sign
 
-all: $(BINARY_PATH)
+all: $(BINARY_PATH) $(CTL_PATH)
 
 libghostty-vt: $(GHOSTTY_A) $(GHOSTTY_H)
 
@@ -67,6 +78,16 @@ $(BINARY): $(BINARY_PATH)
 $(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(LUA_A) $(OBJS)
 	mkdir -p $(ASSET)
 	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(LIBS) -o $(BINARY_PATH)
+
+# Client objects: no app DEFINES, but -Isrc so they find control_proto.h.
+$(CTL_DIR)/%.ctl.o: $(CTL_DIR)/%.c
+	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+src/%.ctl.o: src/%.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(CTL_PATH): $(CTL_OBJS)
+	mkdir -p $(ASSET)
+	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(CTL_OBJS) $(CTL_LIBS) -o $(CTL_PATH)
 
 # Lua sources are upstream third-party C: build them without Term49's
 # app DEFINES (no __PLAYBOOK__/_FORTIFY_SOURCE), only LUA_USE_POSIX for QNX.
@@ -83,9 +104,9 @@ $(LUA_A): $(LUA_OBJS)
 	$(CC) $(CFLAGS) -c $(DEFINES) $< -o $@
 
 clean:
-	@rm -fv src/*.o
+	@rm -fv src/*.o src/*.ctl.o $(CTL_DIR)/*.ctl.o
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
-	@rm -fv $(BINARY_PATH)
+	@rm -fv $(BINARY_PATH) $(CTL_PATH)
 	@rmdir -v $(ASSET) 2>/dev/null || true
 	@rm -fv $(BINARY).bar
 

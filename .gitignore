@@ -1,6 +1,8 @@
 *.bar
 Device-Debug
+Device-Release
 src/*.o
+tools/**/*.o
 signing/bbpass
 signing/*.csk
 signing/*.bar
