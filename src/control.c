@@ -206,6 +206,22 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		return;
 	}
 
+	if (strcmp(argv[0], "help") == 0) {
+		/* Single source of truth for the command surface: any client (termctl
+		 * -h, socat, python) gets the live list straight from the dispatcher. */
+		ctl_reply(c, id, 0,
+		          "commands:\n"
+		          "  help                list commands\n"
+		          "  screen size         report terminal cols/rows\n"
+		          "  sessions            report open session count\n"
+		          "  clipboard read      print current clipboard text\n"
+		          "  action <name>       run an action (keybinding/builtin/lua:fn)\n"
+		          "  send-text <text>    send text to the active session\n"
+		          "  subscribe <event>   enable async events (bell|title)\n"
+		          "  unsubscribe <event> disable async events\n"
+		          "  eval [lua] <chunk>  run a Lua chunk, print its return value");
+		return;
+	}
 	if (strcmp(argv[0], "screen") == 0 && argc >= 2 && strcmp(argv[1], "size") == 0) {
 		int cols = 0, rows = 0;
 		ctl_screen_size(&cols, &rows);
@@ -277,7 +293,7 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		return;
 	}
 
-	ctl_reply(c, id, 1, "unknown command");
+	ctl_reply(c, id, 1, "unknown command (try: help)");
 }
 
 /* Pull complete '\n'-terminated lines out of the client's accumulator. */

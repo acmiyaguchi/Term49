@@ -14,6 +14,7 @@
  * src/control_proto.c.
  *
  * Usage:
+ *   termctl help              (or -h/--help: lists the live command surface)
  *   termctl screen size
  *   termctl clipboard read
  *   termctl sessions
@@ -150,10 +151,25 @@ static int read_response(int fd) {
 	return flag;
 }
 
+static void print_usage(FILE *out, const char *prog) {
+	fprintf(out,
+	        "usage: %s <command> [args...]\n"
+	        "  connects to $TERM49_CONTROL (a running Term49) and runs one command.\n"
+	        "  `%s help` lists the live command surface from the server.\n",
+	        prog, prog);
+}
+
 int main(int argc, char **argv) {
 	if (argc < 2) {
-		fprintf(stderr, "usage: %s <command> [args...]\n", argv[0]);
+		print_usage(stderr, argv[0]);
 		return 2;
+	}
+	if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+		/* Print client usage, then fall through to forward `help` to the
+		 * server so the command list always reflects the real dispatcher. */
+		print_usage(stdout, argv[0]);
+		argv[1] = (char *)"help";
+		argc = 2;
 	}
 
 	char path[256];
