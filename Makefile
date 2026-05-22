@@ -5,7 +5,7 @@ INCLUDE += -I$(QNX_TARGET)/usr/include/freetype2
 
 # BB10 libraries
 LIBPATHS	:= -L$(QNX_TARGET)/armle-v7/lib
-LIBS    	:= -lbps -licui18n -licuuc -lscreen -lm -lfreetype -lclipboard
+LIBS    	:= -lbps -licui18n -licuuc -lscreen -lm -lfreetype -lclipboard -lsocket
 
 # Defines
 DEFINES := -D_FORTIFY_SOURCE=2 -D__PLAYBOOK__ -fstack-protector-strong

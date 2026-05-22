@@ -837,6 +837,49 @@ int prefs_lua_invoke(const char *name) {
 	return 1;
 }
 
+int prefs_lua_eval(const char *src, char *out, size_t outsz) {
+	if (out != NULL && outsz > 0) {
+		out[0] = '\0';
+	}
+	if (g_lua_state == NULL || src == NULL) {
+		if (out != NULL && outsz > 0) {
+			snprintf(out, outsz, "lua scripting unavailable");
+		}
+		return -1;
+	}
+	lua_State *L = g_lua_state;
+	int base = lua_gettop(L);
+
+	if (luaL_loadstring(L, src) != LUA_OK ||
+	    lua_pcall(L, 0, LUA_MULTRET, 0) != LUA_OK) {
+		if (out != NULL && outsz > 0) {
+			snprintf(out, outsz, "%s", lua_tostring(L, -1));
+		}
+		lua_settop(L, base);
+		return -1;
+	}
+
+	/* Stringify any return values, tab-separated, into out. */
+	int nres = lua_gettop(L) - base;
+	if (out != NULL && outsz > 0 && nres > 0) {
+		size_t off = 0;
+		for (int i = 1; i <= nres && off + 1 < outsz; ++i) {
+			if (i > 1) {
+				out[off++] = '\t';
+			}
+			const char *s = luaL_tolstring(L, base + i, NULL); /* pushes a string */
+			int n = snprintf(out + off, outsz - off, "%s", s != NULL ? s : "");
+			lua_pop(L, 1); /* drop the luaL_tolstring result */
+			if (n > 0) {
+				off += (size_t)n < outsz - off ? (size_t)n : outsz - off - 1;
+			}
+		}
+		out[off] = '\0';
+	}
+	lua_settop(L, base);
+	return 0;
+}
+
 /* --- pref_t -> .term49.lua emitter (first-run default config) --------
  * Emits the scalar schema + structured fields a user is expected to
  * tweak (accent menus omitted, matching the historical default). */

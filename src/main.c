@@ -51,6 +51,7 @@
 #include "platform_screen.h"
 #include "io.h"
 #include "ghostty_bridge.h"
+#include "control.h"
 
 static int exit_application = 0;
 
@@ -839,6 +840,23 @@ int app_run_action_string(const char *s){
 	return app_dispatch_action(g_app, &a);
 }
 
+/* Glue for the control socket (src/control.c). Kept here so control.c stays a
+ * leaf TU with no view of g_app / cols / rows / the BPS wake domain. */
+int ctl_run_action_string(const char *s) {
+	return app_run_action_string(s);
+}
+void ctl_wake(void) {
+	post_wake_event();
+}
+int ctl_screen_size(int *out_cols, int *out_rows) {
+	if (out_cols) *out_cols = cols;
+	if (out_rows) *out_rows = rows;
+	return 1;
+}
+unsigned ctl_session_count(void) {
+	return g_app != NULL ? app_session_count(g_app) : 0;
+}
+
 /* Re-run .term49.lua and re-apply it live. MUST be called only from the
  * deferred safe point in the run loop (never from action dispatch / a
  * lua_pcall): the loader closes and reopens the lua_State, and frees the
@@ -1511,6 +1529,25 @@ static int startup_init() {
 		return TERM_FAILURE;
 	}
 
+	/* Control socket (#5). Best-effort: a failure here logs and leaves the
+	 * app fully usable, just without the scripting socket. Runs before the
+	 * pty fork so child shells inherit $TERM49_CONTROL. */
+	control_init();
+
+	/* Advertise the bundled termctl client. cwd is still the app's native
+	 * dir here (the chdir to $HOME happens later), so getcwd() gives the
+	 * directory the BAR unpacked termctl into. */
+	{
+		char cwd[512];
+		if (getcwd(cwd, sizeof(cwd)) != NULL) {
+			char ctlpath[600];
+			int n = snprintf(ctlpath, sizeof(ctlpath), "%s/termctl", cwd);
+			if (n > 0 && n < (int)sizeof(ctlpath)) {
+				setenv("TERM49CTL", ctlpath, 1);
+			}
+		}
+	}
+
 	if(font_library_init() != 0){
 		fprintf(stderr, "Couldn't initialize FreeType\n");
 		return TERM_FAILURE;
@@ -1596,6 +1633,10 @@ void app_shutdown(void){
 	if (sigchld_pipe_open) {
 		bps_remove_fd(sigchld_pipe[0]);
 	}
+
+	/* Control socket fds are likewise registered on the BPS channel, so
+	 * deregister + close + unlink them before bps_shutdown. */
+	control_shutdown();
 
 	platform_destroy(g_platform);
 	g_platform = NULL;
@@ -2343,6 +2384,9 @@ int main(int argc, char **argv) {
 			g_reload_pending = 0;
 			app_reload_config();
 		}
+		/* Same safe point: deferred control-socket `eval` runs the
+		 * lua_State here, never from inside a client io_handler. */
+		control_drain_deferred();
 		if (screen_dirty) {
 			int force_full = screen_full_dirty;
 			screen_dirty = 0;
