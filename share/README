@@ -201,6 +201,7 @@ metamode_func_keys = {
   { "o", "font_size_decrease" },
   { "p", "font_size_reset" },
   { "r", "reload_config" },
+  { "?", "help_overlay" },
 }
 -- These keys map to built-in functions in Term49:
 --
@@ -219,6 +220,10 @@ metamode_func_keys = {
 --                       default).
 --   reload_config       Re-run ~/.term49.lua and apply
 --                       the new values live.
+--   metamode_toggle     Toggle metamode (also bindable as
+--                       a chord, e.g. shift+sym).
+--   help_overlay        Show/hide the on-screen keybinding
+--                       cheat sheet (any key dismisses it).
 --
 -- A value of the form "lua:<name>" calls the Lua
 -- function `<name>` defined in .term49.lua. The function
