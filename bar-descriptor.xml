@@ -21,7 +21,7 @@
     <asset path="share/README">README</asset>
     <asset path="share/README45">README45</asset>
     <asset path="share/term49.lua.reference">term49.lua.reference</asset>
-    <asset path="share/term49.agents.md">term49.agents.md</asset>
+    <asset path="share/AGENTS.md">AGENTS.md</asset>
     <asset path="icons/term4986x86.png">term4986x86.png</asset>
     <asset path="icons/term4990x90.png">term4990x90.png</asset>
     <asset path="icons/term4996x96.png">term4996x96.png</asset>
@@ -103,9 +103,9 @@
          notifications can ask the navigator to open Term49. Navigation-only
          grammar (see README "Cross-app invoke"): term49://tab[/N] opens or
          focuses a tab; term49://focus just re-foregrounds. It deliberately
-         cannot run commands -- driving the shell is restricted to the in-
-         sandbox control socket (#5). One-way, no reply. Being a URI handler
-         needs no extra permission. -->
+         cannot run commands; driving the shell is restricted to the in-sandbox
+         control socket (#5). One-way, no reply. Being a URI handler needs no
+         extra permission. -->
     <invoke-target id="com.example.Term49">
         <type>APPLICATION</type>
         <filter>

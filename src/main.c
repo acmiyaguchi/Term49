@@ -90,7 +90,7 @@ static void set_persistent_home(void) {
 	 * (#23), so an in-shell agent can `cat "$TERM49_AGENT_DOC"` to discover the
 	 * control socket + term49:// invoke surface. Same asset layout as TERMINFO. */
 	{
-		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/term49.agents.md",
+		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/AGENTS.md",
 		                 (int)(appid_end - sandbox_home), sandbox_home);
 		if (n > 0 && n < (int)sizeof(buf)) {
 			setenv("TERM49_AGENT_DOC", buf, 1);
