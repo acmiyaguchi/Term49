@@ -15,6 +15,8 @@
 #ifndef CONTROL_H_
 #define CONTROL_H_
 
+#include <stddef.h>   /* size_t */
+
 /* Create $HOME/.term49/control.sock (or a /tmp fallback if that path is too
  * long for sun_path), listen, register the listener with the BPS pump, and
  * export its path as $TERM49_CONTROL. Returns 0 on success, -1 on failure
@@ -34,5 +36,7 @@ int      ctl_run_action_string(const char *s); /* parse+dispatch one action */
 void     ctl_wake(void);                        /* push a BPS wake event */
 int      ctl_screen_size(int *cols, int *rows); /* active session geometry; 1 ok */
 unsigned ctl_session_count(void);               /* live session count */
+int      ctl_tab_stats(unsigned id, char *buf, size_t cap); /* one tab; 0 ok, 1 none */
+int      ctl_tabs_stats(char *buf, size_t cap); /* all tabs, one line each; ret count */
 
 #endif /* CONTROL_H_ */

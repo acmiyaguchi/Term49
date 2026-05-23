@@ -27,6 +27,8 @@ evaluate Lua, read the clipboard, query geometry. Highlights:
     termctl help                  # live command list
     termctl screen size           # cols/rows of the active tab
     termctl sessions              # open tab count
+    termctl tab stats [id]        # one tab's stats (id 0/omitted = active)
+    termctl tabs stats            # stats for every tab, one line each
     termctl action <name>         # run a keybinding/builtin/lua:fn action
     termctl send-text <text>      # type text into the active tab
     termctl eval [lua] <chunk>    # run a Lua chunk, print its return

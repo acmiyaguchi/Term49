@@ -1016,6 +1016,59 @@ unsigned ctl_session_count(void) {
 	return g_app != NULL ? app_session_count(g_app) : 0;
 }
 
+/* Format the tab at visible index `idx` as one key=value line. Geometry is the
+ * shared screen size (every tab reflows to the one screen). Cursor position is
+ * intentionally omitted: reading it needs ghostty_bridge_begin_frame(), which
+ * consumes the terminal's dirty state and would drop the next real repaint. */
+static int ctl_format_tab(unsigned idx, unsigned active_idx,
+                          char *buf, size_t cap) {
+	session_t *s = app_session_at(g_app, idx);
+	ghostty_bridge_t *b;
+	if (s == NULL) return -1;
+	b = session_bridge(s);
+	return snprintf(buf, cap,
+		"id=%u index=%u active=%d pid=%ld exited=%d exit_status=%d "
+		"cols=%d rows=%d alt_screen=%d mouse_tracking=%d "
+		"bytes_in=%llu bytes_out=%llu",
+		session_id(s), idx, idx == active_idx ? 1 : 0,
+		(long)session_child_pid(s), session_is_exited(s),
+		session_exit_status(s), cols, rows,
+		ghostty_bridge_is_alt_screen(b), ghostty_bridge_mouse_wheel_ready(b),
+		(unsigned long long)session_bytes_in(s),
+		(unsigned long long)session_bytes_out(s));
+}
+
+/* One tab's stats into buf. id 0 => active tab. 0 ok, 1 if no such tab
+ * (or the app is not yet up). */
+int ctl_tab_stats(unsigned id, char *buf, size_t cap) {
+	session_t *s;
+	unsigned idx;
+	if (g_app == NULL) return 1;
+	s = app_session_by_id(g_app, id);            /* 0 => active */
+	if (s == NULL || !app_session_index_of(g_app, s, &idx)) return 1;
+	return ctl_format_tab(idx, app_active_index(g_app), buf, cap) < 0 ? 1 : 0;
+}
+
+/* All tabs, one line each (newline-separated). Returns the tab count. */
+int ctl_tabs_stats(char *buf, size_t cap) {
+	unsigned n, i, active_idx;
+	size_t off = 0;
+	if (cap == 0) return 0;
+	buf[0] = '\0';
+	if (g_app == NULL) return 0;
+	n = app_session_count(g_app);
+	active_idx = app_active_index(g_app);
+	for (i = 0; i < n && off + 1 < cap; i++) {
+		int w;
+		if (off > 0) buf[off++] = '\n';
+		w = ctl_format_tab(i, active_idx, buf + off, cap - off);
+		if (w < 0) break;
+		/* snprintf returns the untruncated length; clamp on overflow. */
+		off += ((size_t)w < cap - off) ? (size_t)w : (cap - off - 1);
+	}
+	return (int)n;
+}
+
 /* Re-run .term49.lua and re-apply it live. MUST be called only from the
  * deferred safe point in the run loop (never from action dispatch / a
  * lua_pcall): the loader closes and reopens the lua_State, and frees the

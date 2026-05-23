@@ -42,6 +42,11 @@ int   session_is_exited(const session_t *s);
 int   session_exit_status(const session_t *s);    /* waitpid status, valid when is_exited */
 void  session_mark_exited(session_t *s, int status);
 
+/* Cumulative pty byte counters, maintained by the read/write helpers below.
+ * "in" = bytes read from the shell; "out" = bytes written to the shell. */
+uint64_t session_bytes_in(const session_t *s);
+uint64_t session_bytes_out(const session_t *s);
+
 ssize_t session_write_text(session_t *s, const UChar *buf, size_t n);
 ssize_t session_write_bytes(session_t *s, const char *buf, size_t n);
 ssize_t session_read_bytes(session_t *s, char *buf, size_t n);
