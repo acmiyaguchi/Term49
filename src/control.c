@@ -218,6 +218,8 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "  help                list commands\n"
 		          "  screen size         report terminal cols/rows\n"
 		          "  sessions            report open session count\n"
+		          "  tab stats [id]      report one tab's stats (id 0/omitted = active)\n"
+		          "  tabs stats          report stats for all tabs, one line each\n"
 		          "  clipboard read      print current clipboard text\n"
 		          "  action <name>       run an action (keybinding/builtin/lua:fn)\n"
 		          "  send-text <text>    send text to the active session\n"
@@ -244,6 +246,20 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 	if (strcmp(argv[0], "sessions") == 0) {
 		char body[64];
 		snprintf(body, sizeof(body), "count=%u", ctl_session_count());
+		ctl_reply(c, id, 0, body);
+		return;
+	}
+	if (strcmp(argv[0], "tab") == 0 && argc >= 2 && strcmp(argv[1], "stats") == 0) {
+		/* `tab stats [id]`; id omitted or 0 => active tab. */
+		char body[CTL_REPLY_MAX / 2];
+		unsigned tid = (argc >= 3) ? (unsigned)strtoul(argv[2], NULL, 10) : 0;
+		int rc = ctl_tab_stats(tid, body, sizeof(body));
+		ctl_reply(c, id, rc == 0 ? 0 : 1, rc == 0 ? body : "no such tab");
+		return;
+	}
+	if (strcmp(argv[0], "tabs") == 0 && argc >= 2 && strcmp(argv[1], "stats") == 0) {
+		char body[CTL_REPLY_MAX / 2];
+		ctl_tabs_stats(body, sizeof(body));
 		ctl_reply(c, id, 0, body);
 		return;
 	}

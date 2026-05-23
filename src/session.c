@@ -19,6 +19,8 @@ struct session {
 	pid_t child_pid;        /* 0 until session_set_child_pid() runs */
 	int exited;             /* set by session_mark_exited via SIGCHLD reaper */
 	int exit_status;        /* raw waitpid() status; valid when exited */
+	uint64_t bytes_in;      /* total bytes read from the pty (shell -> term) */
+	uint64_t bytes_out;     /* total bytes written to the pty (term -> shell) */
 };
 
 int session_create(session_t **out, session_id_t id,
@@ -91,6 +93,14 @@ int session_exit_status(const session_t *s) {
 	return s ? s->exit_status : 0;
 }
 
+uint64_t session_bytes_in(const session_t *s) {
+	return s ? s->bytes_in : 0;
+}
+
+uint64_t session_bytes_out(const session_t *s) {
+	return s ? s->bytes_out : 0;
+}
+
 void session_mark_exited(session_t *s, int status) {
 	if (s == NULL || s->exited) {
 		return;
@@ -108,24 +118,33 @@ void session_mark_exited(session_t *s, int status) {
 }
 
 ssize_t session_write_text(session_t *s, const UChar *buf, size_t n) {
+	ssize_t w;
 	if (s == NULL || s->master_fd < 0) {
 		return -1;
 	}
-	return io_write_master(s->master_fd, buf, n);
+	w = io_write_master(s->master_fd, buf, n);
+	if (w > 0) s->bytes_out += (uint64_t)w;
+	return w;
 }
 
 ssize_t session_write_bytes(session_t *s, const char *buf, size_t n) {
+	ssize_t w;
 	if (s == NULL || s->master_fd < 0) {
 		return -1;
 	}
-	return io_write_master_char(s->master_fd, buf, n);
+	w = io_write_master_char(s->master_fd, buf, n);
+	if (w > 0) s->bytes_out += (uint64_t)w;
+	return w;
 }
 
 ssize_t session_read_bytes(session_t *s, char *buf, size_t n) {
+	ssize_t r;
 	if (s == NULL || s->master_fd < 0) {
 		return -1;
 	}
-	return io_read_master_raw(s->master_fd, buf, n);
+	r = io_read_master_raw(s->master_fd, buf, n);
+	if (r > 0) s->bytes_in += (uint64_t)r;
+	return r;
 }
 
 int session_dispatch_action(session_t *s, const action_t *a) {
