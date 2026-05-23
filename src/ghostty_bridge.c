@@ -458,15 +458,3 @@ int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b) {
          gb_mode_on(b, GHOSTTY_MODE_BUTTON_MOUSE) ||
          gb_mode_on(b, GHOSTTY_MODE_ANY_MOUSE);
 }
-
-void ghostty_bridge_mouse_state(ghostty_bridge_t *b, int *alt_screen,
-                                int *sgr_mouse, int *mouse_tracking) {
-  int alt = ghostty_bridge_is_alt_screen(b);
-  int sgr = (b != NULL) && gb_mode_on(b, GHOSTTY_MODE_SGR_MOUSE);
-  int track = (b != NULL) && (gb_mode_on(b, GHOSTTY_MODE_NORMAL_MOUSE) ||
-                              gb_mode_on(b, GHOSTTY_MODE_BUTTON_MOUSE) ||
-                              gb_mode_on(b, GHOSTTY_MODE_ANY_MOUSE));
-  if (alt_screen)     { *alt_screen = alt; }
-  if (sgr_mouse)      { *sgr_mouse = sgr; }
-  if (mouse_tracking) { *mouse_tracking = track; }
-}
