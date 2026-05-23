@@ -282,8 +282,6 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		return;
 	}
 	if (strcmp(argv[0], "notify") == 0) {
-		/* Post/update a replaceable Hub entry (#35). Reuse is keyed on --id:
-		 * the same id updates that entry in place; a new id adds one. */
 		const char *app_id = NULL, *item_id = NULL, *title = NULL;
 		const char *body = NULL, *uri = NULL;
 		int alert = 0, bad = 0;

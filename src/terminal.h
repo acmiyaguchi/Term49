@@ -45,8 +45,7 @@ void rescreen(int w, int h);
 void set_font_size(int new_size);
 int term_current_font_size(void);
 int app_run_action_string(const char *s);
-/* Post/update a replaceable Hub notification (#35). spec is borrowed for the
- * call only; see platform.h for notification_spec_t. 1 ok, 0 fail. */
+/* Post/update a Hub notification; see notification_spec_t in platform.h. 1 ok, 0 fail. */
 struct notification_spec;
 int app_post_notification(const struct notification_spec *spec);
 /* True once the runtime is fully up (app + video + prefs). The `term`

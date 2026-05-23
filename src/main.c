@@ -999,9 +999,7 @@ int app_run_action_string(const char *s){
 	return app_dispatch_action(g_app, &a);
 }
 
-/* Post (or update) a replaceable Hub notification (#35). Shared entry point for
- * the control socket and Lua, mirroring app_run_action_string's lifetime model:
- * spec fields are borrowed only for this synchronous call. 1 ok, 0 fail. */
+/* Shared notification entry point for the control socket and Lua. 1 ok, 0 fail. */
 int app_post_notification(const notification_spec_t *spec){
 	if(!term_runtime_ready() || spec == NULL) return 0;
 	return platform_notify(g_platform, spec) == 0;

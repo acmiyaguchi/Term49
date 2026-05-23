@@ -119,9 +119,7 @@ int action_parse(const char *value, action_t *out) {
 
 	/* "toast:<msg>" / "open_url:<uri>" carry an argument the same way
 	 * "lua:<fn>" does: arg points into `value` (the keymap's heap-owned
-	 * ->to string), so it lives as long as the binding. The richer,
-	 * replaceable Hub notification (#35) is reached via the control socket /
-	 * Lua, not a keybinding string. */
+	 * ->to string), so it lives as long as the binding. */
 	if (strncmp(value, "toast:", 6) == 0) {
 		out->kind = TERM_ACTION_BUILTIN;
 		out->as.builtin.id = TERM_BUILTIN_TOAST;

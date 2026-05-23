@@ -349,15 +349,12 @@ static const char *sanitize_id(const char *in, const char *fallback,
 	return j > 0 ? buf : fallback;
 }
 
-/* Post (or update) a persistent Hub entry (#35). The (app_id, item_id) pair is
- * the reuse key: posting again with the same pair updates that entry in place
- * instead of stacking a new one, so callers reuse a slot by reusing item_id.
- * app_id defaults to our own identity (the only one reuse is reliable for);
- * item_id defaults to a single shared slot so bare posts coalesce. target/action
- * are fixed -- the only invoke Term49 routes is back into itself -- and a
- * term49:// payload uri (optional) drives the #23 round-trip when tapped. The
- * message owns no resources past the send, so it's destroyed immediately. Needs
- * the post_notification permission (already in bar-descriptor.xml).
+/* Post (or update) a persistent Hub entry; see notification_spec_t in platform.h
+ * for the (app_id, item_id) reuse-key semantics. The backend fixes target/action
+ * to our own id + bb.action.OPEN (the only invoke Term49 routes is back into
+ * itself); an optional term49:// payload uri drives the round-trip when tapped.
+ * The message owns no resources past the send, so it's destroyed immediately.
+ * Needs the post_notification permission (already in bar-descriptor.xml).
  *
  * Note: in-place update only holds within a single launch. Re-posting an item_id
  * that survived from a previous run (the app exited without clearing it) fails

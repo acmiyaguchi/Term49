@@ -34,7 +34,7 @@ typedef enum builtin_action {
 	TERM_BUILTIN_KEYBOARD_SHOW,
 	TERM_BUILTIN_KEYBOARD_HIDE,
 	/* arg = message; transient auto-dismiss flash, no Hub entry. The
-	 * persistent, replaceable Hub notification (#35) is posted via the
+	 * persistent, replaceable Hub notification is posted via the
 	 * control socket / Lua (term.notify), not a keybinding. */
 	TERM_BUILTIN_TOAST,
 	TERM_BUILTIN_OPEN_URL,
