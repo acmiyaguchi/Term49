@@ -156,6 +156,15 @@ center, and tap the Term49 entry — you should land back on the originating tab
 (Posting needs the `post_notification` permission, already in
 `bar-descriptor.xml`.)
 
+### Discoverability
+
+* **Another app** finds Term49 the BB10-native way: `navigator_invoke_query()`
+  reports Term49 as a `term49://` handler because the target is declared in the
+  bar descriptor — no out-of-band registry needed.
+* **An agent inside a shell** has the capability summary bundled on-device at
+  `$TERM49_AGENT_DOC` (`cat "$TERM49_AGENT_DOC"`), and the control socket's
+  `termctl help` lists both this socket and the `term49://` scheme.
+
 ## Signing the release
 
 To distribute Term49 through the BlackBerry signing flow, run `make sign`

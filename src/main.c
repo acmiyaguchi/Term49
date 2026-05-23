@@ -86,6 +86,17 @@ static void set_persistent_home(void) {
 		}
 	}
 
+	/* TERM49_AGENT_DOC = absolute path to the bundled agent capability doc
+	 * (#23), so an in-shell agent can `cat "$TERM49_AGENT_DOC"` to discover the
+	 * control socket + term49:// invoke surface. Same asset layout as TERMINFO. */
+	{
+		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/term49.agents.md",
+		                 (int)(appid_end - sandbox_home), sandbox_home);
+		if (n > 0 && n < (int)sizeof(buf)) {
+			setenv("TERM49_AGENT_DOC", buf, 1);
+		}
+	}
+
 	/* HOME = <...>/shared/documents (sibling of /appdata) */
 	{
 		int n = snprintf(buf, sizeof(buf), "%.*s/shared/documents",

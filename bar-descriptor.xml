@@ -21,6 +21,7 @@
     <asset path="share/README">README</asset>
     <asset path="share/README45">README45</asset>
     <asset path="share/term49.lua.reference">term49.lua.reference</asset>
+    <asset path="share/term49.agents.md">term49.agents.md</asset>
     <asset path="icons/term4986x86.png">term4986x86.png</asset>
     <asset path="icons/term4990x90.png">term4990x90.png</asset>
     <asset path="icons/term4996x96.png">term4996x96.png</asset>
