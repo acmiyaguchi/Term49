@@ -10,6 +10,7 @@ typedef struct keymap {
 	char from;
 	char *to;
 	action_t action;
+	int sticky;          /* metamode: keep metamode armed after firing (else exit) */
 } keymap_t;
 
 /* A modifier-aware chord: a trigger keycode plus an exact modifier mask
@@ -50,8 +51,10 @@ typedef struct pref {
 	hitbox_t *metamode_hitbox;
 	char *tty_encoding;
 	
-	/* terminated by NULL pointer */
-	keymap_t *metamode_keys, *metamode_sticky_keys, *metamode_func_keys;
+	/* terminated by NULL pointer; each entry's `sticky` flag decides whether
+	 * a hit keeps metamode armed (former metamode_sticky_keys) or exits it
+	 * (former metamode_keys / metamode_func_keys). */
+	keymap_t *metamode_keys;
 	
 	symmenu_t *main_symmenu;
 	symmenu_t *accent_menus[26][2];
