@@ -447,7 +447,12 @@ static int gb_mode_on(ghostty_bridge_t *b, GhosttyMode mode) {
 
 int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b) {
   if (b == NULL) { return 0; }
-  if (!ghostty_bridge_is_alt_screen(b)) { return 0; }
+  /* Mouse tracking is independent of the alternate screen: an app can grab
+   * the mouse while drawing on the primary screen (e.g. fen). When it has,
+   * the wheel belongs to the app on either screen, matching xterm. We do
+   * not gate on alt-screen here — scrollback is only the terminal's job
+   * when no app is tracking the mouse. SGR is still required because we
+   * only ever emit mode-1006 encoding. */
   if (!gb_mode_on(b, GHOSTTY_MODE_SGR_MOUSE)) { return 0; }
   return gb_mode_on(b, GHOSTTY_MODE_NORMAL_MOUSE) ||
          gb_mode_on(b, GHOSTTY_MODE_BUTTON_MOUSE) ||

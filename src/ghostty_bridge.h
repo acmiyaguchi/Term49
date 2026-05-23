@@ -74,10 +74,12 @@ int ghostty_bridge_scroll_to_bottom(ghostty_bridge_t *b);
  * 0 = primary screen. Returns 0 if b is NULL. */
 int ghostty_bridge_is_alt_screen(ghostty_bridge_t *b);
 
-/* 1 iff alt-screen is active AND any of ?1000/?1002/?1003 (mouse tracking)
- * is on AND ?1006 (SGR encoding) is on. Gates whether touch drag should
- * be translated into xterm wheel events for the running TUI. We never
- * emit legacy non-SGR mouse encoding. Returns 0 if b is NULL. */
+/* 1 iff any of ?1000/?1002/?1003 (mouse tracking) is on AND ?1006 (SGR
+ * encoding) is on. Gates whether touch drag is translated into xterm wheel
+ * events for the running app. Independent of the alternate screen: an app
+ * that grabs the mouse owns the wheel on either screen (e.g. fen, which
+ * tracks the mouse on the primary screen). We never emit legacy non-SGR
+ * mouse encoding. Returns 0 if b is NULL. */
 int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b);
 
 /* Diagnostic breakout of the three inputs to mouse_wheel_ready, each 0/1.
