@@ -121,7 +121,6 @@ static char draw_cursor = 1;
 static char flash = 0;
 
 static pref_t *prefs = NULL;
-static symmenu_t *current_symmenu = NULL;
 static renderer_t *renderer = NULL;
 static app_t *g_app = NULL;
 static platform_t *g_platform = NULL;
@@ -130,8 +129,25 @@ static platform_t *g_platform = NULL;
  * same lock as event handling, so a plain int is sufficient. */
 static int g_reload_pending = 0;
 
-static char symmenu_lock = 0;
-static char altsym_lock = 0;
+/* All keyboard input-accumulator state: every modifier / menu / mode flag the
+ * key pipeline reads or mutates, gathered into one object (#30 PR1). This is a
+ * pure mechanical extraction -- each field's initial value matches the old
+ * zero-init statics, so behavior is unchanged. `metamode_just_set` stays a
+ * function-local in app_handle_key (per-event, not state); current_help_overlay
+ * stays a standalone global (overlay/UI state, not an input modifier). */
+typedef struct input_state {
+	symmenu_t *current_symmenu;
+	char symmenu_lock;
+	char altsym_lock;
+	char metamode;
+	int metamode_doubletap_key;   /* NOTE: never assigned from prefs today; preserved as-is */
+	struct timespec metamode_last;
+	int vmodifiers;
+	char virtualkeyboard_visible;
+	char key_repeat_done;
+} input_state_t;
+static input_state_t kbd;
+
 /* On-screen keybinding cheat sheet: a pre-composed panel of the
  * chord_bindings labels, blitted in render_ghostty when current_help_overlay
  * is set. Surface is rebuilt by font_init (startup / font-size / reload via
@@ -140,13 +156,9 @@ static int current_help_overlay = 0;
 static bitmap_t *help_overlay_surface = NULL;
 static int help_startup_shown = 0;
 
-static char metamode = 0;
-static int metamode_doubletap_key = 0;
-static struct timespec metamode_last;
 static rgb_t metamode_cursor_fg = TERM_COLOR_BLACK;
 static rgb_t metamode_cursor_bg = TERM_COLOR_GREEN;
 static bitmap_t *metamode_cursor;
-static int vmodifiers = 0;
 
 static font_t *font;
 static int text_width;
@@ -238,8 +250,6 @@ static bitmap_t *alt_key_indicator;
 static bitmap_t *shift_key_indicator;
 static bitmap_t *altsym_indicator;
 
-static char virtualkeyboard_visible = 0;
-static char key_repeat_done = 0;
 
 /* SIGCHLD self-pipe (#16-H). sig_child is async-signal-safe and may
  * only write() one byte here; sigchld_io_handler is what BPS calls on
@@ -484,12 +494,12 @@ int send_metamode_keystrokes(const char* keystrokes){
  * here, at the mutation, is what makes the render gate correct
  * regardless of which event source delivered the input. */
 void metamode_toggle(){
-	metamode = metamode ? 0 : 1;
+	kbd.metamode = kbd.metamode ? 0 : 1;
 	mark_screen_dirty(1);
 }
 
 void altsym_toggle() {
-	altsym_lock = altsym_lock ? 0 : 1;
+	kbd.altsym_lock = kbd.altsym_lock ? 0 : 1;
 	mark_screen_dirty(1);
 }
 
@@ -500,17 +510,17 @@ void help_overlay_toggle() {
 
 void symmenu_stick(){
 	PRINT(stderr, "Sticking Sym key\n");
-	symmenu_lock = 1;
+	kbd.symmenu_lock = 1;
 	mark_screen_dirty(1);
 }
 
 void symmenu_toggle(symmenu_t *target){
-	if (current_symmenu == NULL){
+	if (kbd.current_symmenu == NULL){
 		int symmenu_height = renderer_symmenu_height(renderer, target);
 		if (target == NULL || symmenu_height <= 0) {
 			return;
 		}
-		current_symmenu = target;
+		kbd.current_symmenu = target;
 		// resize to show menu
 		if (prefs->rescreen_for_symmenu) {
 			setup_screen_size(fb_w, fb_h - symmenu_height);
@@ -519,12 +529,12 @@ void symmenu_toggle(symmenu_t *target){
 			symmenu_stick();
 		}
 	} else {
-		current_symmenu = NULL;
+		kbd.current_symmenu = NULL;
 		if (prefs->rescreen_for_symmenu) {
 			// resize to take full screen
 			setup_screen_size(fb_w, fb_h);
 		}
-		symmenu_lock = 0;
+		kbd.symmenu_lock = 0;
 	}
 	mark_screen_dirty(1);
 }
@@ -538,7 +548,7 @@ static keymap_t* symkey_for_mousedown(symmenu_t *menu, uint16_t x, uint16_t y) {
 			   (x <= key->hitbox.x + key->hitbox.w) &&
 			   (y >= key->hitbox.y) &&
 			   (y <= key->hitbox.y + key->hitbox.h)) {
-				if (!symmenu_lock) {
+				if (!kbd.symmenu_lock) {
 					symmenu_toggle(NULL);
 				} else {
 					key->flash = 1;
@@ -844,8 +854,8 @@ void handle_mousedown(uint16_t x, uint16_t y){
 	}
 
 	/* check for symmenu touches */
-	if(current_symmenu != NULL){
-		keymap_t *entry = symkey_for_mousedown(current_symmenu, x, y);
+	if(kbd.current_symmenu != NULL){
+		keymap_t *entry = symkey_for_mousedown(kbd.current_symmenu, x, y);
 		if (entry != NULL) {
 			app_dispatch_action(g_app, &entry->action);
 		}
@@ -930,7 +940,7 @@ void rescreen(int w, int h){
 	}
 
 	setup_screen_size(width, height);
-	if(virtualkeyboard_visible){
+	if(kbd.virtualkeyboard_visible){
 		vkb_h = platform_vkb_height(g_platform);
 		setup_screen_size(width, height - vkb_h);
 	}
@@ -1035,10 +1045,10 @@ static void app_reload_config(void){
 	 * the outgoing prefs (renderer symmenu caches are rebuilt below; app/io
 	 * borrow only the stable struct pointer; event-handler menu/keymap
 	 * pointers are stack locals, gone by this deferred safe point). */
-	current_symmenu = NULL;
-	metamode = 0;
-	altsym_lock = 0;
-	symmenu_lock = 0;
+	kbd.current_symmenu = NULL;
+	kbd.metamode = 0;
+	kbd.altsym_lock = 0;
+	kbd.symmenu_lock = 0;
 	current_help_overlay = 0;            /* surface is rebuilt by rescreen below */
 
 	destroy_preferences_members(prefs);  /* free old arrays, keep struct */
@@ -1055,11 +1065,11 @@ static void app_reload_config(void){
 
 void toggle_vkeymod(int mod){
 	PRINT(stderr, "Toggle modifier %d\n", mod);
-	if(vmodifiers & mod){
-		vmodifiers &= ~mod;
+	if(kbd.vmodifiers & mod){
+		kbd.vmodifiers &= ~mod;
 	}
 	else {
-		vmodifiers |= mod;
+		kbd.vmodifiers |= mod;
 	}
 	mark_screen_dirty(1);
 }
@@ -1070,11 +1080,11 @@ void toggle_vkeymod(int mod){
  * synthesize CHORD_MOD_SYM). Stuck and held both land here because the
  * BB modifier keys are tap-to-stick. */
 static unsigned current_modmask(void){
-	unsigned m = (unsigned)vmodifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT);
-	if (altsym_lock) {
+	unsigned m = (unsigned)kbd.vmodifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT);
+	if (kbd.altsym_lock) {
 		m |= KEYMOD_ALT;
 	}
-	if (current_symmenu != NULL || symmenu_lock) {
+	if (kbd.current_symmenu != NULL || kbd.symmenu_lock) {
 		m |= CHORD_MOD_SYM;
 	}
 	return m;
@@ -1086,13 +1096,13 @@ static unsigned current_modmask(void){
  * light (resets the menu state without symmenu_toggle's rescreen) so a
  * manufactured Ctrl/Meta chord doesn't flash the screen. */
 static void chord_clear_prefix(unsigned mask){
-	vmodifiers &= ~((int)mask & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT));
+	kbd.vmodifiers &= ~((int)mask & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT));
 	if (mask & KEYMOD_ALT) {
-		altsym_lock = 0;
+		kbd.altsym_lock = 0;
 	}
 	if (mask & CHORD_MOD_SYM) {
-		current_symmenu = NULL;
-		symmenu_lock = 0;
+		kbd.current_symmenu = NULL;
+		kbd.symmenu_lock = 0;
 	}
 	mark_screen_dirty(1);
 }
@@ -1110,13 +1120,13 @@ static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
 	 * (v = paste_clipboard) and would otherwise shadow it. Clear the
 	 * one-shot lock on a hit so it can't leak onto the next key -- the
 	 * metamode branch returns before the normal altsym-clear path. */
-	if (altsym_lock) {
+	if (kbd.altsym_lock) {
 		keymap_t *sym = keymap_lookup((char)k->sym, prefs->altsym_entries);
 		if (sym != NULL && sym->to != NULL
 		    && sym->to[0] != '\0' && sym->to[1] == '\0') {
 			m = keymap_lookup(sym->to[0], table);
 			if (m != NULL) {
-				altsym_lock = 0;
+				kbd.altsym_lock = 0;
 				return m;
 			}
 		}
@@ -1264,7 +1274,7 @@ static symmenu_t *get_keyhold_actions(int keycode) {
 	}
 
 	int uppercase = 0;
-	if (vmodifiers & KEYMOD_SHIFT) {
+	if (kbd.vmodifiers & KEYMOD_SHIFT) {
 		uppercase = 1;
 	}
 
@@ -1362,16 +1372,16 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		/* if we're toggling metamode on or off with doubletap */
-		if((k->sym == metamode_doubletap_key) && !k->repeat){
+		if((k->sym == kbd.metamode_doubletap_key) && !k->repeat){
 			clock_gettime(CLOCK_MONOTONIC, &now);
 			now_t = timespec2nsec(&now);
-			metamode_last_t = timespec2nsec(&metamode_last);
+			metamode_last_t = timespec2nsec(&kbd.metamode_last);
 			diff_t = now_t > metamode_last_t ? now_t - metamode_last_t : now_t;
 			if(diff_t <= prefs->metamode_doubletap_delay){
 				metamode_toggle();
 				metamode_just_set = 1;
 			}
-			metamode_last = now;
+			kbd.metamode_last = now;
 		}
 
 		/* Site A: modifier-key chords. A modifier key pressed while
@@ -1392,7 +1402,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			case KEYCODE_LEFT_SHIFT:
 				/* match the shift handler below: only a trigger with the
 				 * physical keyboard up; normalize L/R to one keycode. */
-				if (virtualkeyboard_visible) {
+				if (kbd.virtualkeyboard_visible) {
 					is_mod_trigger = 0;
 				} else {
 					trig = KEYCODE_LEFT_SHIFT;
@@ -1437,7 +1447,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			}
 		}
 
-		if(!virtualkeyboard_visible
+		if(!kbd.virtualkeyboard_visible
 		   && ((k->sym == KEYCODE_LEFT_SHIFT) || (k->sym == KEYCODE_RIGHT_SHIFT))){
 			if (prefs->sticky_shift_key) {
 				if(k->repeat){
@@ -1450,7 +1460,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		/* metamode sticky keys don't trigger repreat */
-		if (metamode && !metamode_just_set) {
+		if (kbd.metamode && !metamode_just_set) {
 			keymap = metamode_lookup(k, prefs->metamode_sticky_keys);
 			if (keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
@@ -1462,12 +1472,12 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		if (k->repeat &&
 		    prefs->keyhold_actions &&
 		    !is_int_member(prefs->keyhold_actions_exempt, k->sym)) {
-			if (!key_repeat_done) {
+			if (!kbd.key_repeat_done) {
 				/* Check for a metamode toggle key first */
 				if (k->sym == prefs->metamode_hold_key) {
 					session_write_text(session, &backspace, 1);
 					metamode_toggle();
-					key_repeat_done = 1;
+					kbd.key_repeat_done = 1;
 					return;
 				}
 
@@ -1494,17 +1504,17 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 				} else {
 					symmenu_toggle(menu);
 				}
-				key_repeat_done = 1;
+				kbd.key_repeat_done = 1;
 				return;
 			} else {
 				// We have already handled this key repeat
 				return;
 			}
 		} else {
-			key_repeat_done = 0;
+			kbd.key_repeat_done = 0;
 		}
 
-		if(metamode && !metamode_just_set){
+		if(kbd.metamode && !metamode_just_set){
 			keymap = metamode_lookup(k, prefs->metamode_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
@@ -1537,7 +1547,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		/* handle alt keys */
-		if (altsym_lock) {
+		if (kbd.altsym_lock) {
 			keymap = keymap_lookup((char)k->sym, prefs->altsym_entries);
 			altsym_toggle();
 			if (keymap != NULL){
@@ -1547,8 +1557,8 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		/* handle sym keys */
-		if (current_symmenu != NULL) {
-			keymap = keymap_lookup((char)k->sym, current_symmenu->entries);
+		if (kbd.current_symmenu != NULL) {
+			keymap = keymap_lookup((char)k->sym, kbd.current_symmenu->entries);
 			if (keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 				symmenu_toggle(NULL);
@@ -1557,15 +1567,15 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		/* if we have virtual keymods, then put them in, then turn them off */
-		modifiers |= vmodifiers;
-		if (vmodifiers != 0) {
+		modifiers |= kbd.vmodifiers;
+		if (kbd.vmodifiers != 0) {
 			/* the on-screen ctrl/alt/shift indicators reflect vmodifiers
 			 * clearing them changes the frame, so the
 			 * dirty gate must repaint even if this key emits nothing
 			 * visible itself -- otherwise a stale indicator lingers. */
 			mark_screen_dirty(1);
 		}
-		vmodifiers = 0;
+		kbd.vmodifiers = 0;
 
 		/* Site B: ordinary-key chords -- a real modifier (an external
 		 * keyboard's ctrl/alt, or a merged sticky vmodifier) plus a key.
@@ -1853,7 +1863,7 @@ static int startup_init() {
 
 	setup_screen_size(fb_w, fb_h);
 
-	clock_gettime(CLOCK_MONOTONIC, &metamode_last);
+	clock_gettime(CLOCK_MONOTONIC, &kbd.metamode_last);
 
 	/* The ghostty bridge is now owned by the session; it is constructed in
 	 * app_init() (which runs after startup_init() returns) and resized for
@@ -2067,23 +2077,23 @@ static int render_ghostty(int force_full_repaint) {
 		draw_tab_overlay();
 	}
 
-	if (metamode && metamode_cursor != NULL) {
+	if (kbd.metamode && metamode_cursor != NULL) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 0, metamode_cursor);
 	}
-	if (vmodifiers & KEYMOD_CTRL) {
+	if (kbd.vmodifiers & KEYMOD_CTRL) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 1 * text_height, ctrl_key_indicator);
 	}
-	if (vmodifiers & KEYMOD_ALT) {
+	if (kbd.vmodifiers & KEYMOD_ALT) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 2 * text_height, alt_key_indicator);
 	}
-	if (vmodifiers & KEYMOD_SHIFT) {
+	if (kbd.vmodifiers & KEYMOD_SHIFT) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, shift_key_indicator);
 	}
-	if (altsym_lock) {
+	if (kbd.altsym_lock) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, altsym_indicator);
 	}
 
-	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
+	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, kbd.current_symmenu);
 	if (symmenu_surface != NULL) {
 		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
 	}
@@ -2464,7 +2474,7 @@ int app_handle_event(app_t *app, const event_t *event) {
 		g_drag.last_y  = event->as.touch.y;
 		/* Latch the mode for the whole gesture so e.g. a symmenu tap
 		 * that dismisses the menu mid-stroke can't start scrolling. */
-		if (current_symmenu != NULL) {
+		if (kbd.current_symmenu != NULL) {
 			g_drag.mode = DRAG_LOCKED;
 		} else if (ghostty_bridge_mouse_wheel_ready(bridge)) {
 			g_drag.mode = DRAG_WHEEL;
@@ -2527,11 +2537,11 @@ int app_handle_event(app_t *app, const event_t *event) {
 			int vkb_h;
 			if (vis >= 0) {
 				/* explicit show/hide */
-				virtualkeyboard_visible = (char)vis;
+				kbd.virtualkeyboard_visible = (char)vis;
 				vkb_h = vis ? platform_vkb_height(g_platform) : 0;
 			} else {
 				/* height-only INFO update: keep current visibility */
-				vkb_h = virtualkeyboard_visible ? event->as.vkb.height : 0;
+				vkb_h = kbd.virtualkeyboard_visible ? event->as.vkb.height : 0;
 			}
 			setup_screen_size(fb_w, fb_h - vkb_h);
 			/* rows/cols changed -> next frame must repaint so the new
