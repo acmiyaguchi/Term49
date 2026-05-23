@@ -97,16 +97,19 @@
     <!-- Ensure that shared libraries in the package are found at run-time. -->
     <env var="LD_LIBRARY_PATH" value="app/native/lib"/>
 
-    <!-- Cross-app entry point (#23). Lets other BB10 apps / homescreen
-         shortcuts ask the navigator to bring Term49 up and run something.
-         RUN payload is text/plain "tab=N\ncmd=...": focus tab N if it exists
-         (else open a fresh tab) and run cmd in it. One-way, no reply.
-         Being an invoke target needs no extra permission. -->
-    <invoke-target id="com.example.Term49.run">
+    <!-- Cross-app entry point (#23). Registers the term49:// URI scheme so a
+         tapped link, a homescreen shortcut, another app, or one of our own
+         notifications can ask the navigator to open Term49. Grammar (see
+         README "Cross-app invoke"): term49://tab[/N][?cmd=<enc>] opens or
+         focuses a tab and optionally runs a command; term49://focus just
+         re-foregrounds. One-way, no reply. Being a URI handler needs no extra
+         permission. -->
+    <invoke-target id="com.example.Term49">
         <type>APPLICATION</type>
         <filter>
-            <action>com.example.Term49.RUN</action>
-            <mime-type>text/plain</mime-type>
+            <action>bb.action.OPEN</action>
+            <mime-type>*</mime-type>
+            <property var="uris" value="term49://"/>
         </filter>
     </invoke-target>
 

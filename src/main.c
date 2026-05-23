@@ -1165,18 +1165,17 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_NOTIFY:
 			return platform_notify(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_NOTIFY_INVOKE: {
-			/* Post a notification that, when tapped, invokes RUN back to the
-			 * tab that posted it -- the round-trip test entry point for #23.
-			 * Payload is the 1-based active tab index (matches handle_invoke_run's
-			 * tab= contract). */
-			char payload[32];
+			/* Post a notification that, when tapped, opens a term49:// URI
+			 * focusing the tab that posted it -- the round-trip test entry
+			 * point for #23 (matches handle_invoke_open's tab/N grammar). */
+			char uri[32];
 			const char *msg = action->as.builtin.arg;
-			snprintf(payload, sizeof(payload), "tab=%u",
+			snprintf(uri, sizeof(uri), "term49://tab/%u",
 			         app_active_index(app) + 1);
 			return platform_notify_invoke(g_platform,
 			                              (msg != NULL && msg[0] != '\0')
 			                                  ? msg : "Term49: tap to return",
-			                              payload) == 0;
+			                              uri) == 0;
 		}
 		case TERM_BUILTIN_OPEN_URL:
 			return platform_open_url(g_platform, action->as.builtin.arg) == 0;
@@ -2514,59 +2513,97 @@ static void reap_exited_children(void){
 	}
 }
 
-/* Act on a RUN invocation (#23). Payload is text/plain "key=value" lines:
- *   tab=N   1-based visible tab index to focus, if it still exists
- *   cmd=... command text; written + a newline to the resolved session's PTY
- *
- * Resolution:
- *   - tab=N names a live tab        -> focus it; run cmd there if present
- *   - cmd present, tab absent/stale -> open a fresh tab; run cmd there
- *   - neither (a bare re-foreground)-> nothing (the OS already raised us)
- * Either key may be omitted. Both keys are single-line; embedded newlines end
- * the value (a RUN payload is one command, not a script).
- *
- * SECURITY: cmd bytes go straight to the active shell, and any app on the
- * device can invoke us -- the same trust surface as an OSC 52 paste. A
- * hostile invoker can run arbitrary commands in the user's shell. Accepted
- * for v1 (flagged in #23); a future gate could prompt or require a token. */
-static void handle_invoke_run(app_t *app, const char *payload, size_t len) {
-	long tab = -1;            /* 1-based; -1 = unspecified */
-	const char *cmd = NULL;
-	size_t cmd_len = 0;
+static int hexval(char c) {
+	if (c >= '0' && c <= '9') return c - '0';
+	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+	return -1;
+}
 
-	const char *p = payload;
-	const char *end = payload + len;
-	while (p < end) {
-		const char *nl = memchr(p, '\n', (size_t)(end - p));
-		const char *line_end = nl ? nl : end;
-		const char *eq = memchr(p, '=', (size_t)(line_end - p));
-		if (eq != NULL) {
-			size_t klen = (size_t)(eq - p);
-			const char *val = eq + 1;
-			size_t vlen = (size_t)(line_end - val);
-			if (klen == 3 && memcmp(p, "tab", 3) == 0) {
-				long n = 0;
-				int ok = vlen > 0;
-				for (size_t i = 0; i < vlen; i++) {
-					if (val[i] < '0' || val[i] > '9') { ok = 0; break; }
-					n = n * 10 + (val[i] - '0');
-					if (n > APP_MAX_SESSIONS) { ok = 0; break; }
-				}
-				if (ok) tab = n;
-			} else if (klen == 3 && memcmp(p, "cmd", 3) == 0) {
-				cmd = val;
-				cmd_len = vlen;
-			}
+/* Percent-decode a URI component into dst (NUL-terminated, truncated to fit).
+ * '+' is left as-is -- term49:// is not an HTML form, so spaces are %20.
+ * Returns the decoded byte count. */
+static size_t url_decode(const char *src, size_t srclen, char *dst, size_t dstcap) {
+	size_t o = 0;
+	for (size_t i = 0; i < srclen && o + 1 < dstcap; i++) {
+		int hi, lo;
+		if (src[i] == '%' && i + 2 < srclen &&
+		    (hi = hexval(src[i + 1])) >= 0 && (lo = hexval(src[i + 2])) >= 0) {
+			dst[o++] = (char)((hi << 4) | lo);
+			i += 2;
+		} else {
+			dst[o++] = src[i];
 		}
-		p = nl ? nl + 1 : end;
+	}
+	dst[o] = '\0';
+	return o;
+}
+
+/* Act on an OPEN invocation (#23): a term49:// URI. Grammar:
+ *   term49://tab              open a new (empty) tab
+ *   term49://tab?cmd=<enc>    open a new tab and run <cmd> (percent-decoded)
+ *   term49://tab/N            focus the 1-based tab N if it is still live
+ *   term49://tab/N?cmd=<enc>  focus tab N (or open one if stale) and run <cmd>
+ *   term49://focus            re-foreground only (the OS already raised us)
+ * Unknown verbs are ignored (we were still brought to the foreground).
+ *
+ * SECURITY: cmd bytes go straight to the active shell, and ANY app or link on
+ * the device can open a term49:// URI -- the same trust surface as an OSC 52
+ * paste, but reachable from e.g. a tapped web link. A hostile opener can run
+ * arbitrary commands in the user's shell. Accepted for now (flagged in #23 +
+ * README); a future gate could prompt or require a token. */
+static void handle_invoke_open(app_t *app, const char *uri) {
+	const char *rest = uri + (sizeof("term49://") - 1);  /* past the scheme */
+	const char *q = strchr(rest, '?');
+	size_t path_len = q ? (size_t)(q - rest) : strlen(rest);
+
+	/* First path segment = verb; optional second segment after '/' = arg. */
+	const char *slash = memchr(rest, '/', path_len);
+	size_t verb_len = slash ? (size_t)(slash - rest) : path_len;
+	const char *arg = slash ? slash + 1 : NULL;
+	size_t arg_len = slash ? (size_t)((rest + path_len) - (slash + 1)) : 0;
+
+	/* Pull ?cmd=<enc> out of the query string (percent-decoded). */
+	char cmd[1024];
+	size_t cmd_len = 0;
+	for (const char *qp = q ? q + 1 : NULL; qp != NULL && *qp; ) {
+		const char *amp = strchr(qp, '&');
+		const char *kv_end = amp ? amp : qp + strlen(qp);
+		const char *eq = memchr(qp, '=', (size_t)(kv_end - qp));
+		if (eq != NULL && (size_t)(eq - qp) == 3 && memcmp(qp, "cmd", 3) == 0) {
+			cmd_len = url_decode(eq + 1, (size_t)(kv_end - (eq + 1)), cmd, sizeof(cmd));
+		}
+		if (amp == NULL) break;
+		qp = amp + 1;
 	}
 
-	int have_target = 0;
-	if (tab > 0 && app_session_select_index(app, (unsigned)(tab - 1))) {
+	if (verb_len == 5 && memcmp(rest, "focus", 5) == 0) {
+		return;  /* re-foreground only */
+	}
+	if (verb_len != 3 || memcmp(rest, "tab", 3) != 0) {
+		return;  /* unknown verb */
+	}
+
+	/* Parse the optional 1-based tab index. */
+	long idx = -1;
+	if (arg != NULL && arg_len > 0) {
+		long n = 0;
+		int ok = 1;
+		for (size_t i = 0; i < arg_len; i++) {
+			if (arg[i] < '0' || arg[i] > '9') { ok = 0; break; }
+			n = n * 10 + (arg[i] - '0');
+			if (n > APP_MAX_SESSIONS) { ok = 0; break; }
+		}
+		if (ok) idx = n;
+	}
+
+	int have_target;
+	if (idx > 0 && app_session_select_index(app, (unsigned)(idx - 1))) {
 		have_target = 1;
 		tab_overlay_set(1);
 		mark_screen_dirty(1);
-	} else if (cmd != NULL && cmd_len > 0) {
+	} else {
+		/* No index, or a stale one: open a fresh tab. */
 		action_t a;
 		memset(&a, 0, sizeof(a));
 		a.kind = TERM_ACTION_BUILTIN;
@@ -2574,7 +2611,7 @@ static void handle_invoke_run(app_t *app, const char *payload, size_t len) {
 		have_target = app_dispatch_action(app, &a);
 	}
 
-	if (have_target && cmd != NULL && cmd_len > 0) {
+	if (have_target && cmd_len > 0) {
 		session_t *s = app_active_session(app);
 		if (s != NULL) {
 			session_write_bytes(s, cmd, cmd_len);
@@ -2679,11 +2716,10 @@ int app_handle_event(app_t *app, const event_t *event) {
 		handle_activeevent(event->as.activate.active, event->as.activate.state);
 		return 1;
 	case TERM_EVENT_INVOKE:
-		/* Borrowed payload: valid only this iteration (see event.h), so act
-		 * now rather than deferring. RUN is the only action registered. */
-		if (event->as.invoke.action == TERM_INVOKE_RUN) {
-			handle_invoke_run(app, event->as.invoke.payload,
-			                  event->as.invoke.len);
+		/* Borrowed uri: valid only this iteration (see event.h), so act now
+		 * rather than deferring. OPEN is the only action registered. */
+		if (event->as.invoke.action == TERM_INVOKE_OPEN) {
+			handle_invoke_open(app, event->as.invoke.uri);
 		}
 		return 1;
 	case TERM_EVENT_VKB:

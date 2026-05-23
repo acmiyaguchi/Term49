@@ -113,38 +113,39 @@ no extra wiring.
 
 ## Cross-app invoke
 
-Term49 registers a navigator **invoke target** (`bar-descriptor.xml`), so other
-BB10 apps, homescreen shortcuts, or a tapped notification can ask the OS to
-bring Term49 up and run something. This is the idiomatic cross-app entry point
-on BB10, distinct from the #5 control socket: the socket is for processes
-*inside* Term49's sandbox; the invoke target is for processes *outside* it.
+Term49 registers the **`term49://` URI scheme** as a navigator invoke target
+(`bar-descriptor.xml`), so a tapped link, a homescreen shortcut, another app, or
+one of our own notifications can ask the OS to open Term49 and act. This is the
+idiomatic cross-app entry point on BB10 — anything that can open a URI can drive
+Term49 — and is distinct from the #5 control socket: the socket is for processes
+*inside* Term49's sandbox; the URI handler is for openers *outside* it.
 
-One action is registered today:
+The scheme is opened with the standard `bb.action.OPEN` action. Grammar:
 
-* **`com.example.Term49.RUN`** — `application` target, `text/plain` payload of
-  `key=value` lines:
+| URI | Effect |
+|-----|--------|
+| `term49://tab` | Open a new (empty) tab. |
+| `term49://tab?cmd=<enc>` | Open a new tab and run `<cmd>`. |
+| `term49://tab/N` | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it is still live. |
+| `term49://tab/N?cmd=<enc>` | Focus tab `N` (or open a fresh tab if `N` is stale) and run `<cmd>`. |
+| `term49://focus` | Re-foreground only (the OS already raised us). |
 
-  | Key      | Meaning |
-  |----------|---------|
-  | `tab=N`  | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it still exists. |
-  | `cmd=...`| A single-line command, written to the resolved tab's shell with a trailing newline. |
+`cmd` is a single command, **percent-encoded** (it is a URI component, so a
+space is `%20`): `term49://tab?cmd=ssh%20server`. It is written to the resolved
+tab's shell with a trailing newline. Unknown verbs are ignored.
 
-  Resolution: if `tab=N` names a live tab it is focused (and `cmd` runs there);
-  if `cmd` is given but the tab is absent or stale, a fresh tab is opened and
-  `cmd` runs in it; with neither key it is a no-op beyond the re-foregrounding
-  the OS already did.
-
-> **Trust:** any app on the device can invoke us, and a `cmd` payload is written
-> straight to the shell — the same risk surface as an OSC 52 paste. A hostile
-> invoker can run arbitrary commands in your shell. Accepted for now; revisit if
-> the threat model tightens.
+> **Trust:** any app *or web link* on the device can open a `term49://` URI, and
+> a `cmd` is written straight to the shell — the same risk surface as an OSC 52
+> paste, but reachable from as little as a tapped link. A hostile opener can run
+> arbitrary commands in your shell. Accepted for now; revisit if the threat
+> model tightens (e.g. prompt before running, or require a token).
 
 ### Round-trip: notify, then tap to return
 
 The built-in action **`notify_invoke:<message>`** closes the loop without a
 second app. It posts a persistent notification-center entry whose invocation
-points back at `RUN` with `tab=<the posting tab>`. Tapping the notification
-re-foregrounds Term49 and jumps to the tab that posted it.
+opens `term49://tab/<the posting tab>`. Tapping the notification re-foregrounds
+Term49 and jumps to the tab that posted it.
 
 It is a normal action string, so trigger it however you bind actions:
 

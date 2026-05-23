@@ -22,19 +22,18 @@ typedef enum event_type {
 	TERM_EVENT_RESIZE,
 	TERM_EVENT_ACTIVATE,
 	TERM_EVENT_VKB,
-	/* A cross-app navigator invocation targeting Term49 (#23). The backend
-	 * matched the invoke action string to an invoke_action_t and copied the
-	 * raw payload into backend-owned storage; the event's payload pointer
-	 * borrows that storage and is valid only until the next
-	 * platform_next_event, so the run loop must consume it in the same
-	 * iteration. */
+	/* A cross-app navigator invocation targeting Term49 (#23): a bb.action.OPEN
+	 * on a term49:// URI. The backend copied the URI into backend-owned
+	 * storage; the event's uri pointer borrows that storage and is valid only
+	 * until the next platform_next_event, so the run loop must consume it in
+	 * the same iteration. */
 	TERM_EVENT_INVOKE,
 } event_type_t;
 
-/* Registered invoke actions (the suffix of the bar-descriptor invoke-target
- * action id, e.g. com.example.Term49.RUN -> TERM_INVOKE_RUN). */
+/* What kind of invocation reached us. Only OPEN (a term49:// URI via
+ * bb.action.OPEN) is registered today. */
 typedef enum invoke_action {
-	TERM_INVOKE_RUN,
+	TERM_INVOKE_OPEN,
 } invoke_action_t;
 
 typedef struct key_event {
@@ -61,9 +60,9 @@ typedef struct event {
 		/* visible: 1 show, 0 hide, -1 height-only update (keep current
 		 * visibility). height: reported keyboard height for the -1 case. */
 		struct { int visible; int height; } vkb;
-		/* payload borrows backend-owned storage (see TERM_EVENT_INVOKE);
-		 * NUL-terminated for convenience but len is authoritative. */
-		struct { invoke_action_t action; const char *payload; size_t len; } invoke;
+		/* uri borrows backend-owned storage (see TERM_EVENT_INVOKE) and is
+		 * NUL-terminated; e.g. "term49://tab/2?cmd=fen". */
+		struct { invoke_action_t action; const char *uri; } invoke;
 	} as;
 } event_t;
 

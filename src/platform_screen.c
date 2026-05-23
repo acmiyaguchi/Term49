@@ -21,17 +21,20 @@
 #include "event.h"
 #include "platform.h"
 
-/* Cap on a single cross-app invoke payload (#23). A RUN payload is a short
- * "tab=N\ncmd=..." blob; without a cap any app on the device could hand us an
- * arbitrarily large copy. Oversized payloads are truncated, not rejected. */
-#define INVOKE_PAYLOAD_MAX 4096
+/* Cap on a single cross-app invoke URI (#23). A term49:// URI is short; without
+ * a cap any app on the device could hand us an arbitrarily large copy.
+ * Oversized URIs are truncated, not rejected. */
+#define INVOKE_URI_MAX 4096
 
-/* Action id we register and accept in the bar-descriptor invoke-target, and
- * the target id that addresses this app (must match bar-descriptor's
- * <invoke-target id="...">). Used both to receive (translate_navigator) and to
- * post a notification that invokes us back (screen_plat_notify_invoke). */
-#define INVOKE_ACTION_RUN "com.example.Term49.RUN"
-#define INVOKE_TARGET_ID  "com.example.Term49.run"
+/* The invoke action we accept (the standard "open this" action; a tapped
+ * notification, a homescreen shortcut, or a term49:// link in any app all
+ * arrive as bb.action.OPEN), the URI scheme we register, and the target id
+ * that addresses this app (must match bar-descriptor's <invoke-target id>).
+ * Used both to receive (translate_navigator) and to post a notification that
+ * invokes us back (screen_plat_notify_invoke). */
+#define INVOKE_ACTION_OPEN "bb.action.OPEN"
+#define INVOKE_URI_SCHEME  "term49://"
+#define INVOKE_TARGET_ID   "com.example.Term49"
 
 typedef struct platform_screen {
 	screen_context_t ctx;
@@ -48,13 +51,12 @@ typedef struct platform_screen {
 	int              pending_resize_angle;
 	int              pending_resize_w;
 	int              pending_resize_h;
-	/* Latest invoke payload (#23). translate_navigator copies the
-	 * navigator invocation's data here; the emitted TERM_EVENT_INVOKE
-	 * borrows it. Valid only until the next next_event overwrites it,
-	 * which is safe because the run loop consumes the event synchronously
-	 * in the same iteration. NUL-terminated; *_len is authoritative. */
-	char             invoke_payload[INVOKE_PAYLOAD_MAX];
-	size_t           invoke_payload_len;
+	/* Latest invoke URI (#23). translate_navigator copies the navigator
+	 * invocation's URI here; the emitted TERM_EVENT_INVOKE borrows it. Valid
+	 * only until the next next_event overwrites it, which is safe because the
+	 * run loop consumes the event synchronously in the same iteration.
+	 * NUL-terminated. */
+	char             invoke_uri[INVOKE_URI_MAX];
 } platform_screen_t;
 
 static platform_screen_t *self_of(platform_t *p) {
@@ -183,7 +185,7 @@ static int translate_navigator(platform_screen_t *self, bps_event_t *event, even
 		return 1;
 	case NAVIGATOR_INVOKE_TARGET: {
 		/* A cross-app invocation reached us (#23). The OS has already
-		 * re-foregrounded Term49; we just extract action + payload and
+		 * re-foregrounded Term49; we just extract the term49:// URI and
 		 * fold a TERM_EVENT_INVOKE for the run loop to act on. One-way:
 		 * no reply is sent (the protocol is fire-and-forget like OSC). */
 		const navigator_invoke_invocation_t *inv =
@@ -192,27 +194,24 @@ static int translate_navigator(platform_screen_t *self, bps_event_t *event, even
 			return 0;
 		}
 		const char *action = navigator_invoke_invocation_get_action(inv);
-		if (action == NULL || strcmp(action, INVOKE_ACTION_RUN) != 0) {
-			/* RUN is the only action we register; ignore anything else
-			 * the daemon might route here. */
+		const char *uri    = navigator_invoke_invocation_get_uri(inv);
+		/* The bar-descriptor filter should only route OPEN on our scheme
+		 * here, but verify both defensively before acting. */
+		if (action == NULL || strcmp(action, INVOKE_ACTION_OPEN) != 0 ||
+		    uri == NULL || strncmp(uri, INVOKE_URI_SCHEME,
+		                           sizeof(INVOKE_URI_SCHEME) - 1) != 0) {
 			return 0;
 		}
-		const char *data = navigator_invoke_invocation_get_data(inv);
-		int dlen = navigator_invoke_invocation_get_data_length(inv);
-		size_t n = (data != NULL && dlen > 0) ? (size_t)dlen : 0;
-		if (n > INVOKE_PAYLOAD_MAX - 1) {
-			n = INVOKE_PAYLOAD_MAX - 1;  /* truncate; never overrun */
+		size_t n = strlen(uri);
+		if (n > INVOKE_URI_MAX - 1) {
+			n = INVOKE_URI_MAX - 1;  /* truncate; never overrun */
 		}
-		if (n > 0) {
-			memcpy(self->invoke_payload, data, n);
-		}
-		self->invoke_payload[n]  = '\0';
-		self->invoke_payload_len = n;
+		memcpy(self->invoke_uri, uri, n);
+		self->invoke_uri[n] = '\0';
 		memset(out, 0, sizeof(*out));
 		out->type = TERM_EVENT_INVOKE;
-		out->as.invoke.action  = TERM_INVOKE_RUN;
-		out->as.invoke.payload = self->invoke_payload;
-		out->as.invoke.len     = n;
+		out->as.invoke.action = TERM_INVOKE_OPEN;
+		out->as.invoke.uri    = self->invoke_uri;
 		return 1;
 	}
 	default:
@@ -327,13 +326,13 @@ static int screen_plat_notify(platform_t *p, const char *msg) {
 
 /* Post a persistent notification-center entry that invokes us back when
  * tapped (#23 round-trip). Unlike the toast above this survives until the
- * user acts on it, and carries a RUN invocation (target + action + payload)
- * the navigator delivers as a NAVIGATOR_INVOKE_TARGET -- the same path an
- * external app would use. item_id is unique per post so entries stack rather
+ * user acts on it, and carries an OPEN invocation on a term49:// URI the
+ * navigator delivers as a NAVIGATOR_INVOKE_TARGET -- the same path a link or
+ * another app would use. item_id is unique per post so entries stack rather
  * than coalesce; the message owns no resources past notification_notify, so
  * it's destroyed immediately. Needs the post_notification permission (already
  * in bar-descriptor.xml). */
-static int screen_plat_notify_invoke(platform_t *p, const char *msg, const char *payload) {
+static int screen_plat_notify_invoke(platform_t *p, const char *msg, const char *uri) {
 	(void)p;
 	static unsigned seq = 0;
 	notification_message_t *m = NULL;
@@ -349,10 +348,9 @@ static int screen_plat_notify_invoke(platform_t *p, const char *msg, const char 
 		notification_message_set_title(m, "Term49") == BPS_SUCCESS &&
 		(msg == NULL || notification_message_set_subtitle(m, msg) == BPS_SUCCESS) &&
 		notification_message_set_invocation_target(m, INVOKE_TARGET_ID) == BPS_SUCCESS &&
-		notification_message_set_invocation_action(m, INVOKE_ACTION_RUN) == BPS_SUCCESS &&
-		notification_message_set_invocation_type(m, "text/plain") == BPS_SUCCESS &&
-		(payload == NULL ||
-		 notification_message_set_invocation_payload(m, payload, (int)strlen(payload)) == BPS_SUCCESS) &&
+		notification_message_set_invocation_action(m, INVOKE_ACTION_OPEN) == BPS_SUCCESS &&
+		(uri == NULL ||
+		 notification_message_set_invocation_payload_uri(m, uri) == BPS_SUCCESS) &&
 		notification_notify(m) == BPS_SUCCESS;
 
 	notification_message_destroy(&m);
