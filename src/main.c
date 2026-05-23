@@ -884,6 +884,11 @@ static struct {
 	int start_y;
 	int last_y;
 	int accum_dy;
+	/* Session the gesture was latched against at TOUCH_DOWN. Both the
+	 * mode decision and every subsequent TOUCH_MOVE target this session,
+	 * so a programmatic tab switch mid-stroke (control socket / Lua)
+	 * can't make us emit into a different tab than the one we latched. */
+	session_t *origin;
 } g_drag;
 
 static void drag_reset(void) {
@@ -2665,8 +2670,10 @@ int app_handle_event(app_t *app, const event_t *event) {
 		app_handle_key(app, &event->as.key);
 		return 1;
 	case TERM_EVENT_TOUCH_DOWN: {
-		ghostty_bridge_t *bridge = session_bridge(app_active_session(app));
+		session_t *origin = app_active_session(app);
+		ghostty_bridge_t *bridge = session_bridge(origin);
 		drag_reset();
+		g_drag.origin  = origin;
 		g_drag.start_y = event->as.touch.y;
 		g_drag.last_y  = event->as.touch.y;
 		/* Latch the mode for the whole gesture so e.g. a symmenu tap
@@ -2685,7 +2692,15 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_MOVE: {
+		unsigned origin_idx;
 		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
+			return 1;
+		}
+		/* Guard against the latched session having been closed mid-stroke
+		 * (e.g. its child exited and the SIGCHLD reaper freed it). Drop the
+		 * gesture rather than touch a dangling pointer. */
+		if (g_drag.origin == NULL ||
+		    !app_session_index_of(app, g_drag.origin, &origin_idx)) {
 			return 1;
 		}
 		int y = event->as.touch.y;
@@ -2711,10 +2726,10 @@ int app_handle_event(app_t *app, const event_t *event) {
 			int yrel = (int)y - grid_top_pad;
 			if (yrel < 0) { yrel = 0; }
 			int rrow = (text_height > 0) ? (yrel / text_height) + 1 : 1;
-			emit_wheels(app_active_session(app), col, rrow, rows > 0, abs(rows));
+			emit_wheels(g_drag.origin, col, rrow, rows > 0, abs(rows));
 		} else {
 			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
-			ghostty_bridge_scroll_view(session_bridge(app_active_session(app)), -rows);
+			ghostty_bridge_scroll_view(session_bridge(g_drag.origin), -rows);
 			mark_screen_dirty(1);
 		}
 		return 1;
