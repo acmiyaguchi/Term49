@@ -1107,14 +1107,13 @@ static void chord_clear_prefix(unsigned mask){
 	mark_screen_dirty(1);
 }
 
-/* Metamode binding lookup, in resolution order: the alt-layer glyph (when
- * the symbol layer is armed), then the base key, then the platform's
- * alternate_sym. alternate_sym is restricted to printable ASCII so a large
- * special-key keycode can't truncate into a spurious char match, and is a
- * last resort because it is not dependably populated on this device --
- * hence resolving the glyph through our own altsym_entries instead. */
+/* Metamode binding lookup, in resolution order: the alt-layer glyph (when the
+ * symbol layer is armed), then the base key. The alt-layer glyph is resolved
+ * through our own altsym_entries, so `meta + alt-symbol` composes -- this is
+ * the dependable path that replaced the former k->alternate_sym fallback,
+ * dropped in #30 PR4 (alternate_sym was not dependably populated on this
+ * device, and now that the alt layer composes naturally it is redundant). */
 static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
-	keymap_t *m;
 	/* Alt armed: the user reached for the alt-layer glyph (e.g. alt+v =
 	 * '?'), so resolve it before the base key, which may itself be bound
 	 * (v = paste_clipboard) and would otherwise shadow it. Clear the
@@ -1124,22 +1123,14 @@ static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
 		keymap_t *sym = keymap_lookup((char)k->sym, prefs->altsym_entries);
 		if (sym != NULL && sym->to != NULL
 		    && sym->to[0] != '\0' && sym->to[1] == '\0') {
-			m = keymap_lookup(sym->to[0], table);
+			keymap_t *m = keymap_lookup(sym->to[0], table);
 			if (m != NULL) {
 				kbd.altsym_lock = 0;
 				return m;
 			}
 		}
 	}
-	m = keymap_lookup((char)k->sym, table);
-	if (m != NULL) {
-		return m;
-	}
-	if (k->alternate_sym >= 0x20 && k->alternate_sym < 0x7f
-	    && k->alternate_sym != k->sym) {
-		m = keymap_lookup((char)k->alternate_sym, table);
-	}
-	return m;
+	return keymap_lookup((char)k->sym, table);
 }
 
 int app_dispatch_action(app_t *app, const action_t *action) {
