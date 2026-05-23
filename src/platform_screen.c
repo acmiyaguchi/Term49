@@ -11,6 +11,8 @@
 #include <bps/dialog.h>
 #include <bps/event.h>
 #include <bps/navigator.h>
+#include <bps/navigator_invoke.h>
+#include <bps/notification.h>
 #include <bps/screen.h>
 #include <bps/virtualkeyboard.h>
 #include <screen/screen.h>
@@ -18,6 +20,21 @@
 
 #include "event.h"
 #include "platform.h"
+
+/* Cap on a single cross-app invoke URI (#23). A term49:// URI is short; without
+ * a cap any app on the device could hand us an arbitrarily large copy.
+ * Oversized URIs are truncated, not rejected. */
+#define INVOKE_URI_MAX 4096
+
+/* The invoke action we accept (the standard "open this" action; a tapped
+ * notification, a homescreen shortcut, or a term49:// link in any app all
+ * arrive as bb.action.OPEN), the URI scheme we register, and the target id
+ * that addresses this app (must match bar-descriptor's <invoke-target id>).
+ * Used both to receive (translate_navigator) and to post a notification that
+ * invokes us back (screen_plat_notify_invoke). */
+#define INVOKE_ACTION_OPEN "bb.action.OPEN"
+#define INVOKE_URI_SCHEME  "term49://"
+#define INVOKE_TARGET_ID   "com.example.Term49"
 
 typedef struct platform_screen {
 	screen_context_t ctx;
@@ -34,6 +51,12 @@ typedef struct platform_screen {
 	int              pending_resize_angle;
 	int              pending_resize_w;
 	int              pending_resize_h;
+	/* Latest invoke URI (#23). translate_navigator copies the navigator
+	 * invocation's URI here; the emitted TERM_EVENT_INVOKE borrows it. Valid
+	 * only until the next next_event overwrites it, which is safe because the
+	 * run loop consumes the event synchronously in the same iteration.
+	 * NUL-terminated. */
+	char             invoke_uri[INVOKE_URI_MAX];
 } platform_screen_t;
 
 static platform_screen_t *self_of(platform_t *p) {
@@ -160,6 +183,37 @@ static int translate_navigator(platform_screen_t *self, bps_event_t *event, even
 		memset(out, 0, sizeof(*out));
 		out->type = TERM_EVENT_QUIT;
 		return 1;
+	case NAVIGATOR_INVOKE_TARGET: {
+		/* A cross-app invocation reached us (#23). The OS has already
+		 * re-foregrounded Term49; we just extract the term49:// URI and
+		 * fold a TERM_EVENT_INVOKE for the run loop to act on. One-way:
+		 * no reply is sent (the protocol is fire-and-forget like OSC). */
+		const navigator_invoke_invocation_t *inv =
+			navigator_invoke_event_get_invocation(event);
+		if (inv == NULL) {
+			return 0;
+		}
+		const char *action = navigator_invoke_invocation_get_action(inv);
+		const char *uri    = navigator_invoke_invocation_get_uri(inv);
+		/* The bar-descriptor filter should only route OPEN on our scheme
+		 * here, but verify both defensively before acting. */
+		if (action == NULL || strcmp(action, INVOKE_ACTION_OPEN) != 0 ||
+		    uri == NULL || strncmp(uri, INVOKE_URI_SCHEME,
+		                           sizeof(INVOKE_URI_SCHEME) - 1) != 0) {
+			return 0;
+		}
+		size_t n = strlen(uri);
+		if (n > INVOKE_URI_MAX - 1) {
+			n = INVOKE_URI_MAX - 1;  /* truncate; never overrun */
+		}
+		memcpy(self->invoke_uri, uri, n);
+		self->invoke_uri[n] = '\0';
+		memset(out, 0, sizeof(*out));
+		out->type = TERM_EVENT_INVOKE;
+		out->as.invoke.action = TERM_INVOKE_OPEN;
+		out->as.invoke.uri    = self->invoke_uri;
+		return 1;
+	}
 	default:
 		return 0;
 	}
@@ -270,6 +324,43 @@ static int screen_plat_notify(platform_t *p, const char *msg) {
 	return 0;
 }
 
+/* Post a persistent notification-center entry that invokes us back when
+ * tapped (#23 round-trip). Unlike the toast above this survives until the
+ * user acts on it, and carries an OPEN invocation on a term49:// URI the
+ * navigator delivers as a NAVIGATOR_INVOKE_TARGET -- the same path a link or
+ * another app would use. item_id is unique per post so entries stack rather
+ * than coalesce; the message owns no resources past notification_notify, so
+ * it's destroyed immediately. Needs the post_notification permission (already
+ * in bar-descriptor.xml). */
+static int screen_plat_notify_invoke(platform_t *p, const char *msg, const char *uri) {
+	(void)p;
+	static unsigned seq = 0;
+	notification_message_t *m = NULL;
+	char item_id[32];
+
+	if (notification_message_create(&m) != BPS_SUCCESS || m == NULL) {
+		return -1;
+	}
+	/* item_id must be unique while live and use only [A-Za-z0-9_] (a hyphen is
+	 * outside the documented charset). The pid keeps ids distinct across app
+	 * restarts, so a fresh post never collides with a still-live Hub entry
+	 * from a previous launch (which would make notification_notify fail). */
+	snprintf(item_id, sizeof(item_id), "term49_%d_%u", (int)getpid(), ++seq);
+
+	int ok =
+		notification_message_set_item_id(m, item_id) == BPS_SUCCESS &&
+		notification_message_set_title(m, "Term49") == BPS_SUCCESS &&
+		(msg == NULL || notification_message_set_subtitle(m, msg) == BPS_SUCCESS) &&
+		notification_message_set_invocation_target(m, INVOKE_TARGET_ID) == BPS_SUCCESS &&
+		notification_message_set_invocation_action(m, INVOKE_ACTION_OPEN) == BPS_SUCCESS &&
+		(uri == NULL ||
+		 notification_message_set_invocation_payload_uri(m, uri) == BPS_SUCCESS) &&
+		notification_notify(m) == BPS_SUCCESS;
+
+	notification_message_destroy(&m);
+	return ok ? 0 : -1;
+}
+
 /* Hand the URI to the platform default handler (browser, file viewer,
  * etc.) via the legacy one-shot navigator_invoke. */
 static int screen_plat_open_url(platform_t *p, const char *url) {
@@ -326,6 +417,7 @@ static const platform_ops_t SCREEN_PLATFORM_OPS = {
 	.vkb_height           = screen_plat_vkb_height,
 	.is_passport          = screen_plat_is_passport,
 	.notify               = screen_plat_notify,
+	.notify_invoke        = screen_plat_notify_invoke,
 	.open_url             = screen_plat_open_url,
 	.apply_pending_resize = screen_plat_apply_pending_resize,
 	.destroy              = screen_plat_destroy,

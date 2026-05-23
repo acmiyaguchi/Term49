@@ -86,6 +86,17 @@ static void set_persistent_home(void) {
 		}
 	}
 
+	/* TERM49_AGENT_DOC = absolute path to the bundled agent capability doc
+	 * (#23), so an in-shell agent can `cat "$TERM49_AGENT_DOC"` to discover the
+	 * control socket + term49:// invoke surface. Same asset layout as TERMINFO. */
+	{
+		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/AGENTS.md",
+		                 (int)(appid_end - sandbox_home), sandbox_home);
+		if (n > 0 && n < (int)sizeof(buf)) {
+			setenv("TERM49_AGENT_DOC", buf, 1);
+		}
+	}
+
 	/* HOME = <...>/shared/documents (sibling of /appdata) */
 	{
 		int n = snprintf(buf, sizeof(buf), "%.*s/shared/documents",
@@ -1164,6 +1175,19 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_NOTIFY:
 			return platform_notify(g_platform, action->as.builtin.arg) == 0;
+		case TERM_BUILTIN_NOTIFY_INVOKE: {
+			/* Post a notification that, when tapped, opens a term49:// URI
+			 * focusing the tab that posted it -- the round-trip test entry
+			 * point for #23 (matches handle_invoke_open's tab/N grammar). */
+			char uri[32];
+			const char *msg = action->as.builtin.arg;
+			snprintf(uri, sizeof(uri), "term49://tab/%u",
+			         app_active_index(app) + 1);
+			return platform_notify_invoke(g_platform,
+			                              (msg != NULL && msg[0] != '\0')
+			                                  ? msg : "Term49: tap to return",
+			                              uri) == 0;
+		}
 		case TERM_BUILTIN_OPEN_URL:
 			return platform_open_url(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_FONT_SIZE_INCREASE:
@@ -2500,6 +2524,61 @@ static void reap_exited_children(void){
 	}
 }
 
+/* Act on an OPEN invocation (#23): a term49:// URI. Grammar:
+ *   term49://tab     open a new (empty) tab
+ *   term49://tab/N   focus the 1-based tab N if it is still live, else new tab
+ *   term49://focus   re-foreground only (the OS already raised us)
+ * Unknown verbs are ignored (we were still brought to the foreground).
+ *
+ * NAVIGATION-ONLY BY DESIGN: this scheme is openable by any app -- or a tapped
+ * web link -- so it deliberately cannot run commands or inject input. Driving
+ * the shell (writing a command) is restricted to the in-sandbox control socket
+ * (#5, $TERM49_CONTROL), reachable only by Term49's own child processes. A
+ * query string, if present, is ignored. */
+static void handle_invoke_open(app_t *app, const char *uri) {
+	const char *rest = uri + (sizeof("term49://") - 1);  /* past the scheme */
+	const char *q = strchr(rest, '?');
+	size_t path_len = q ? (size_t)(q - rest) : strlen(rest);
+
+	/* First path segment = verb; optional second segment after '/' = arg. */
+	const char *slash = memchr(rest, '/', path_len);
+	size_t verb_len = slash ? (size_t)(slash - rest) : path_len;
+	const char *arg = slash ? slash + 1 : NULL;
+	size_t arg_len = slash ? (size_t)((rest + path_len) - (slash + 1)) : 0;
+
+	if (verb_len == 5 && memcmp(rest, "focus", 5) == 0) {
+		return;  /* re-foreground only */
+	}
+	if (verb_len != 3 || memcmp(rest, "tab", 3) != 0) {
+		return;  /* unknown verb */
+	}
+
+	/* Parse the optional 1-based tab index. */
+	long idx = -1;
+	if (arg != NULL && arg_len > 0) {
+		long n = 0;
+		int ok = 1;
+		for (size_t i = 0; i < arg_len; i++) {
+			if (arg[i] < '0' || arg[i] > '9') { ok = 0; break; }
+			n = n * 10 + (arg[i] - '0');
+			if (n > APP_MAX_SESSIONS) { ok = 0; break; }
+		}
+		if (ok) idx = n;
+	}
+
+	if (idx > 0 && app_session_select_index(app, (unsigned)(idx - 1))) {
+		tab_overlay_set(1);
+		mark_screen_dirty(1);
+	} else {
+		/* No index, or a stale one: open a fresh tab. */
+		action_t a;
+		memset(&a, 0, sizeof(a));
+		a.kind = TERM_ACTION_BUILTIN;
+		a.as.builtin.id = TERM_BUILTIN_TAB_NEW;
+		app_dispatch_action(app, &a);
+	}
+}
+
 int app_handle_event(app_t *app, const event_t *event) {
 	if (event == NULL) {
 		return 0;
@@ -2594,6 +2673,13 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	case TERM_EVENT_ACTIVATE:
 		handle_activeevent(event->as.activate.active, event->as.activate.state);
+		return 1;
+	case TERM_EVENT_INVOKE:
+		/* Borrowed uri: valid only this iteration (see event.h), so act now
+		 * rather than deferring. OPEN is the only action registered. */
+		if (event->as.invoke.action == TERM_INVOKE_OPEN) {
+			handle_invoke_open(app, event->as.invoke.uri);
+		}
 		return 1;
 	case TERM_EVENT_VKB:
 		{

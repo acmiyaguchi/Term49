@@ -46,5 +46,8 @@ int  app_session_open(app_t *app, uint16_t cols, uint16_t rows,
 void app_session_close_index(app_t *app, unsigned index);  /* frees + reflows */
 void app_session_select_next(app_t *app);
 void app_session_select_prev(app_t *app);
+/* Make the tab at visible index `index` (0..count-1) active. Returns 1 if the
+ * index was in range and selected, 0 otherwise (active left unchanged). */
+int  app_session_select_index(app_t *app, unsigned index);
 
 #endif /* APP_H_ */

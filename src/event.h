@@ -8,6 +8,8 @@
 #ifndef EVENT_H_
 #define EVENT_H_
 
+#include <stddef.h>
+
 #include "term_types.h"
 
 typedef enum event_type {
@@ -20,7 +22,19 @@ typedef enum event_type {
 	TERM_EVENT_RESIZE,
 	TERM_EVENT_ACTIVATE,
 	TERM_EVENT_VKB,
+	/* A cross-app navigator invocation targeting Term49 (#23): a bb.action.OPEN
+	 * on a term49:// URI. The backend copied the URI into backend-owned
+	 * storage; the event's uri pointer borrows that storage and is valid only
+	 * until the next platform_next_event, so the run loop must consume it in
+	 * the same iteration. */
+	TERM_EVENT_INVOKE,
 } event_type_t;
+
+/* What kind of invocation reached us. Only OPEN (a term49:// URI via
+ * bb.action.OPEN) is registered today. */
+typedef enum invoke_action {
+	TERM_INVOKE_OPEN,
+} invoke_action_t;
 
 typedef struct key_event {
 	int keycode;
@@ -46,6 +60,9 @@ typedef struct event {
 		/* visible: 1 show, 0 hide, -1 height-only update (keep current
 		 * visibility). height: reported keyboard height for the -1 case. */
 		struct { int visible; int height; } vkb;
+		/* uri borrows backend-owned storage (see TERM_EVENT_INVOKE) and is
+		 * NUL-terminated; e.g. "term49://tab/2". */
+		struct { invoke_action_t action; const char *uri; } invoke;
 	} as;
 } event_t;
 

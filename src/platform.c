@@ -87,6 +87,13 @@ int platform_notify(platform_t *p, const char *msg) {
 	return p->ops->notify(p, msg);
 }
 
+int platform_notify_invoke(platform_t *p, const char *msg, const char *payload) {
+	if (p == NULL || p->ops->notify_invoke == NULL) {
+		return -1;
+	}
+	return p->ops->notify_invoke(p, msg, payload);
+}
+
 int platform_open_url(platform_t *p, const char *url) {
 	if (p == NULL || p->ops->open_url == NULL) {
 		return -1;

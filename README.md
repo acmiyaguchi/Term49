@@ -111,6 +111,60 @@ All four actions are also reachable from Lua as
 custom keybindings or scripted tab opening from `.term49.lua` work with
 no extra wiring.
 
+## Cross-app invoke
+
+Term49 registers the **`term49://` URI scheme** as a navigator invoke target
+(`bar-descriptor.xml`), so a tapped link, a homescreen shortcut, another app, or
+one of our own notifications can ask the OS to open Term49 and act. This is the
+idiomatic cross-app entry point on BB10 — anything that can open a URI can drive
+Term49 — and is distinct from the #5 control socket: the socket is for processes
+*inside* Term49's sandbox; the URI handler is for openers *outside* it.
+
+The scheme is opened with the standard `bb.action.OPEN` action. Grammar:
+
+| URI | Effect |
+|-----|--------|
+| `term49://tab` | Open a new (empty) tab. |
+| `term49://tab/N` | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it is still live; otherwise open a fresh tab. |
+| `term49://focus` | Re-foreground only (the OS already raised us). |
+
+Unknown verbs (and any query string) are ignored.
+
+> **Navigation-only by design.** The scheme cannot run commands or inject input
+> — it only opens or focuses tabs. Because *any* app, or even a tapped web link,
+> can open a `term49://` URI, letting it drive the shell would be the same abuse
+> surface as an OSC 52 paste but reachable from a link. Running a command is
+> therefore restricted to the in-sandbox control socket (#5, `$TERM49_CONTROL`),
+> which only Term49's own child processes can reach.
+
+### Round-trip: notify, then tap to return
+
+The built-in action **`notify_invoke:<message>`** closes the loop without a
+second app. It posts a persistent notification-center entry whose invocation
+opens `term49://tab/<the posting tab>`. Tapping the notification re-foregrounds
+Term49 and jumps to the tab that posted it.
+
+It is a normal action string, so trigger it however you bind actions:
+
+* **Keybinding** — the reference config binds it to metamode + `k`
+  (`share/term49.lua.reference`).
+* **Control socket** — `termctl run "notify_invoke:back to shell"`.
+* **Lua** — `term.action("notify_invoke:back to shell")`.
+
+To verify: post the notification, switch to another tab, open the notification
+center, and tap the Term49 entry — you should land back on the originating tab.
+(Posting needs the `post_notification` permission, already in
+`bar-descriptor.xml`.)
+
+### Discoverability
+
+* **Another app** finds Term49 the BB10-native way: `navigator_invoke_query()`
+  reports Term49 as a `term49://` handler because the target is declared in the
+  bar descriptor — no out-of-band registry needed.
+* **An agent inside a shell** has the capability summary bundled on-device at
+  `$TERM49_AGENT_DOC` (`cat "$TERM49_AGENT_DOC"`), and the control socket's
+  `termctl help` lists both this socket and the `term49://` scheme.
+
 ## Signing the release
 
 To distribute Term49 through the BlackBerry signing flow, run `make sign`

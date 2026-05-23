@@ -127,6 +127,11 @@ metamode_sticky_keys = {
 --   tab_new / tab_next / tab_prev / tab_close
 --   keyboard_show / keyboard_hide  show/hide the virtual keyboard   (#5)
 --   notify:<message>               transient toast notification     (#5)
+--   notify_invoke:<message>        persistent notification that, when    (#23)
+--                                  tapped, re-foregrounds Term49 and jumps
+--                                  back to the tab that posted it. The
+--                                  cross-app entry point for #23: see the
+--                                  "Cross-app invoke" section in README.md.
 --   open_url:<uri>                 open a URI in its default handler (#5)
 --   lua:<function>                 call a global Lua function (see Scripting)
 -- ----------------------------------------------------------------------------
@@ -151,6 +156,10 @@ metamode_func_keys = {
   { "b", "keyboard_hide" },
   { "m", "notify:Hello from Term49" },
   { "u", "open_url:https://www.blackberry.com/" },
+
+  -- New in #23 -- posts a notification-center entry that invokes Term49 back
+  -- to this tab when tapped. Switch tabs, tap it, and you return here.
+  { "k", "notify_invoke:Tap to return to Term49" },
 }
 
 -- ----------------------------------------------------------------------------

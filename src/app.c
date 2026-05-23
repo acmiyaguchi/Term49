@@ -185,3 +185,11 @@ void app_session_select_prev(app_t *app) {
 	}
 	app->active = (app->active + app->count - 1) % app->count;
 }
+
+int app_session_select_index(app_t *app, unsigned index) {
+	if (app == NULL || index >= app->count) {
+		return 0;
+	}
+	app->active = index;
+	return 1;
+}

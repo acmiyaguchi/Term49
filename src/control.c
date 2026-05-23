@@ -225,7 +225,12 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "  unsubscribe <event> disable async events\n"
 		          "  validate [path]     compile-check a config file (default: yours)\n"
 		          "  eval [lua] <chunk>  run a Lua chunk, print its return value\n"
-		          "events (for subscribe/unsubscribe): " CTL_EVENTS_HELP);
+		          "events (for subscribe/unsubscribe): " CTL_EVENTS_HELP "\n"
+		          "cross-app entry (#23): other apps/links open term49://tab[/N] or\n"
+		          "  term49://focus to open/focus a tab (navigation only -- it cannot\n"
+		          "  run commands; that is what this socket is for). The action\n"
+		          "  notify_invoke:<msg> posts a Hub entry that opens term49://tab/<this tab>.\n"
+		          "agent capability doc: $TERM49_AGENT_DOC");
 		return;
 	}
 	if (strcmp(argv[0], "screen") == 0 && argc >= 2 && strcmp(argv[1], "size") == 0) {
