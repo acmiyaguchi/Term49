@@ -2,7 +2,9 @@
 Device-Debug
 Device-Release
 src/*.o
+src/*.d
 tools/**/*.o
+tools/**/*.d
 signing/bbpass
 signing/*.csk
 signing/*.bar

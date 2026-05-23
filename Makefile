@@ -39,6 +39,14 @@ DEBUGFLAGS	?= -O2
 CFLAGS    	:= $(INCLUDE) -V4.6.3,gcc_ntoarmv7le -Wc,-std=gnu99 $(DEBUGFLAGS)
 LDOPTS    	:= -Wl,-z,relro -Wl,-z,now
 
+# Header-dependency tracking: emit a .d beside each object so a changed header
+# (e.g. a struct in types.h) rebuilds every dependent object. Routed through the
+# preprocessor with -Wp, because qcc does not forward driver-level -MMD. Without
+# this, a stale .o keeps an old struct layout and links into a silent ABI
+# mismatch that only surfaces as a runtime crash. -MP adds phony header targets
+# so deleting a header doesn't wedge the build.
+DEPFLAGS  	= -Wp,-MMD,$(@:.o=.d) -Wp,-MT,$@ -Wp,-MP
+
 ASSET      	:= Device-Debug
 BINARY     	:= Term49
 BINARY_PATH	:= $(ASSET)/$(BINARY)
@@ -81,9 +89,9 @@ $(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(LUA_A) $(OBJS)
 
 # Client objects: no app DEFINES, but -Isrc so they find control_proto.h.
 $(CTL_DIR)/%.ctl.o: $(CTL_DIR)/%.c
-	$(CC) $(CFLAGS) -Isrc -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -Isrc -c $< -o $@
 src/%.ctl.o: src/%.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
 
 $(CTL_PATH): $(CTL_OBJS)
 	mkdir -p $(ASSET)
@@ -94,17 +102,23 @@ $(CTL_PATH): $(CTL_OBJS)
 # More specific stem than the generic %.o rule, so make prefers this for
 # vendor/lua/*.c.
 $(LUA_DIR)/%.o: $(LUA_DIR)/%.c
-	$(CC) $(CFLAGS) -DLUA_USE_POSIX -c $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -DLUA_USE_POSIX -c $< -o $@
 
 $(LUA_A): $(LUA_OBJS)
 	mkdir -p $(dir $@)
 	$(LUA_AR) rcs $@ $(LUA_OBJS)
 
 %.o: %.c
-	$(CC) $(CFLAGS) -c $(DEFINES) $< -o $@
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $(DEFINES) $< -o $@
+
+# Auto-generated header dependencies (absent on a clean tree -> the leading
+# - makes the include a no-op until the first build writes them).
+DEPS := $(OBJS:.o=.d) $(CTL_OBJS:.o=.d) $(LUA_OBJS:.o=.d)
+-include $(DEPS)
 
 clean:
 	@rm -fv src/*.o src/*.ctl.o $(CTL_DIR)/*.ctl.o
+	@rm -fv $(DEPS)
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
 	@rm -fv $(BINARY_PATH) $(CTL_PATH)
 	@rmdir -v $(ASSET) 2>/dev/null || true
