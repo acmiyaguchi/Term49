@@ -132,6 +132,13 @@ static int g_reload_pending = 0;
 
 static char symmenu_lock = 0;
 static char altsym_lock = 0;
+/* On-screen keybinding cheat sheet: a pre-composed panel of the
+ * chord_bindings labels, blitted in render_ghostty when current_help_overlay
+ * is set. Surface is rebuilt by font_init (startup / font-size / reload via
+ * rescreen) and NULL when there are no bindings. */
+static int current_help_overlay = 0;
+static bitmap_t *help_overlay_surface = NULL;
+static int help_startup_shown = 0;
 
 static char metamode = 0;
 static int metamode_doubletap_key = 0;
@@ -486,6 +493,11 @@ void altsym_toggle() {
 	mark_screen_dirty(1);
 }
 
+void help_overlay_toggle() {
+	current_help_overlay = current_help_overlay ? 0 : 1;
+	mark_screen_dirty(1);
+}
+
 void symmenu_stick(){
 	PRINT(stderr, "Sticking Sym key\n");
 	symmenu_lock = 1;
@@ -537,6 +549,130 @@ static keymap_t* symkey_for_mousedown(symmenu_t *menu, uint16_t x, uint16_t y) {
 	}
 	
 	return NULL;
+}
+
+/* Render an ASCII line glyph-by-glyph (labels are ASCII) into dst. */
+#define HELP_MAX_LINES 64
+#define HELP_LINE_MAX  64
+
+static void help_overlay_draw_line(bitmap_t *dst, font_t *f, int adv,
+                                   const char *s, int x, int y,
+                                   rgb_t fg, rgb_t bg){
+	for (int i = 0; s[i] != '\0'; ++i) {
+		bitmap_t *g = font_render_glyph_shaded(f, (uint32_t)(unsigned char)s[i],
+		                                       FONT_STYLE_NORMAL, fg, bg);
+		if (g != NULL) {
+			bitmap_blit(dst, x + i * adv, y, g);
+			bitmap_free(g);
+		}
+	}
+}
+
+/* Render a keymap target for display: control chars become ESC/TAB/^X so
+ * the metamode bindings (e.g. "\x1b", "kcuu1") read cleanly. */
+static void keymap_to_display(const char *to, char *buf, size_t cap){
+	size_t o = 0;
+	for (const char *p = to; p && *p && o + 4 < cap; ++p){
+		unsigned char ch = (unsigned char)*p;
+		if (ch == 0x1b)      { buf[o++]='E'; buf[o++]='S'; buf[o++]='C'; }
+		else if (ch == '\t') { buf[o++]='T'; buf[o++]='A'; buf[o++]='B'; }
+		else if (ch < 0x20)  { buf[o++]='^'; buf[o++]=(char)('@'+ch); }
+		else                 { buf[o++]=(char)ch; }
+	}
+	buf[o] = '\0';
+}
+
+/* (Re)compose the help-overlay cheat sheet: the chord_bindings plus the
+ * metamode key tables, with section headers. Drawn in a smaller font than
+ * the terminal so the full list fits on screen. NULL when there is nothing
+ * to show, so the render gate skips it. Requires a live `font`. */
+static void help_overlay_build(void){
+	bitmap_free(help_overlay_surface);
+	help_overlay_surface = NULL;
+	if (prefs == NULL || font == NULL) {
+		return;
+	}
+
+	char lines[HELP_MAX_LINES][HELP_LINE_MAX];
+	int n = 0;
+	#define HELP_PUSH(...) do { \
+		if (n < HELP_MAX_LINES) { \
+			snprintf(lines[n], HELP_LINE_MAX, __VA_ARGS__); ++n; } \
+	} while (0)
+
+	HELP_PUSH("%s", "Term49 keybindings  (any key closes)");
+
+	if (prefs->chord_bindings && prefs->chord_bindings->keycode != 0) {
+		HELP_PUSH("%s", "");
+		HELP_PUSH("%s", "Chords:");
+		for (chord_t *c = prefs->chord_bindings; c->keycode != 0; ++c) {
+			HELP_PUSH("  %s", c->label ? c->label
+			                           : (c->spec ? c->spec : ""));
+		}
+	}
+
+	const keymap_t *meta_groups[] = {
+		prefs->metamode_keys, prefs->metamode_func_keys,
+		prefs->metamode_sticky_keys,
+	};
+	int meta_header = 0;
+	for (size_t g = 0; g < sizeof(meta_groups) / sizeof(meta_groups[0]); ++g) {
+		for (const keymap_t *km = meta_groups[g]; km && km->to != NULL; ++km) {
+			if (!meta_header) {
+				HELP_PUSH("%s", "");
+				HELP_PUSH("%s", "Metamode (then key):");
+				meta_header = 1;
+			}
+			char td[32];
+			keymap_to_display(km->to, td, sizeof(td));
+			HELP_PUSH("  %c   %s", km->from, td);
+		}
+	}
+	#undef HELP_PUSH
+
+	if (n == 0) {
+		return;
+	}
+
+	/* Smaller font so the fuller list fits a ~720px screen. */
+	int pt = (prefs->font_size * 2) / 3;
+	if (pt < 12) { pt = 12; }
+	font_t *of = font_open(prefs->font_path, pt);
+	if (of == NULL) {
+		return;
+	}
+	int oadv = 0, dummy;
+	if (font_glyph_metrics(of, 'X', &dummy, &dummy, &dummy, &dummy, &oadv) != 0
+	    || oadv <= 0) {
+		font_close(of);
+		return;
+	}
+	int line_h = font_line_skip(of);
+
+	size_t maxlen = 0;
+	for (int i = 0; i < n; ++i) {
+		size_t l = strlen(lines[i]);
+		if (l > maxlen) { maxlen = l; }
+	}
+
+	int pad = oadv;
+	bitmap_t *surface = bitmap_alloc((int)maxlen * oadv + 2 * pad,
+	                                 n * line_h + 2 * pad,
+	                                 BITMAP_FMT_RGBA8888);
+	if (surface == NULL) {
+		font_close(of);
+		return;
+	}
+
+	rgb_t bg = metamode_cursor_bg;
+	rgb_t fg = metamode_cursor_fg;
+	bitmap_fill_rect(surface, NULL, bg);
+	for (int i = 0; i < n; ++i) {
+		help_overlay_draw_line(surface, of, oadv, lines[i],
+		                       pad, pad + i * line_h, fg, bg);
+	}
+	font_close(of);
+	help_overlay_surface = surface;
 }
 
 int font_init(int font_size){
@@ -610,10 +746,19 @@ int font_init(int font_size){
 	if (renderer != NULL) {
 		renderer_set_font(renderer, font);
 	}
+
+	/* Build the help overlay now that `font`/`advance` are live. Pop it
+	 * once at startup if the user opted in (niri-style cheat sheet). */
+	help_overlay_build();
+	if (!help_startup_shown && prefs != NULL && prefs->show_help_on_startup) {
+		current_help_overlay = 1;
+		help_startup_shown = 1;
+	}
 	return TERM_SUCCESS;
 }
 
 void font_uninit(){
+	bitmap_free(help_overlay_surface); help_overlay_surface = NULL;
 
 	if (renderer != NULL) {
 		renderer_set_font(renderer, NULL);
@@ -894,6 +1039,7 @@ static void app_reload_config(void){
 	metamode = 0;
 	altsym_lock = 0;
 	symmenu_lock = 0;
+	current_help_overlay = 0;            /* surface is rebuilt by rescreen below */
 
 	destroy_preferences_members(prefs);  /* free old arrays, keep struct */
 	*prefs = *fresh;                     /* move new data into stable struct */
@@ -916,6 +1062,74 @@ void toggle_vkeymod(int mod){
 		vmodifiers |= mod;
 	}
 	mark_screen_dirty(1);
+}
+
+/* The live modifier mask for chord matching, reconciling state that is
+ * otherwise split across vmodifiers (ctrl/alt/shift bits), altsym_lock
+ * (the symbol-layer alt), and the sym-menu state (no NDK KEYMOD_*, so we
+ * synthesize CHORD_MOD_SYM). Stuck and held both land here because the
+ * BB modifier keys are tap-to-stick. */
+static unsigned current_modmask(void){
+	unsigned m = (unsigned)vmodifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT);
+	if (altsym_lock) {
+		m |= KEYMOD_ALT;
+	}
+	if (current_symmenu != NULL || symmenu_lock) {
+		m |= CHORD_MOD_SYM;
+	}
+	return m;
+}
+
+/* Consume the stuck prefix modifiers a Site A chord matched on. Site A
+ * returns before the vmodifiers=0 auto-clear, so an unconsumed prefix
+ * would otherwise linger and shadow the next keystroke. The sym clear is
+ * light (resets the menu state without symmenu_toggle's rescreen) so a
+ * manufactured Ctrl/Meta chord doesn't flash the screen. */
+static void chord_clear_prefix(unsigned mask){
+	vmodifiers &= ~((int)mask & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT));
+	if (mask & KEYMOD_ALT) {
+		altsym_lock = 0;
+	}
+	if (mask & CHORD_MOD_SYM) {
+		current_symmenu = NULL;
+		symmenu_lock = 0;
+	}
+	mark_screen_dirty(1);
+}
+
+/* Metamode binding lookup, in resolution order: the alt-layer glyph (when
+ * the symbol layer is armed), then the base key, then the platform's
+ * alternate_sym. alternate_sym is restricted to printable ASCII so a large
+ * special-key keycode can't truncate into a spurious char match, and is a
+ * last resort because it is not dependably populated on this device --
+ * hence resolving the glyph through our own altsym_entries instead. */
+static keymap_t *metamode_lookup(const key_event_t *k, keymap_t *table){
+	keymap_t *m;
+	/* Alt armed: the user reached for the alt-layer glyph (e.g. alt+v =
+	 * '?'), so resolve it before the base key, which may itself be bound
+	 * (v = paste_clipboard) and would otherwise shadow it. Clear the
+	 * one-shot lock on a hit so it can't leak onto the next key -- the
+	 * metamode branch returns before the normal altsym-clear path. */
+	if (altsym_lock) {
+		keymap_t *sym = keymap_lookup((char)k->sym, prefs->altsym_entries);
+		if (sym != NULL && sym->to != NULL
+		    && sym->to[0] != '\0' && sym->to[1] == '\0') {
+			m = keymap_lookup(sym->to[0], table);
+			if (m != NULL) {
+				altsym_lock = 0;
+				return m;
+			}
+		}
+	}
+	m = keymap_lookup((char)k->sym, table);
+	if (m != NULL) {
+		return m;
+	}
+	if (k->alternate_sym >= 0x20 && k->alternate_sym < 0x7f
+	    && k->alternate_sym != k->sym) {
+		m = keymap_lookup((char)k->alternate_sym, table);
+	}
+	return m;
 }
 
 int app_dispatch_action(app_t *app, const action_t *action) {
@@ -1030,6 +1244,12 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			 * through. Applied at the run-loop safe point. */
 			g_reload_pending = 1;
 			return 1;
+		case TERM_BUILTIN_METAMODE_TOGGLE:
+			metamode_toggle();
+			return 1;
+		case TERM_BUILTIN_HELP_OVERLAY:
+			help_overlay_toggle();
+			return 1;
 		default:
 			return 0;
 		}
@@ -1133,6 +1353,14 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		PRINT(stderr, "The '%d' key was pressed (modifiers: %d) (char %c) (alt %d)\n", (int)k->sym, modifiers, (char)k->sym, (int)k->alternate_sym);
 		fflush(stdout);
 
+		/* The help overlay is modal: any keypress dismisses it and is
+		 * consumed (so the dismiss key doesn't also fire its action). */
+		if (current_help_overlay && !k->repeat) {
+			current_help_overlay = 0;
+			mark_screen_dirty(1);
+			return;
+		}
+
 		/* if we're toggling metamode on or off with doubletap */
 		if((k->sym == metamode_doubletap_key) && !k->repeat){
 			clock_gettime(CLOCK_MONOTONIC, &now);
@@ -1144,6 +1372,47 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 				metamode_just_set = 1;
 			}
 			metamode_last = now;
+		}
+
+		/* Site A: modifier-key chords. A modifier key pressed while
+		 * another modifier is already stuck (the BB keys are tap-to-stick)
+		 * fires a chord instead of its default toggle -- e.g. shift then
+		 * alt -> Ctrl, shift then sym -> metamode. Runs before the sticky
+		 * sym/alt/shift handlers below and independent of the sticky_*_key
+		 * prefs, so the default behavior survives only when no chord
+		 * matches. Initial press only. */
+		if (!k->repeat) {
+			int trig = k->sym;
+			unsigned self = 0;
+			int is_mod_trigger = 1;
+			switch (trig) {
+			case KEYCODE_BB_SYM_KEY: self = CHORD_MOD_SYM; break;
+			case KEYCODE_BB_ALT_KEY: self = KEYMOD_ALT;    break;
+			case KEYCODE_RIGHT_SHIFT:
+			case KEYCODE_LEFT_SHIFT:
+				/* match the shift handler below: only a trigger with the
+				 * physical keyboard up; normalize L/R to one keycode. */
+				if (virtualkeyboard_visible) {
+					is_mod_trigger = 0;
+				} else {
+					trig = KEYCODE_LEFT_SHIFT;
+					self = KEYMOD_SHIFT;
+				}
+				break;
+			default: is_mod_trigger = 0; break;
+			}
+			if (is_mod_trigger) {
+				unsigned prefix = current_modmask() & ~self;
+				if (prefix != 0) {
+					chord_t *chord = chord_lookup(trig, prefix,
+					                              prefs->chord_bindings);
+					if (chord != NULL) {
+						chord_clear_prefix(prefix);
+						app_dispatch_action(app, &chord->action);
+						return;
+					}
+				}
+			}
 		}
 
 		/* handle sticky keys */
@@ -1182,7 +1451,7 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 
 		/* metamode sticky keys don't trigger repreat */
 		if (metamode && !metamode_just_set) {
-			keymap = keymap_lookup((char)k->sym, prefs->metamode_sticky_keys);
+			keymap = metamode_lookup(k, prefs->metamode_sticky_keys);
 			if (keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 				return;
@@ -1236,14 +1505,14 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 		}
 
 		if(metamode && !metamode_just_set){
-			keymap = keymap_lookup((char)k->sym, prefs->metamode_keys);
+			keymap = metamode_lookup(k, prefs->metamode_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 				metamode_toggle();
 				return;
 			}
 			// else
-			keymap = keymap_lookup((char)k->sym, prefs->metamode_func_keys);
+			keymap = metamode_lookup(k, prefs->metamode_func_keys);
 			if(keymap != NULL){
 				app_dispatch_action(app, &keymap->action);
 			} else {
@@ -1297,6 +1566,23 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 			mark_screen_dirty(1);
 		}
 		vmodifiers = 0;
+
+		/* Site B: ordinary-key chords -- a real modifier (an external
+		 * keyboard's ctrl/alt, or a merged sticky vmodifier) plus a key.
+		 * Consulted after the sticky merge and before plain-key dispatch,
+		 * so a matched ctrl+t fires the action instead of emitting its
+		 * control byte. Exact mask match; initial press only. Modifier-key
+		 * triggers (sym/alt/shift) returned earlier at Site A and never
+		 * reach here. */
+		if (!k->repeat) {
+			chord_t *chord = chord_lookup(k->sym,
+			        (unsigned)modifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT),
+			        prefs->chord_bindings);
+			if (chord != NULL) {
+				app_dispatch_action(app, &chord->action);
+				return;
+			}
+		}
 
 		/* now process the keypress */
 		switch (k->sym) {
@@ -1800,6 +2086,14 @@ static int render_ghostty(int force_full_repaint) {
 	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, current_symmenu);
 	if (symmenu_surface != NULL) {
 		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
+	}
+
+	if (current_help_overlay && help_overlay_surface != NULL) {
+		int hx = (fb_w - help_overlay_surface->w) / 2;
+		int hy = (fb_h - help_overlay_surface->h) / 2;
+		if (hx < 0) { hx = 0; }
+		if (hy < 0) { hy = 0; }
+		renderer_draw_bitmap(renderer, hx, hy, help_overlay_surface);
 	}
 
 	ghostty_bridge_finish_frame(bridge);

@@ -91,4 +91,14 @@ keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head);
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head);
 int is_int_member(int const* list, int target);
 
+/* Private "sym held" bit for chord matching. SYM is a menu key with no
+ * NDK KEYMOD_* of its own, so we synthesize this bit from menu state at
+ * the dispatch site. Chosen well outside the NDK KEYMOD_* range; it is
+ * internal only and never passed to terminal_key_sequence. */
+#define CHORD_MOD_SYM (1u << 16)
+
+/* Find the chord whose trigger keycode and modifier mask match exactly.
+ * Returns NULL if none. `chord_head` is a keycode==0-terminated array. */
+chord_t* chord_lookup(int keycode, unsigned mods, chord_t *chord_head);
+
 #endif /* PREFS_H_ */
