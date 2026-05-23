@@ -40,7 +40,7 @@
 #define PREFS_COLOR_NUM_ELEMENTS 3
 #define PREFS_SYMKEYS_DEFAULT_NUM_ROWS 2
 
-static const int PREFS_VERSION = 10;
+static const int PREFS_VERSION = 9;
 
 #define DEFAULT_FONT_PATH TERM_DEFAULT_FONT_PATH
 #define DEFAULT_FONT_SIZE TERM_DEFAULT_FONT_SIZE
@@ -62,7 +62,7 @@ static const int PREFS_VERSION = 10;
                                                   {'j', "kcud1"}, \
                                                   {'l', "kcuf1"}, \
                                                   {'h', "kcub1"}}
-#define DEFAULT_METAMODE_FUNC_KEYS_LEN 13
+#define DEFAULT_METAMODE_FUNC_KEYS_LEN 12
 #define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
                                                 {'d', "ctrl_down"}, \
                                                 {'s', "rescreen"}, \
@@ -74,8 +74,7 @@ static const int PREFS_VERSION = 10;
                                                 {'c', "tab_new"}, \
                                                 {'n', "tab_next"}, \
                                                 {'p', "tab_prev"}, \
-                                                {'x', "tab_close"}, \
-                                                {'?', "help_overlay"}}
+                                                {'x', "tab_close"}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
 #define DEFAULT_SYMMENU_ENTRIES (keymap_t[]) {  \
@@ -89,7 +88,6 @@ static const int PREFS_VERSION = 10;
 #define DEFAULT_KEYHOLD_ACTIONS_EXEMPT (int[]){KEYCODE_BACKSPACE, KEYCODE_RETURN}
 #define DEFAULT_RESCREEN_FOR_SYMMENU 1
 #define DEFAULT_KEYHOLD_ACCENTS 1
-#define DEFAULT_SHOW_HELP_ON_STARTUP 0
 
 #define DEFAULT_ALTSYM_ENTRIES_LEN 27
 #define DEFAULT_ALTSYM_ENTRIES (keymap_t[]) {  \
@@ -388,158 +386,6 @@ static keymap_t *lua_create_keymap_array(lua_State *L, const char *key,
 	return lua_keymap_defaults(def, def_len);
 }
 
-/* --- chord_bindings loader -------------------------------------------
- * chord_bindings is a table of records (not the positional {from,to}
- * pairs the keymap tables use), so this is the one loader that reads by
- * named field:
- *   { key = "t", mods = {"ctrl","shift"}, action = "tab_new", label = "New tab" }
- * Validate-all-then-build like lua_keymap_from_top: one malformed record
- * rejects the whole table (-> compiled defaults), never a partial build.
- * An explicit empty table disables the defaults; an absent or malformed
- * table falls back to them. */
-
-typedef struct {
-	int keycode;
-	unsigned mods;
-	const char *spec;
-	const char *label;
-} chord_def_t;
-
-/* Shipped defaults. The two bare-Q10 flagships only -- both live on
- * modifier *combinations* that are otherwise unused on-device, so they
- * shadow no plain key or TUI binding. External-keyboard chords (ctrl+key)
- * stay opt-in, emitted as commented examples by prefs_emit_lua. */
-#define DEFAULT_CHORD_BINDINGS_LEN 2
-static const chord_def_t DEFAULT_CHORD_BINDINGS[] = {
-	{ KEYCODE_BB_ALT_KEY, KEYMOD_SHIFT, "ctrl_down",       "shift+alt = Ctrl" },
-	{ KEYCODE_BB_SYM_KEY, KEYMOD_SHIFT, "metamode_toggle", "shift+sym = Meta" },
-};
-
-/* spec string is owned by the chord (action fields point into it). */
-static void chord_set_action(chord_t *c, const char *spec) {
-	c->spec = strdup(spec);
-	if (!action_parse(c->spec, &c->action)) {
-		c->action = (action_t){0};
-	}
-}
-
-/* "t" -> 't' (single chars are their own byte value, as app_handle_key
- * compares (char)k->sym for letter/digit triggers); named keys cover the
- * modifier and whitespace keys a chord can trigger on. Unknown -> 0,
- * which the caller treats as an invalid record. */
-static int chord_keycode_for(const char *name) {
-	if (name == NULL || name[0] == '\0') return 0;
-	if (name[1] == '\0') return (unsigned char)name[0];
-	if (strcmp(name, "sym") == 0)       return KEYCODE_BB_SYM_KEY;
-	if (strcmp(name, "alt") == 0)       return KEYCODE_BB_ALT_KEY;
-	if (strcmp(name, "shift") == 0)     return KEYCODE_LEFT_SHIFT;
-	if (strcmp(name, "space") == 0)     return KEYCODE_SPACE;
-	if (strcmp(name, "enter") == 0 ||
-	    strcmp(name, "return") == 0)    return KEYCODE_RETURN;
-	if (strcmp(name, "tab") == 0)       return KEYCODE_TAB;
-	if (strcmp(name, "escape") == 0 ||
-	    strcmp(name, "esc") == 0)       return KEYCODE_ESCAPE;
-	if (strcmp(name, "backspace") == 0) return KEYCODE_BACKSPACE;
-	return 0;
-}
-
-/* modifier name -> mask bit; unknown -> 0. */
-static unsigned chord_mod_for(const char *name) {
-	if (name == NULL) return 0;
-	if (strcmp(name, "ctrl") == 0)  return KEYMOD_CTRL;
-	if (strcmp(name, "alt") == 0)   return KEYMOD_ALT;
-	if (strcmp(name, "shift") == 0) return KEYMOD_SHIFT;
-	if (strcmp(name, "sym") == 0)   return CHORD_MOD_SYM;
-	return 0;
-}
-
-/* Read the chord record at index `i` of the array on top of the stack.
- * out != NULL builds it (allocating spec/label); out == NULL validates
- * only. Returns 1 if the record is well-formed. STACK: net zero -- the
- * array stays at -1. */
-static int lua_chord_at(lua_State *L, int i, chord_t *out) {
-	int ok = 0;
-	lua_rawgeti(L, -1, (lua_Integer)i);              /* record */
-	if (lua_type(L, -1) == LUA_TTABLE) {
-		lua_getfield(L, -1, "key");
-		int keycode = lua_type(L, -1) == LUA_TSTRING
-		            ? chord_keycode_for(lua_tostring(L, -1)) : 0;
-		lua_pop(L, 1);                           /* key */
-
-		lua_getfield(L, -1, "action");           /* kept on stack */
-		const char *act = lua_type(L, -1) == LUA_TSTRING
-		                ? lua_tostring(L, -1) : NULL;
-
-		unsigned mods = 0;
-		int mods_ok = 1;
-		lua_getfield(L, -2, "mods");             /* -2 = record */
-		if (lua_type(L, -1) == LUA_TTABLE) {
-			size_t n = (size_t)lua_rawlen(L, -1);
-			for (size_t j = 1; j <= n; ++j) {
-				lua_rawgeti(L, -1, (lua_Integer)j);
-				unsigned b = lua_type(L, -1) == LUA_TSTRING
-				           ? chord_mod_for(lua_tostring(L, -1)) : 0;
-				if (b) { mods |= b; } else { mods_ok = 0; }
-				lua_pop(L, 1);
-			}
-		} else if (lua_type(L, -1) != LUA_TNIL) {
-			mods_ok = 0;                         /* present but not a table */
-		}
-
-		lua_getfield(L, -3, "label");            /* -3 = record */
-		const char *label = lua_type(L, -1) == LUA_TSTRING
-		                  ? lua_tostring(L, -1) : NULL;
-
-		if (keycode != 0 && act != NULL && act[0] && mods_ok) {
-			if (out != NULL) {
-				out->keycode = keycode;
-				out->mods = mods;
-				chord_set_action(out, act);
-				out->label = label ? strdup(label) : NULL;
-			}
-			ok = 1;
-		}
-		lua_pop(L, 3);                           /* label, mods, action */
-	}
-	lua_pop(L, 1);                                   /* record */
-	return ok;
-}
-
-static chord_t *chord_defaults(void) {
-	chord_t *result = calloc(DEFAULT_CHORD_BINDINGS_LEN + 1, sizeof(chord_t));
-	for (size_t i = 0; i < DEFAULT_CHORD_BINDINGS_LEN; ++i) {
-		const chord_def_t *d = &DEFAULT_CHORD_BINDINGS[i];
-		result[i].keycode = d->keycode;
-		result[i].mods = d->mods;
-		chord_set_action(&result[i], d->spec);
-		result[i].label = d->label ? strdup(d->label) : NULL;
-	}
-	return result;                                   /* calloc => keycode==0 sentinel */
-}
-
-static chord_t *lua_create_chord_array(lua_State *L, const char *key) {
-	if (lua_get_table(L, key)) {
-		size_t n = (size_t)lua_rawlen(L, -1);
-		int valid = 1;
-		for (size_t i = 1; i <= n && valid; ++i) {
-			if (!lua_chord_at(L, (int)i, NULL)) {
-				valid = 0;
-			}
-		}
-		if (valid) {
-			chord_t *result = calloc(n + 1, sizeof(chord_t));
-			for (size_t i = 1; i <= n; ++i) {
-				lua_chord_at(L, (int)i, &result[i - 1]);
-			}
-			lua_pop(L, 1);                       /* pop the global table */
-			return result;
-		}
-		lua_pop(L, 1);                               /* pop the global table */
-		fprintf(stderr, "invalid chord_bindings %s, using default\n", key);
-	}
-	return chord_defaults();
-}
-
 static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
                                      int def_num_rows, const int *def_row_lens,
                                      const keymap_t *def_entries) {
@@ -679,14 +525,6 @@ void destroy_preferences_members(pref_t *pref) {
 	while (m->to != NULL) { free(m->to); ++m; }
 	free(pref->altsym_entries);
 
-	chord_t *c = pref->chord_bindings;
-	while (c != NULL && c->keycode != 0) {
-		free(c->spec);
-		free(c->label);
-		++c;
-	}
-	free(pref->chord_bindings);
-
 	free(pref->keyhold_actions_exempt);
 }
 
@@ -728,7 +566,6 @@ static const prefs_scalar_desc PREFS_SCALARS[] = {
 	{ "sticky_alt_key",           PS_BOOL,   offsetof(pref_t, sticky_alt_key),           DEFAULT_STICKY_ALT_KEY,         NULL },
 	{ "rescreen_for_symmenu",     PS_BOOL,   offsetof(pref_t, rescreen_for_symmenu),     DEFAULT_RESCREEN_FOR_SYMMENU,   NULL },
 	{ "keyhold_accents",          PS_BOOL,   offsetof(pref_t, keyhold_accents),          DEFAULT_KEYHOLD_ACCENTS,        NULL },
-	{ "show_help_on_startup",     PS_BOOL,   offsetof(pref_t, show_help_on_startup),     DEFAULT_SHOW_HELP_ON_STARTUP,   NULL },
 };
 
 static void lua_read_scalars(lua_State *L, pref_t *prefs) {
@@ -771,7 +608,6 @@ static void prefs_build_from_lua(lua_State *L, pref_t *prefs) {
 
 	prefs->main_symmenu = lua_create_symmenu(L, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
 	prefs->altsym_entries = lua_create_keymap_array(L, "altsym_entries", DEFAULT_ALTSYM_ENTRIES_LEN, DEFAULT_ALTSYM_ENTRIES);
-	prefs->chord_bindings = lua_create_chord_array(L, "chord_bindings");
 
 	/* accent menus are configurable but not part of the default config */
 	char am_name[] = {' ', '_', 'a', 'c', 'c', 'e', 'n', 't', 's', '\0'};
@@ -805,19 +641,6 @@ keymap_t* keymap_lookup(char keystroke, keymap_t *keymap_head) {
 const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 	keymap_t *entry = keymap_lookup(keystroke, keymap_head);
 	return entry != NULL ? entry->to : NULL;
-}
-
-chord_t* chord_lookup(int keycode, unsigned mods, chord_t *chord_head) {
-	if (chord_head == NULL) {
-		return NULL;
-	}
-	while (chord_head->keycode != 0) {
-		if (chord_head->keycode == keycode && chord_head->mods == mods) {
-			return chord_head;
-		}
-		++chord_head;
-	}
-	return NULL;
 }
 
 /* ====================================================================
@@ -1199,56 +1022,6 @@ static void lua_emit_symmenu(FILE *f, const char *key, const symmenu_t *m) {
 	fputs("}\n\n", f);
 }
 
-/* Reconstruct a chord's key-name for emission (inverse of
- * chord_keycode_for). Single-byte triggers go into the caller's buf. */
-static const char *chord_keyname(int keycode, char buf[2]) {
-	switch (keycode) {
-	case KEYCODE_BB_SYM_KEY:  return "sym";
-	case KEYCODE_BB_ALT_KEY:  return "alt";
-	case KEYCODE_LEFT_SHIFT:
-	case KEYCODE_RIGHT_SHIFT: return "shift";
-	case KEYCODE_SPACE:       return "space";
-	case KEYCODE_RETURN:      return "enter";
-	case KEYCODE_TAB:         return "tab";
-	case KEYCODE_ESCAPE:      return "escape";
-	case KEYCODE_BACKSPACE:   return "backspace";
-	default:
-		buf[0] = (char)keycode;
-		buf[1] = '\0';
-		return buf;
-	}
-}
-
-static void lua_emit_chords(FILE *f, const char *key, const chord_t *cb) {
-	static const struct { unsigned bit; const char *name; } mods[] = {
-		{ KEYMOD_CTRL, "ctrl" }, { KEYMOD_ALT, "alt" },
-		{ KEYMOD_SHIFT, "shift" }, { CHORD_MOD_SYM, "sym" },
-	};
-	fprintf(f, "%s = {\n", key);
-	for (; cb && cb->keycode != 0; ++cb) {
-		char kb[2];
-		fputs("  { key = ", f);
-		lua_emit_qstr(f, chord_keyname(cb->keycode, kb));
-		fputs(", mods = {", f);
-		int first = 1;
-		for (size_t i = 0; i < sizeof(mods) / sizeof(mods[0]); ++i) {
-			if (cb->mods & mods[i].bit) {
-				fputs(first ? " " : ", ", f);
-				lua_emit_qstr(f, mods[i].name);
-				first = 0;
-			}
-		}
-		fputs(first ? "}, action = " : " }, action = ", f);
-		lua_emit_qstr(f, cb->spec ? cb->spec : "");
-		if (cb->label) {
-			fputs(", label = ", f);
-			lua_emit_qstr(f, cb->label);
-		}
-		fputs(" },\n", f);
-	}
-	fputs("}\n\n", f);
-}
-
 void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	FILE *f = fopen(path, "w");
 	if (f == NULL) {
@@ -1306,22 +1079,6 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	lua_emit_keymap(f, "metamode_sticky_keys", prefs->metamode_sticky_keys);
 	lua_emit_keymap(f, "metamode_func_keys", prefs->metamode_func_keys);
 	lua_emit_symmenu(f, "main_symmenu", prefs->main_symmenu);
-
-	fputs("-- Modifier-aware chord bindings: a trigger key plus a set of\n"
-	      "-- held/stuck modifiers dispatch to an action (the same action\n"
-	      "-- strings metamode_func_keys accepts: raw bytes, terminfo names,\n"
-	      "-- builtins, or \"lua:<fn>\"). mods may be \"ctrl\", \"alt\", \"shift\",\n"
-	      "-- \"sym\"; an empty/absent mods means no modifiers. label is shown\n"
-	      "-- in the help overlay (toggle a key bound to \"help_overlay\").\n"
-	      "--\n"
-	      "-- The two defaults below give the bare BlackBerry keyboard (no\n"
-	      "-- ctrl key) a Ctrl and an extra Meta: tap shift, then alt -> the\n"
-	      "-- next key is Ctrl+key; tap shift, then sym -> toggles metamode.\n"
-	      "-- Set chord_bindings = {} to disable them.\n", f);
-	lua_emit_chords(f, "chord_bindings", prefs->chord_bindings);
-	fputs("-- External-keyboard examples (a real Ctrl key); uncomment to use:\n"
-	      "--   { key = \"t\", mods = {\"ctrl\", \"shift\"}, action = \"tab_new\",   label = \"New tab\" },\n"
-	      "--   { key = \"w\", mods = {\"ctrl\", \"shift\"}, action = \"tab_close\", label = \"Close tab\" },\n\n", f);
 
 	fputs("-- Scripting example (uncomment to use). A key bound to\n"
 	      "-- \"lua:<name>\" in metamode_func_keys calls the matching Lua\n"
