@@ -1393,89 +1393,95 @@ static int doubletap_step(const key_event_t *k){
 	return just_set;
 }
 
-/* rung 3: Site A modifier-key chords. A modifier key pressed while another
- * modifier is already stuck (BB keys are tap-to-stick) fires a chord instead
- * of its default toggle -- e.g. shift then alt -> Ctrl. Independent of the
- * sticky_*_key prefs, so the default toggle survives only when no chord
- * matches. Initial press only. */
-static int layer_modkey_chord(app_t *app, const key_event_t *k,
-                              int *modifiers, int just_set){
-	int trig, is_mod_trigger = 1;
-	unsigned self = 0;
-	(void)modifiers; (void)just_set;
-	if (k->repeat) {
+/* The three BlackBerry modifier keys (sym / alt / shift) are the input methods
+ * that feed the accumulator. On a plain tap each runs its own default toggle
+ * (sym: the sym-menu lock -- tap toggles, hold sticks; alt: latch the alt
+ * layer; shift: latch sticky shift). But a modifier key pressed while another
+ * modifier is already stuck fires a *chord* instead (e.g. shift then alt ->
+ * Ctrl), via the shared try_chord path below. The single layer_modkey layer
+ * subsumes the former Site-A-chord + per-key toggle rungs (old rungs 3-6). */
+static void modkey_sym_default(const key_event_t *k){
+	if (!k->repeat) {
+		symmenu_toggle(prefs->main_symmenu);
+	} else {
+		symmenu_stick();
+	}
+}
+static void modkey_alt_default(const key_event_t *k){
+	if (!k->repeat) {
+		altsym_toggle();
+	}
+	/* repeat: consume without re-toggling */
+}
+static void modkey_shift_default(const key_event_t *k){
+	if (!k->repeat) {
+		toggle_vkeymod(KEYMOD_SHIFT);
+	}
+	/* repeat: consume without re-toggling */
+}
+
+/* Shared chord dispatch for both chord sites (#30 PR3). clears_prefix is set
+ * only for Site A (a modifier key consuming the modifiers already stuck as its
+ * prefix), where the matched prefix bits are torn down via chord_clear_prefix
+ * -- which avoids the symmenu repaint flash. Site B's modifiers were already
+ * merged + cleared by rung 12, so it passes 0. Returns 1 on a matched chord. */
+static int try_chord(app_t *app, int keycode, unsigned mask, int clears_prefix){
+	chord_t *chord = chord_lookup(keycode, mask, prefs->chord_bindings);
+	if (chord == NULL) {
 		return 0;
 	}
-	trig = k->sym;
+	if (clears_prefix) {
+		chord_clear_prefix(mask);
+	}
+	app_dispatch_action(app, &chord->action);
+	return 1;
+}
+
+/* rungs 3-6 collapsed: resolve a modifier-key press. First try a Site-A chord
+ * against the already-stuck prefix (initial press only, independent of the
+ * sticky_*_key prefs); failing that, run the key's own default toggle when its
+ * sticky pref allows. Shift is only a trigger with the physical keyboard up. */
+static int layer_modkey(app_t *app, const key_event_t *k,
+                        int *modifiers, int just_set){
+	int trig = k->sym;
+	unsigned self;
+	int gated_ok;
+	void (*deftoggle)(const key_event_t *);
+	(void)modifiers; (void)just_set;
+
 	switch (trig) {
-	case KEYCODE_BB_SYM_KEY: self = CHORD_MOD_SYM; break;
-	case KEYCODE_BB_ALT_KEY: self = KEYMOD_ALT;    break;
-	case KEYCODE_RIGHT_SHIFT:
-	case KEYCODE_LEFT_SHIFT:
-		/* only a trigger with the physical keyboard up; normalize L/R. */
-		if (kbd.virtualkeyboard_visible) {
-			is_mod_trigger = 0;
-		} else {
-			trig = KEYCODE_LEFT_SHIFT;
-			self = KEYMOD_SHIFT;
-		}
+	case KEYCODE_BB_SYM_KEY:
+		self = CHORD_MOD_SYM; gated_ok = 1;
+		deftoggle = modkey_sym_default;
 		break;
-	default: is_mod_trigger = 0; break;
+	case KEYCODE_BB_ALT_KEY:
+		self = KEYMOD_ALT; gated_ok = prefs->sticky_alt_key;
+		deftoggle = modkey_alt_default;
+		break;
+	case KEYCODE_LEFT_SHIFT:
+	case KEYCODE_RIGHT_SHIFT:
+		if (kbd.virtualkeyboard_visible) {
+			return 0;   /* VKB up: not a modifier trigger, fall through */
+		}
+		trig = KEYCODE_LEFT_SHIFT;   /* normalize L/R */
+		self = KEYMOD_SHIFT; gated_ok = prefs->sticky_shift_key;
+		deftoggle = modkey_shift_default;
+		break;
+	default:
+		return 0;   /* not a modifier key */
 	}
-	if (is_mod_trigger) {
+
+	/* Site A: chord with the already-stuck prefix (initial press only). */
+	if (!k->repeat) {
 		unsigned prefix = current_modmask() & ~self;
-		if (prefix != 0) {
-			chord_t *chord = chord_lookup(trig, prefix, prefs->chord_bindings);
-			if (chord != NULL) {
-				chord_clear_prefix(prefix);
-				app_dispatch_action(app, &chord->action);
-				return 1;
-			}
+		if (prefix != 0 && try_chord(app, trig, prefix, /*clears_prefix=*/1)) {
+			return 1;
 		}
 	}
-	return 0;
-}
 
-/* rung 4: sym key -- tap toggles the menu, hold sticks it. */
-static int layer_sym_toggle(app_t *app, const key_event_t *k,
-                            int *modifiers, int just_set){
-	(void)app; (void)modifiers; (void)just_set;
-	if (k->sym == KEYCODE_BB_SYM_KEY) {
-		if (!k->repeat) {
-			symmenu_toggle(prefs->main_symmenu);
-		} else {
-			symmenu_stick();
-		}
-		return 1;
-	}
-	return 0;
-}
-
-/* rung 5: alt key toggles the alt layer (only when sticky_alt_key; otherwise
- * the key falls through to later layers). */
-static int layer_alt_toggle(app_t *app, const key_event_t *k,
-                            int *modifiers, int just_set){
-	(void)app; (void)modifiers; (void)just_set;
-	if (k->sym == KEYCODE_BB_ALT_KEY && prefs->sticky_alt_key) {
-		if (!k->repeat) {
-			altsym_toggle();
-		}
-		return 1;
-	}
-	return 0;
-}
-
-/* rung 6: shift key toggles sticky shift (physical keyboard up only, and only
- * when sticky_shift_key). */
-static int layer_shift_toggle(app_t *app, const key_event_t *k,
-                              int *modifiers, int just_set){
-	(void)app; (void)modifiers; (void)just_set;
-	if (!kbd.virtualkeyboard_visible
-	    && (k->sym == KEYCODE_LEFT_SHIFT || k->sym == KEYCODE_RIGHT_SHIFT)
-	    && prefs->sticky_shift_key) {
-		if (!k->repeat) {
-			toggle_vkeymod(KEYMOD_SHIFT);
-		}
+	/* default: the modifier's own toggle, when its sticky pref allows it. */
+	if (gated_ok) {
+		deftoggle(k);
 		return 1;
 	}
 	return 0;
@@ -1571,13 +1577,9 @@ static int layer_ordinary_chord(app_t *app, const key_event_t *k,
                                 int *modifiers, int just_set){
 	(void)just_set;
 	if (!k->repeat) {
-		chord_t *chord = chord_lookup(k->sym,
+		return try_chord(app, k->sym,
 		        (unsigned)(*modifiers) & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT),
-		        prefs->chord_bindings);
-		if (chord != NULL) {
-			app_dispatch_action(app, &chord->action);
-			return 1;
-		}
+		        /*clears_prefix=*/0);
 	}
 	return 0;
 }
@@ -1690,12 +1692,9 @@ static void terminal_fallback(session_t *session, const key_event_t *k, int modi
 
 /* Ordered binding layers walked during the resolve phase (see comment above).
  * Split into three groups by the imperative steps interleaved between them. */
-static const kbd_layer_t kbd_layers_pre[] = {   /* rungs 3-7 */
-	{ "modkey_chord", layer_modkey_chord },
-	{ "sym_toggle",   layer_sym_toggle },
-	{ "alt_toggle",   layer_alt_toggle },
-	{ "shift_toggle", layer_shift_toggle },
-	{ "meta_sticky",  layer_meta_sticky },
+static const kbd_layer_t kbd_layers_pre[] = {   /* old rungs 3-7 */
+	{ "modkey",      layer_modkey },      /* rungs 3-6 collapsed */
+	{ "meta_sticky", layer_meta_sticky }, /* rung 7 */
 };
 static const kbd_layer_t kbd_layers_meta[] = {  /* rungs 9-11 */
 	{ "meta_keys", layer_meta_keys },
