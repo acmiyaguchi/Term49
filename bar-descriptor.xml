@@ -99,15 +99,20 @@
 
     <!-- Cross-app entry point (#23). Registers the term49:// URI scheme so a
          tapped link, a homescreen shortcut, another app, or one of our own
-         notifications can ask the navigator to open Term49. Grammar (see
-         README "Cross-app invoke"): term49://tab[/N][?cmd=<enc>] opens or
-         focuses a tab and optionally runs a command; term49://focus just
-         re-foregrounds. One-way, no reply. Being a URI handler needs no extra
-         permission. -->
+         notifications can ask the navigator to open Term49. Navigation-only
+         grammar (see README "Cross-app invoke"): term49://tab[/N] opens or
+         focuses a tab; term49://focus just re-foregrounds. It deliberately
+         cannot run commands -- driving the shell is restricted to the in-
+         sandbox control socket (#5). One-way, no reply. Being a URI handler
+         needs no extra permission. -->
     <invoke-target id="com.example.Term49">
         <type>APPLICATION</type>
         <filter>
             <action>bb.action.OPEN</action>
+            <!-- The match is scoped by the term49:// scheme below; mime-type
+                 "*" is the documented form for a custom URI-scheme filter (a
+                 URI-only open carries no concrete type), NOT a claim to handle
+                 every content type. -->
             <mime-type>*</mime-type>
             <property var="uris" value="term49://"/>
         </filter>

@@ -125,20 +125,17 @@ The scheme is opened with the standard `bb.action.OPEN` action. Grammar:
 | URI | Effect |
 |-----|--------|
 | `term49://tab` | Open a new (empty) tab. |
-| `term49://tab?cmd=<enc>` | Open a new tab and run `<cmd>`. |
-| `term49://tab/N` | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it is still live. |
-| `term49://tab/N?cmd=<enc>` | Focus tab `N` (or open a fresh tab if `N` is stale) and run `<cmd>`. |
+| `term49://tab/N` | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it is still live; otherwise open a fresh tab. |
 | `term49://focus` | Re-foreground only (the OS already raised us). |
 
-`cmd` is a single command, **percent-encoded** (it is a URI component, so a
-space is `%20`): `term49://tab?cmd=ssh%20server`. It is written to the resolved
-tab's shell with a trailing newline. Unknown verbs are ignored.
+Unknown verbs (and any query string) are ignored.
 
-> **Trust:** any app *or web link* on the device can open a `term49://` URI, and
-> a `cmd` is written straight to the shell — the same risk surface as an OSC 52
-> paste, but reachable from as little as a tapped link. A hostile opener can run
-> arbitrary commands in your shell. Accepted for now; revisit if the threat
-> model tightens (e.g. prompt before running, or require a token).
+> **Navigation-only by design.** The scheme cannot run commands or inject input
+> — it only opens or focuses tabs. Because *any* app, or even a tapped web link,
+> can open a `term49://` URI, letting it drive the shell would be the same abuse
+> surface as an OSC 52 paste but reachable from a link. Running a command is
+> therefore restricted to the in-sandbox control socket (#5, `$TERM49_CONTROL`),
+> which only Term49's own child processes can reach.
 
 ### Round-trip: notify, then tap to return
 

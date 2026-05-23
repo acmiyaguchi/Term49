@@ -341,7 +341,11 @@ static int screen_plat_notify_invoke(platform_t *p, const char *msg, const char 
 	if (notification_message_create(&m) != BPS_SUCCESS || m == NULL) {
 		return -1;
 	}
-	snprintf(item_id, sizeof(item_id), "term49-%u", ++seq);
+	/* item_id must be unique while live and use only [A-Za-z0-9_] (a hyphen is
+	 * outside the documented charset). The pid keeps ids distinct across app
+	 * restarts, so a fresh post never collides with a still-live Hub entry
+	 * from a previous launch (which would make notification_notify fail). */
+	snprintf(item_id, sizeof(item_id), "term49_%d_%u", (int)getpid(), ++seq);
 
 	int ok =
 		notification_message_set_item_id(m, item_id) == BPS_SUCCESS &&

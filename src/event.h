@@ -61,7 +61,7 @@ typedef struct event {
 		 * visibility). height: reported keyboard height for the -1 case. */
 		struct { int visible; int height; } vkb;
 		/* uri borrows backend-owned storage (see TERM_EVENT_INVOKE) and is
-		 * NUL-terminated; e.g. "term49://tab/2?cmd=fen". */
+		 * NUL-terminated; e.g. "term49://tab/2". */
 		struct { invoke_action_t action; const char *uri; } invoke;
 	} as;
 } event_t;

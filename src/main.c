@@ -2513,45 +2513,17 @@ static void reap_exited_children(void){
 	}
 }
 
-static int hexval(char c) {
-	if (c >= '0' && c <= '9') return c - '0';
-	if (c >= 'a' && c <= 'f') return c - 'a' + 10;
-	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
-	return -1;
-}
-
-/* Percent-decode a URI component into dst (NUL-terminated, truncated to fit).
- * '+' is left as-is -- term49:// is not an HTML form, so spaces are %20.
- * Returns the decoded byte count. */
-static size_t url_decode(const char *src, size_t srclen, char *dst, size_t dstcap) {
-	size_t o = 0;
-	for (size_t i = 0; i < srclen && o + 1 < dstcap; i++) {
-		int hi, lo;
-		if (src[i] == '%' && i + 2 < srclen &&
-		    (hi = hexval(src[i + 1])) >= 0 && (lo = hexval(src[i + 2])) >= 0) {
-			dst[o++] = (char)((hi << 4) | lo);
-			i += 2;
-		} else {
-			dst[o++] = src[i];
-		}
-	}
-	dst[o] = '\0';
-	return o;
-}
-
 /* Act on an OPEN invocation (#23): a term49:// URI. Grammar:
- *   term49://tab              open a new (empty) tab
- *   term49://tab?cmd=<enc>    open a new tab and run <cmd> (percent-decoded)
- *   term49://tab/N            focus the 1-based tab N if it is still live
- *   term49://tab/N?cmd=<enc>  focus tab N (or open one if stale) and run <cmd>
- *   term49://focus            re-foreground only (the OS already raised us)
+ *   term49://tab     open a new (empty) tab
+ *   term49://tab/N   focus the 1-based tab N if it is still live, else new tab
+ *   term49://focus   re-foreground only (the OS already raised us)
  * Unknown verbs are ignored (we were still brought to the foreground).
  *
- * SECURITY: cmd bytes go straight to the active shell, and ANY app or link on
- * the device can open a term49:// URI -- the same trust surface as an OSC 52
- * paste, but reachable from e.g. a tapped web link. A hostile opener can run
- * arbitrary commands in the user's shell. Accepted for now (flagged in #23 +
- * README); a future gate could prompt or require a token. */
+ * NAVIGATION-ONLY BY DESIGN: this scheme is openable by any app -- or a tapped
+ * web link -- so it deliberately cannot run commands or inject input. Driving
+ * the shell (writing a command) is restricted to the in-sandbox control socket
+ * (#5, $TERM49_CONTROL), reachable only by Term49's own child processes. A
+ * query string, if present, is ignored. */
 static void handle_invoke_open(app_t *app, const char *uri) {
 	const char *rest = uri + (sizeof("term49://") - 1);  /* past the scheme */
 	const char *q = strchr(rest, '?');
@@ -2562,20 +2534,6 @@ static void handle_invoke_open(app_t *app, const char *uri) {
 	size_t verb_len = slash ? (size_t)(slash - rest) : path_len;
 	const char *arg = slash ? slash + 1 : NULL;
 	size_t arg_len = slash ? (size_t)((rest + path_len) - (slash + 1)) : 0;
-
-	/* Pull ?cmd=<enc> out of the query string (percent-decoded). */
-	char cmd[1024];
-	size_t cmd_len = 0;
-	for (const char *qp = q ? q + 1 : NULL; qp != NULL && *qp; ) {
-		const char *amp = strchr(qp, '&');
-		const char *kv_end = amp ? amp : qp + strlen(qp);
-		const char *eq = memchr(qp, '=', (size_t)(kv_end - qp));
-		if (eq != NULL && (size_t)(eq - qp) == 3 && memcmp(qp, "cmd", 3) == 0) {
-			cmd_len = url_decode(eq + 1, (size_t)(kv_end - (eq + 1)), cmd, sizeof(cmd));
-		}
-		if (amp == NULL) break;
-		qp = amp + 1;
-	}
 
 	if (verb_len == 5 && memcmp(rest, "focus", 5) == 0) {
 		return;  /* re-foreground only */
@@ -2597,9 +2555,7 @@ static void handle_invoke_open(app_t *app, const char *uri) {
 		if (ok) idx = n;
 	}
 
-	int have_target;
 	if (idx > 0 && app_session_select_index(app, (unsigned)(idx - 1))) {
-		have_target = 1;
 		tab_overlay_set(1);
 		mark_screen_dirty(1);
 	} else {
@@ -2608,15 +2564,7 @@ static void handle_invoke_open(app_t *app, const char *uri) {
 		memset(&a, 0, sizeof(a));
 		a.kind = TERM_ACTION_BUILTIN;
 		a.as.builtin.id = TERM_BUILTIN_TAB_NEW;
-		have_target = app_dispatch_action(app, &a);
-	}
-
-	if (have_target && cmd_len > 0) {
-		session_t *s = app_active_session(app);
-		if (s != NULL) {
-			session_write_bytes(s, cmd, cmd_len);
-			session_write_bytes(s, "\n", 1);
-		}
+		app_dispatch_action(app, &a);
 	}
 }
 
