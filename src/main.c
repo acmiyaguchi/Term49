@@ -878,6 +878,17 @@ enum drag_mode {
 	DRAG_WHEEL,
 	DRAG_LOCKED,
 };
+
+/* #28 diagnostic: when set, TOUCH_DOWN logs the gesture-latch inputs
+ * (alt-screen + the three mouse-mode bits + the resulting drag mode) for
+ * any stroke that starts on the alternate screen — the swipe-inside-a-TUI
+ * case. Lets an on-device repro show *which* mode bit was missing when a
+ * second-tab swipe latches DRAG_LOCKED instead of DRAG_WHEEL. stderr lands
+ * in the app's slog. Set to 0 once the mouse-wheel-ready race is resolved. */
+#define TERM49_DRAG_DIAG 1
+static const char *const drag_mode_names[] = {
+	"IDLE", "SCROLL", "WHEEL", "LOCKED",
+};
 static struct {
 	enum drag_mode mode;
 	int committed;
@@ -2687,6 +2698,19 @@ int app_handle_event(app_t *app, const event_t *event) {
 		} else {
 			g_drag.mode = DRAG_SCROLL;
 		}
+#if TERM49_DRAG_DIAG
+		{
+			int alt = 0, sgr = 0, track = 0;
+			ghostty_bridge_mouse_state(bridge, &alt, &sgr, &track);
+			if (alt) {
+				fprintf(stderr,
+				    "[drag#28] DOWN tab=%u alt=%d sgr=%d track=%d ready=%d -> %s\n",
+				    session_id(origin), alt, sgr, track,
+				    ghostty_bridge_mouse_wheel_ready(bridge),
+				    drag_mode_names[g_drag.mode]);
+			}
+		}
+#endif
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
 		return 1;

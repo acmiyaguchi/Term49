@@ -80,4 +80,10 @@ int ghostty_bridge_is_alt_screen(ghostty_bridge_t *b);
  * emit legacy non-SGR mouse encoding. Returns 0 if b is NULL. */
 int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b);
 
+/* Diagnostic breakout of the three inputs to mouse_wheel_ready, each 0/1.
+ * Any out-pointer may be NULL. All bits read 0 if b is NULL. Lets callers
+ * log *which* condition is unmet when a swipe fails to forward to a TUI. */
+void ghostty_bridge_mouse_state(ghostty_bridge_t *b, int *alt_screen,
+                                int *sgr_mouse, int *mouse_tracking);
+
 #endif /* GHOSTTY_BRIDGE_H_ */
