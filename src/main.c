@@ -620,22 +620,16 @@ static void help_overlay_build(void){
 		}
 	}
 
-	const keymap_t *meta_groups[] = {
-		prefs->metamode_keys, prefs->metamode_func_keys,
-		prefs->metamode_sticky_keys,
-	};
 	int meta_header = 0;
-	for (size_t g = 0; g < sizeof(meta_groups) / sizeof(meta_groups[0]); ++g) {
-		for (const keymap_t *km = meta_groups[g]; km && km->to != NULL; ++km) {
-			if (!meta_header) {
-				HELP_PUSH("%s", "");
-				HELP_PUSH("%s", "Metamode (then key):");
-				meta_header = 1;
-			}
-			char td[32];
-			keymap_to_display(km->to, td, sizeof(td));
-			HELP_PUSH("  %c   %s", km->from, td);
+	for (const keymap_t *km = prefs->metamode_keys; km && km->to != NULL; ++km) {
+		if (!meta_header) {
+			HELP_PUSH("%s", "");
+			HELP_PUSH("%s", "Metamode (then key):");
+			meta_header = 1;
 		}
+		char td[32];
+		keymap_to_display(km->to, td, sizeof(td));
+		HELP_PUSH("  %c   %s", km->from, td);
 	}
 	#undef HELP_PUSH
 
@@ -1333,17 +1327,20 @@ static symmenu_t *get_keyhold_actions(int keycode) {
  * and never short-circuits the precedence below it. The RESOLVE phase walks one
  * ordered list of binding layers; the first layer that consumes the key wins.
  *
- * This is a faithful transcription of the former 14-rung if/return ladder --
- * each layer body is the old rung verbatim, with `if (...) return;` becoming
- * `return 1;`, and precedence is now the layer order rather than source order.
- * Two rungs stay imperative because they are state-coupled, not table lookups:
- * the keyhold step (reads back already-emitted bytes, can open a symmenu) runs
- * between the meta-sticky and meta-keys groups, and the vmodifier merge/clear
- * runs between the symmenu and Site-B groups -- so the path-dependent
- * `vmodifiers = 0` still only fires when control reaches it (layers above
- * return first), exactly as before. Layers wrap the existing lookup/dispatch
- * helpers, so behavior is unchanged. */
+ * This grew out of the former 14-rung if/return ladder: each layer body is the
+ * old rung with `if (...) return;` becoming `return 1;`, and precedence is now
+ * the layer order rather than source order. The metamode rungs have since been
+ * folded into one `layer_meta` over a single sticky-aware table. Two steps stay
+ * imperative because they are state-coupled, not table lookups: the keyhold
+ * step (reads back already-emitted bytes, can open a symmenu) runs between the
+ * pre and symbol-layer groups, and the vmodifier merge/clear runs between the
+ * symbol-layer and chord groups -- so the path-dependent `vmodifiers = 0` still
+ * only fires when control reaches it (layers above return first). Layers wrap
+ * the existing lookup/dispatch helpers. */
 
+/* Uniform signature so layers can share one dispatch table; a layer that
+ * doesn't need `modifiers` or `just_set` casts it to void. Returns 1 to
+ * consume the event and stop the walk, 0 to fall through to the next layer. */
 typedef int (*kbd_layer_fn)(app_t *app, const key_event_t *k,
                             int *modifiers, int just_set);
 typedef struct kbd_layer {
@@ -1477,55 +1474,26 @@ static int layer_modkey(app_t *app, const key_event_t *k,
 	return 0;
 }
 
-/* rung 7: metamode sticky keys (don't fire on repeat, don't exit metamode). */
-static int layer_meta_sticky(app_t *app, const key_event_t *k,
-                             int *modifiers, int just_set){
-	(void)modifiers;
-	if (kbd.metamode && !just_set) {
-		keymap_t *km = metamode_lookup(k, prefs->metamode_sticky_keys);
-		if (km != NULL) {
-			app_dispatch_action(app, &km->action);
-			return 1;
-		}
-	}
-	return 0;
-}
-
-/* rung 9: metamode keys, then func keys (+ a stale-config fallback that
- * dispatches the default tab builtins for c/n/p/x when the user's config has
- * not claimed them). Always exits metamode afterwards. */
-static int layer_meta_keys(app_t *app, const key_event_t *k,
-                           int *modifiers, int just_set){
+/* Metamode resolve: one table lookup. On a hit, dispatch and -- unless the
+ * entry is sticky -- exit metamode. Sticky entries (e.g. the arrow keys) keep
+ * metamode armed so they can repeat. Never fires on the press that just armed
+ * metamode (just_set). */
+static int layer_meta(app_t *app, const key_event_t *k,
+                      int *modifiers, int just_set){
 	(void)modifiers;
 	if (kbd.metamode && !just_set) {
 		keymap_t *km = metamode_lookup(k, prefs->metamode_keys);
 		if (km != NULL) {
 			app_dispatch_action(app, &km->action);
-			metamode_toggle();
+			if (!km->sticky) {
+				/* Non-sticky keys exit metamode. The old ladder routed these
+				 * through keyhold's reset before firing; mirror it so a held
+				 * key still arms accents/upcase once metamode is gone. */
+				kbd.key_repeat_done = 0;
+				metamode_toggle();
+			}
 			return 1;
 		}
-		km = metamode_lookup(k, prefs->metamode_func_keys);
-		if (km != NULL) {
-			app_dispatch_action(app, &km->action);
-		} else {
-			/* Fallback for stale .term49.lua files that predate the tab
-			 * bindings: dispatch the current defaults when the user's config
-			 * has not claimed the key. */
-			action_t tab_action = {0};
-			tab_action.kind = TERM_ACTION_BUILTIN;
-			switch ((char)k->sym) {
-			case 'c': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEW; break;
-			case 'n': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEXT; break;
-			case 'p': tab_action.as.builtin.id = TERM_BUILTIN_TAB_PREV; break;
-			case 'x': tab_action.as.builtin.id = TERM_BUILTIN_TAB_CLOSE; break;
-			default: tab_action.kind = 0; break;
-			}
-			if (tab_action.kind == TERM_ACTION_BUILTIN) {
-				app_dispatch_action(app, &tab_action);
-			}
-		}
-		metamode_toggle();
-		return 1;
 	}
 	return 0;
 }
@@ -1682,14 +1650,13 @@ static void terminal_fallback(session_t *session, const key_event_t *k, int modi
 
 /* Ordered binding layers walked during the resolve phase (see comment above).
  * Split into three groups by the imperative steps interleaved between them. */
-static const kbd_layer_t kbd_layers_pre[] = {   /* old rungs 3-7 */
-	{ "modkey",      layer_modkey },      /* rungs 3-6 collapsed */
-	{ "meta_sticky", layer_meta_sticky }, /* rung 7 */
+static const kbd_layer_t kbd_layers_pre[] = {
+	{ "modkey", layer_modkey },   /* the sym/alt/shift keys + Site-A chords */
+	{ "meta",   layer_meta },     /* metamode table (one lookup, sticky-aware) */
 };
-static const kbd_layer_t kbd_layers_meta[] = {  /* rungs 9-11 */
-	{ "meta_keys", layer_meta_keys },
-	{ "altsym",    layer_altsym },
-	{ "symmenu",   layer_symmenu },
+static const kbd_layer_t kbd_layers_meta[] = {
+	{ "altsym",  layer_altsym },
+	{ "symmenu", layer_symmenu },
 };
 static const kbd_layer_t kbd_layers_post[] = {  /* rung 13 */
 	{ "ordinary_chord", layer_ordinary_chord },
@@ -1724,31 +1691,31 @@ static void app_handle_key(app_t *app, const key_event_t *k)
 	      (int)k->sym, modifiers, (char)k->sym, (int)k->alternate_sym);
 	fflush(stdout);
 
-	if (help_dismiss_step(k)) {                  /* rung 1  */
+	if (help_dismiss_step(k)) {                  /* help overlay modal */
 		return;
 	}
-	just_set = doubletap_step(k);                /* rung 2  (no return) */
+	just_set = doubletap_step(k);                /* metamode doubletap (no return) */
 
 	if (run_layers(kbd_layers_pre,
 	               sizeof(kbd_layers_pre) / sizeof(kbd_layers_pre[0]),
-	               app, k, &modifiers, just_set)) {        /* rungs 3-7 */
+	               app, k, &modifiers, just_set)) {        /* modifier keys + metamode */
 		return;
 	}
-	if (keyhold_step(app, session, k)) {         /* rung 8  */
+	if (keyhold_step(app, session, k)) {         /* key-repeat accents / upcase */
 		return;
 	}
 	if (run_layers(kbd_layers_meta,
 	               sizeof(kbd_layers_meta) / sizeof(kbd_layers_meta[0]),
-	               app, k, &modifiers, just_set)) {        /* rungs 9-11 */
+	               app, k, &modifiers, just_set)) {        /* alt / sym symbol layers */
 		return;
 	}
-	vmodifier_merge_and_clear(&modifiers);       /* rung 12 */
+	vmodifier_merge_and_clear(&modifiers);       /* fold + clear sticky vmodifiers */
 	if (run_layers(kbd_layers_post,
 	               sizeof(kbd_layers_post) / sizeof(kbd_layers_post[0]),
-	               app, k, &modifiers, just_set)) {        /* rung 13 */
+	               app, k, &modifiers, just_set)) {        /* ordinary-key chords */
 		return;
 	}
-	terminal_fallback(session, k, modifiers);    /* rung 14 */
+	terminal_fallback(session, k, modifiers);    /* VT byte sequence */
 }
 
 /* Push the current cell grid into one session's pty + child shell. */

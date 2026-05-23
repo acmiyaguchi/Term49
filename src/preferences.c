@@ -55,27 +55,28 @@ static const int PREFS_VERSION = 10;
 #define DEFAULT_ALLOW_RESIZE_COLUMNS 0
 #define DEFAULT_METAMODE_HITBOX (hitbox_t){0, 0, 100, 100}
 #define DEFAULT_TTY_ENCODING "UTF-8"
-#define DEFAULT_METAMODE_KEYS_LEN 2
-#define DEFAULT_METAMODE_KEYS (keymap_t[]){{'e', "\x1b"}, {'t', "\x09"}}
-#define DEFAULT_METAMODE_STICKY_KEYS_LEN 4
-#define DEFAULT_METAMODE_STICKY_KEYS (keymap_t[]){{'k', "kcuu1"}, \
-                                                  {'j', "kcud1"}, \
-                                                  {'l', "kcuf1"}, \
-                                                  {'h', "kcub1"}}
-#define DEFAULT_METAMODE_FUNC_KEYS_LEN 13
-#define DEFAULT_METAMODE_FUNC_KEYS (keymap_t[]){{'a', "alt_down"}, \
-                                                {'d', "ctrl_down"}, \
-                                                {'s', "rescreen"}, \
-                                                {'v', "paste_clipboard"}, \
-                                                {'i', "font_size_increase"}, \
-                                                {'o', "font_size_decrease"}, \
-                                                {'z', "font_size_reset"}, \
-                                                {'r', "reload_config"}, \
-                                                {'c', "tab_new"}, \
-                                                {'n', "tab_next"}, \
-                                                {'p', "tab_prev"}, \
-                                                {'x', "tab_close"}, \
-                                                {'?', "help_overlay"}}
+/* One metamode table; `sticky` entries keep metamode armed after firing (the
+ * former metamode_sticky_keys), the rest exit it (former keys + func_keys). */
+#define DEFAULT_METAMODE_KEYS_LEN 19
+#define DEFAULT_METAMODE_KEYS (keymap_t[]){{'e', "\x1b"}, \
+                                           {'t', "\x09"}, \
+                                           {'a', "alt_down"}, \
+                                           {'d', "ctrl_down"}, \
+                                           {'s', "rescreen"}, \
+                                           {'v', "paste_clipboard"}, \
+                                           {'i', "font_size_increase"}, \
+                                           {'o', "font_size_decrease"}, \
+                                           {'z', "font_size_reset"}, \
+                                           {'r', "reload_config"}, \
+                                           {'c', "tab_new"}, \
+                                           {'n', "tab_next"}, \
+                                           {'p', "tab_prev"}, \
+                                           {'x', "tab_close"}, \
+                                           {'?', "help_overlay"}, \
+                                           {.from='k', .to="kcuu1", .sticky=1}, \
+                                           {.from='j', .to="kcud1", .sticky=1}, \
+                                           {.from='l', .to="kcuf1", .sticky=1}, \
+                                           {.from='h', .to="kcub1", .sticky=1}}
 #define DEFAULT_SYMMENU_NUM_ROWS 2
 #define DEFAULT_SYMMENU_ROW_LENS (int[]){10, 9}
 #define DEFAULT_SYMMENU_ENTRIES (keymap_t[]) {  \
@@ -208,8 +209,11 @@ static int lua_get_table(lua_State *L, const char *key) {
 /* Read the {from,to} pair at index `i` of the table currently on top of
  * the stack. On success returns 1 with the pair left on the stack (at
  * -1) and *from/*to pointing into Lua strings owned by it (valid until
- * the caller pops the pair). On failure returns 0 with nothing left. */
-static int lua_pair_at(lua_State *L, int i, const char **from, const char **to) {
+ * the caller pops the pair). On failure returns 0 with nothing left.
+ * If `sticky` is non-NULL it receives the entry's optional `sticky`
+ * boolean field (default 0); pass NULL when the flag is irrelevant. */
+static int lua_pair_at(lua_State *L, int i, const char **from, const char **to,
+                       int *sticky) {
 	int ok = 0;
 	lua_rawgeti(L, -1, (lua_Integer)i);          /* pair */
 	if (lua_type(L, -1) == LUA_TTABLE) {
@@ -219,6 +223,11 @@ static int lua_pair_at(lua_State *L, int i, const char **from, const char **to) 
 		const char *t = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : NULL;
 		if (f && f[0] && t) { *from = f; *to = t; ok = 1; }
 		lua_pop(L, 2);                       /* pop the two field values */
+		if (ok && sticky != NULL) {
+			lua_getfield(L, -1, "sticky");
+			*sticky = lua_toboolean(L, -1);
+			lua_pop(L, 1);
+		}
 	}
 	if (!ok) {
 		lua_pop(L, 1);                       /* pop the pair */
@@ -234,7 +243,7 @@ static int lua_pairs_valid(lua_State *L) {
 	size_t n = (size_t)lua_rawlen(L, -1);
 	for (size_t i = 1; i <= n; ++i) {
 		const char *f, *t;
-		if (!lua_pair_at(L, (int)i, &f, &t)) {
+		if (!lua_pair_at(L, (int)i, &f, &t, NULL)) {
 			return 0;
 		}
 		lua_pop(L, 1);                       /* pop validated pair */
@@ -257,8 +266,10 @@ static keymap_t *lua_keymap_from_top(lua_State *L, size_t *out_n) {
 	result[n] = (keymap_t){0, NULL};
 	for (size_t i = 1; i <= n; ++i) {
 		const char *f, *t;
-		lua_pair_at(L, (int)i, &f, &t);      /* validated above => succeeds */
+		int sticky = 0;
+		lua_pair_at(L, (int)i, &f, &t, &sticky); /* validated above => succeeds */
 		result[i - 1].from = f[0];
+		result[i - 1].sticky = sticky;
 		keymap_set_to(&result[i - 1], t);
 		lua_pop(L, 1);                       /* pop the pair */
 	}
@@ -273,6 +284,7 @@ static keymap_t *lua_keymap_defaults(const keymap_t *def, size_t def_len) {
 	result[def_len] = (keymap_t){0, NULL};
 	for (size_t i = 0; i < def_len; ++i) {
 		result[i].from = def[i].from;
+		result[i].sticky = def[i].sticky;
 		keymap_set_to(&result[i], def[i].to);
 	}
 	return result;
@@ -575,7 +587,7 @@ static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
 				menu->keys[r][col_len].map = NULL;
 				for (int c = 0; c < col_len; ++c) {
 					const char *f, *t;
-					lua_pair_at(L, c + 1, &f, &t); /* valid => succeeds */
+					lua_pair_at(L, c + 1, &f, &t, NULL); /* valid => succeeds */
 					menu->entries[entry_idx].from = f[0];
 					keymap_set_to(&menu->entries[entry_idx], t);
 					lua_pop(L, 1);           /* pop the pair */
@@ -660,14 +672,6 @@ void destroy_preferences_members(pref_t *pref) {
 	keymap_t *m = pref->metamode_keys;
 	while (m->to != NULL) { free(m->to); ++m; }
 	free(pref->metamode_keys);
-
-	m = pref->metamode_sticky_keys;
-	while (m->to != NULL) { free(m->to); ++m; }
-	free(pref->metamode_sticky_keys);
-
-	m = pref->metamode_func_keys;
-	while (m->to != NULL) { free(m->to); ++m; }
-	free(pref->metamode_func_keys);
 
 	destroy_symmenu(pref->main_symmenu);
 	for (int i = 0; i < 26; ++i) {
@@ -765,8 +769,6 @@ static void prefs_build_from_lua(lua_State *L, pref_t *prefs) {
 	prefs->background_color = lua_create_color(L, "background_color", DEFAULT_BACKGROUND_COLOR);
 	prefs->metamode_hitbox = lua_create_hitbox(L, "metamode_hitbox", DEFAULT_METAMODE_HITBOX);
 	prefs->metamode_keys = lua_create_keymap_array(L, "metamode_keys", DEFAULT_METAMODE_KEYS_LEN, DEFAULT_METAMODE_KEYS);
-	prefs->metamode_sticky_keys = lua_create_keymap_array(L, "metamode_sticky_keys", DEFAULT_METAMODE_STICKY_KEYS_LEN, DEFAULT_METAMODE_STICKY_KEYS);
-	prefs->metamode_func_keys = lua_create_keymap_array(L, "metamode_func_keys", DEFAULT_METAMODE_FUNC_KEYS_LEN, DEFAULT_METAMODE_FUNC_KEYS);
 	prefs->keyhold_actions_exempt = lua_create_int_array(L, "keyhold_actions_exempt", DEFAULT_KEYHOLD_ACTIONS_EXEMPT_LEN, DEFAULT_KEYHOLD_ACTIONS_EXEMPT);
 
 	prefs->main_symmenu = lua_create_symmenu(L, "main_symmenu", DEFAULT_SYMMENU_NUM_ROWS, DEFAULT_SYMMENU_ROW_LENS, DEFAULT_SYMMENU_ENTRIES);
@@ -1168,7 +1170,7 @@ static void lua_emit_keymap(FILE *f, const char *key, const keymap_t *km) {
 		lua_emit_qstr(f, from);
 		fputs(", ", f);
 		lua_emit_qstr(f, km->to);
-		fputs(" },\n", f);
+		fputs(km->sticky ? ", sticky = true },\n" : " },\n", f);
 	}
 	fputs("}\n\n", f);
 }
@@ -1302,14 +1304,16 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	}
 	fputs(" }\n\n", f);
 
+	fputs("-- metamode_keys: tap the metamode key, then one of these. An entry\n"
+	      "-- exits metamode after firing unless it sets sticky = true (which\n"
+	      "-- keeps metamode armed, e.g. the arrow keys below). Targets accept\n"
+	      "-- raw bytes, terminfo names, builtins, or \"lua:<fn>\".\n", f);
 	lua_emit_keymap(f, "metamode_keys", prefs->metamode_keys);
-	lua_emit_keymap(f, "metamode_sticky_keys", prefs->metamode_sticky_keys);
-	lua_emit_keymap(f, "metamode_func_keys", prefs->metamode_func_keys);
 	lua_emit_symmenu(f, "main_symmenu", prefs->main_symmenu);
 
 	fputs("-- Modifier-aware chord bindings: a trigger key plus a set of\n"
 	      "-- held/stuck modifiers dispatch to an action (the same action\n"
-	      "-- strings metamode_func_keys accepts: raw bytes, terminfo names,\n"
+	      "-- strings metamode_keys accepts: raw bytes, terminfo names,\n"
 	      "-- builtins, or \"lua:<fn>\"). mods may be \"ctrl\", \"alt\", \"shift\",\n"
 	      "-- \"sym\"; an empty/absent mods means no modifiers. label is shown\n"
 	      "-- in the help overlay (toggle a key bound to \"help_overlay\").\n"
@@ -1324,12 +1328,12 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	      "--   { key = \"w\", mods = {\"ctrl\", \"shift\"}, action = \"tab_close\", label = \"Close tab\" },\n\n", f);
 
 	fputs("-- Scripting example (uncomment to use). A key bound to\n"
-	      "-- \"lua:<name>\" in metamode_func_keys calls the matching Lua\n"
+	      "-- \"lua:<name>\" in metamode_keys calls the matching Lua\n"
 	      "-- function via lua_pcall. term.font_size_get/set and\n"
 	      "-- term.action(\"<builtin>\") (e.g. \"reload_config\") are available.\n"
 	      "--\n"
 	      "-- function zoom_in() term.font_size_set(term.font_size_get() + 3) end\n"
-	      "-- then add  { \"z\", \"lua:zoom_in\" }  to metamode_func_keys above.\n", f);
+	      "-- then add  { \"z\", \"lua:zoom_in\" }  to metamode_keys above.\n", f);
 
 	fclose(f);
 }
