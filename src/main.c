@@ -140,7 +140,6 @@ typedef struct input_state {
 	char symmenu_lock;
 	char altsym_lock;
 	char metamode;
-	int metamode_doubletap_key;   /* NOTE: never assigned from prefs today; preserved as-is */
 	struct timespec metamode_last;
 	int vmodifiers;
 	char virtualkeyboard_visible;
@@ -1370,7 +1369,7 @@ static int doubletap_step(const key_event_t *k){
 	struct timespec now;
 	uint64_t now_t, diff_t, metamode_last_t;
 	int just_set = 0;
-	if ((k->sym == kbd.metamode_doubletap_key) && !k->repeat) {
+	if ((k->sym == prefs->metamode_doubletap_key) && !k->repeat) {
 		clock_gettime(CLOCK_MONOTONIC, &now);
 		now_t = timespec2nsec(&now);
 		metamode_last_t = timespec2nsec(&kbd.metamode_last);
