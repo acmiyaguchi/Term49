@@ -30,12 +30,13 @@ evaluate Lua, read the clipboard, query geometry. Highlights:
     termctl tab stats [id]        # one tab's stats (id 0/omitted = active)
     termctl tabs stats            # stats for every tab, one line each
     termctl action <name>         # run a keybinding/builtin/lua:fn action
+    termctl notify [flags]        # post/update a replaceable Hub entry (below)
     termctl send-text <text>      # type text into the active tab
     termctl eval [lua] <chunk>    # run a Lua chunk, print its return
     termctl clipboard read        # print clipboard text
 
-`action <name>` accepts any Term49 action string, including `notify_invoke:<msg>`
-(below) and `lua:<fn>`.
+`action <name>` accepts any Term49 action string, including `toast:<msg>` (a
+transient flash) and `lua:<fn>`.
 
 ### 2. Cross-app invoke — out-of-sandbox, untrusted, NAVIGATION-ONLY (issue #23)
 
@@ -61,14 +62,26 @@ target is declared in `bar-descriptor.xml`). Open one with `navigator_invoke()`
 on an `navigator_invoke_invocation_t` whose action is `bb.action.OPEN` and uri
 is the `term49://...` string.
 
-## Round-trip: a notification that returns to a tab
+## Notifications — replaceable Hub entries (issue #35)
 
-The action `notify_invoke:<msg>` posts a persistent BlackBerry Hub entry whose
-invocation opens `term49://tab/<the posting tab>`. Tapping it re-foregrounds
-Term49 on the tab that posted it. Trigger it however actions are reached:
+`termctl notify` posts a persistent BlackBerry Hub entry. The reuse key is
+`--id`: posting again with the same id **updates that entry in place** instead of
+stacking a new one, so high-frequency callers don't clog the Hub.
 
-    termctl action "notify_invoke:back to build"     # from a shell
-    -- term.action("notify_invoke:back to build")    -- from .term49.lua
+    termctl notify --id build --title "Build" --body "job #1"   # one entry
+    termctl notify --id build --title "Build" --body "job #2"   # updates it
+    termctl notify --id deploy --body "shipping"                # separate entry
 
-This is the one built-in producer of a `term49://` invocation; everything else
-is a consumer (another app, a link, a shortcut).
+Flags: `--id S` (slot; same id replaces), `--title T`, `--body B`, `--uri U`
+(a `term49://…` invoke payload), `--app-id A` (own identity by default), `--alert`
+(sound/vibrate). From Lua: `term.notify{ id=, title=, body=, uri=, alert= }`, or
+`term.notify("body")`. The invoke target/action are fixed (own id +
+`bb.action.OPEN`) — the only invocation Term49 routes is back into itself.
+
+### Round-trip: a notification that returns to a tab
+
+Give the entry a `term49://` URI and tapping it re-foregrounds Term49 and acts on
+the URI — the one built-in producer of a `term49://` invocation (everything else
+is a consumer: another app, a link, a shortcut):
+
+    termctl notify --id return --body "back to build" --uri term49://tab/2

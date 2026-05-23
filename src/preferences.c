@@ -28,6 +28,7 @@
 #include <lualib.h>
 
 #include "terminal.h"
+#include "platform.h"  /* notification_spec_t */
 #include "accent_menus.h"
 #include "action.h"
 #include "io.h"
@@ -849,12 +850,32 @@ static int luaC_action(lua_State *L) {
 	lua_pushboolean(L, app_run_action_string(luaL_checkstring(L, 1)));
 	return 1;
 }
-/* term.notify(msg) / term.open_url(uri): build the prefixed action string
+/* term.toast(msg) / term.open_url(uri): build the prefixed action string
  * (lua_pushfstring keeps it alive on the stack across the synchronous
  * dispatch) and route through the one action path. */
-static int luaC_notify(lua_State *L) {
-	const char *s = lua_pushfstring(L, "notify:%s", luaL_checkstring(L, 1));
+static int luaC_toast(lua_State *L) {
+	const char *s = lua_pushfstring(L, "toast:%s", luaL_checkstring(L, 1));
 	lua_pushboolean(L, app_run_action_string(s));
+	return 1;
+}
+/* term.notify(msg) | term.notify{ id=, title=, body=, uri=, app_id=, alert= }:
+ * post or update a replaceable Hub entry (#35). The string form fills body and
+ * takes defaults; the table form names a reusable slot via `id` (same id
+ * updates that entry in place). Field strings stay on the Lua stack across the
+ * synchronous post, so the borrowed pointers in the spec remain valid. */
+static int luaC_notify(lua_State *L) {
+	notification_spec_t spec = {0};
+	if (lua_istable(L, 1)) {
+		lua_getfield(L, 1, "app_id"); spec.app_id  = lua_tostring(L, -1);
+		lua_getfield(L, 1, "id");     spec.item_id = lua_tostring(L, -1);
+		lua_getfield(L, 1, "title");  spec.title   = lua_tostring(L, -1);
+		lua_getfield(L, 1, "body");   spec.body    = lua_tostring(L, -1);
+		lua_getfield(L, 1, "uri");    spec.uri     = lua_tostring(L, -1);
+		lua_getfield(L, 1, "alert");  spec.alert   = lua_toboolean(L, -1);
+	} else {
+		spec.body = luaL_checkstring(L, 1);
+	}
+	lua_pushboolean(L, app_post_notification(&spec));
 	return 1;
 }
 static int luaC_open_url(lua_State *L) {
@@ -874,6 +895,7 @@ static const luaL_Reg TERM_LUA_LIB[] = {
 	{ "font_size_set", luaC_font_size_set },
 	{ "font_size_get", luaC_font_size_get },
 	{ "action",        luaC_action },
+	{ "toast",         luaC_toast },
 	{ "notify",        luaC_notify },
 	{ "open_url",      luaC_open_url },
 	{ "keyboard_show", luaC_keyboard_show },

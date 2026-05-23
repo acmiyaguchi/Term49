@@ -126,12 +126,10 @@ metamode_sticky_keys = {
 --   reload_config                  re-run this file live
 --   tab_new / tab_next / tab_prev / tab_close
 --   keyboard_show / keyboard_hide  show/hide the virtual keyboard   (#5)
---   notify:<message>               transient toast notification     (#5)
---   notify_invoke:<message>        persistent notification that, when    (#23)
---                                  tapped, re-foregrounds Term49 and jumps
---                                  back to the tab that posted it. The
---                                  cross-app entry point for #23: see the
---                                  "Cross-app invoke" section in README.md.
+--   toast:<message>                transient auto-dismiss flash     (#5)
+--                                  (the persistent, replaceable Hub notification
+--                                  is term.notify / `termctl notify`; see the
+--                                  "Notifications" section in README.md)
 --   open_url:<uri>                 open a URI in its default handler (#5)
 --   lua:<function>                 call a global Lua function (see Scripting)
 -- ----------------------------------------------------------------------------
@@ -154,13 +152,20 @@ metamode_func_keys = {
   -- argument-bearing actions use a ":" to separate the action from its arg.
   { "g", "keyboard_show" },
   { "b", "keyboard_hide" },
-  { "m", "notify:Hello from Term49" },
+  { "m", "toast:Hello from Term49" },
   { "u", "open_url:https://www.blackberry.com/" },
 
-  -- New in #23 -- posts a notification-center entry that invokes Term49 back
-  -- to this tab when tapped. Switch tabs, tap it, and you return here.
-  { "k", "notify_invoke:Tap to return to Term49" },
+  -- Posts a replaceable Hub entry that re-foregrounds Term49 when tapped
+  -- (#23/#35). Reuses the "return" slot, so repeated presses update one entry
+  -- rather than stacking. Defined as notify_return() below; keybindings reach
+  -- the rich notify through a lua: function.
+  { "k", "lua:notify_return" },
 }
+
+function notify_return()
+  term.notify{ id = "return", body = "Tap to return to Term49",
+               uri = "term49://focus" }
+end
 
 -- ----------------------------------------------------------------------------
 -- main_symmenu: the SYM overlay. A list of ROWS; each row is a list of
@@ -212,7 +217,11 @@ e_accents = {
 --   term.font_size_set(n)       set the font size
 --   term.action("<name>")       run any built-in action string (returns bool),
 --                               e.g. term.action("reload_config")
---   term.notify("<message>")    transient toast                          (#5)
+--   term.toast("<message>")     transient auto-dismiss flash             (#5)
+--   term.notify("<message>")    post/update a replaceable Hub entry; or  (#35)
+--     or term.notify{ id=, title=, body=, uri=, app_id=, alert= }
+--                               the table form names a reusable slot via `id`
+--                               (same id updates that entry in place).
 --   term.open_url("<uri>")      open a URI in its default handler        (#5)
 --   term.keyboard_show()        show the virtual keyboard                (#5)
 --   term.keyboard_hide()        hide the virtual keyboard                (#5)
@@ -225,7 +234,7 @@ function zoom_in()
 end
 
 function greet()
-  term.notify("font size is " .. term.font_size_get())
+  term.toast("font size is " .. term.font_size_get())
 end
 
 -- To wire these up, add bindings to metamode_func_keys above, e.g.:

@@ -31,10 +31,15 @@
  * arrive as bb.action.OPEN), the URI scheme we register, and the target id
  * that addresses this app (must match bar-descriptor's <invoke-target id>).
  * Used both to receive (translate_navigator) and to post a notification that
- * invokes us back (screen_plat_notify_invoke). */
+ * invokes us back (screen_plat_notify). */
 #define INVOKE_ACTION_OPEN "bb.action.OPEN"
 #define INVOKE_URI_SCHEME  "term49://"
 #define INVOKE_TARGET_ID   "com.example.Term49"
+
+/* Defaults for a notification posted without a caller-supplied slot/title (#35):
+ * a single shared item_id so bare posts coalesce, and the app name as title. */
+#define NOTIFY_DEFAULT_ITEM_ID "term49"
+#define NOTIFY_DEFAULT_TITLE   "Term49"
 
 typedef struct platform_screen {
 	screen_context_t ctx;
@@ -301,7 +306,7 @@ static int screen_plat_is_passport(platform_t *p) {
  * down the previous toast before showing the next so at most one leaks
  * (reclaimed at process exit). No dialog events are requested -- a toast
  * has no buttons, so there is nothing to handle. */
-static int screen_plat_notify(platform_t *p, const char *msg) {
+static int screen_plat_toast(platform_t *p, const char *msg) {
 	(void)p;
 	static dialog_instance_t toast = NULL;
 	if (msg == NULL || msg[0] == '\0') {
@@ -324,38 +329,66 @@ static int screen_plat_notify(platform_t *p, const char *msg) {
 	return 0;
 }
 
-/* Post a persistent notification-center entry that invokes us back when
- * tapped (#23 round-trip). Unlike the toast above this survives until the
- * user acts on it, and carries an OPEN invocation on a term49:// URI the
- * navigator delivers as a NAVIGATOR_INVOKE_TARGET -- the same path a link or
- * another app would use. item_id is unique per post so entries stack rather
- * than coalesce; the message owns no resources past notification_notify, so
- * it's destroyed immediately. Needs the post_notification permission (already
- * in bar-descriptor.xml). */
-static int screen_plat_notify_invoke(platform_t *p, const char *msg, const char *uri) {
-	(void)p;
-	static unsigned seq = 0;
-	notification_message_t *m = NULL;
-	char item_id[32];
+/* Copy an id (item_id / app_id) into buf, keeping only [A-Za-z0-9_] -- the
+ * documented charset for these fields. Disallowed bytes (e.g. a hyphen) become
+ * '_' so a caller's logical name still maps to one stable, reusable slot rather
+ * than being rejected. Empty/NULL input yields the supplied fallback. */
+static const char *sanitize_id(const char *in, const char *fallback,
+                               char *buf, size_t cap) {
+	if (in == NULL || in[0] == '\0') {
+		return fallback;
+	}
+	size_t j = 0;
+	for (size_t i = 0; in[i] != '\0' && j + 1 < cap; i++) {
+		unsigned char ch = (unsigned char)in[i];
+		int ok = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
+		         (ch >= '0' && ch <= '9') || ch == '_';
+		buf[j++] = ok ? (char)ch : '_';
+	}
+	buf[j] = '\0';
+	return j > 0 ? buf : fallback;
+}
 
-	if (notification_message_create(&m) != BPS_SUCCESS || m == NULL) {
+/* Post (or update) a persistent Hub entry; see notification_spec_t in platform.h
+ * for the (app_id, item_id) reuse-key semantics. The backend fixes target/action
+ * to our own id + bb.action.OPEN (the only invoke Term49 routes is back into
+ * itself); an optional term49:// payload uri drives the round-trip when tapped.
+ * The message owns no resources past the send, so it's destroyed immediately.
+ * Needs the post_notification permission (already in bar-descriptor.xml).
+ *
+ * Note: in-place update only holds within a single launch. Re-posting an item_id
+ * that survived from a previous run (the app exited without clearing it) fails
+ * rather than updating the stale Hub entry -- the notification manager no longer
+ * recognizes the slot as ours. Reuse is therefore reliable only for ids minted
+ * during the current process lifetime. */
+static int screen_plat_notify(platform_t *p, const notification_spec_t *spec) {
+	(void)p;
+	notification_message_t *m = NULL;
+	char app_buf[64];
+	char item_buf[64];
+
+	if (spec == NULL || notification_message_create(&m) != BPS_SUCCESS || m == NULL) {
 		return -1;
 	}
-	/* item_id must be unique while live and use only [A-Za-z0-9_] (a hyphen is
-	 * outside the documented charset). The pid keeps ids distinct across app
-	 * restarts, so a fresh post never collides with a still-live Hub entry
-	 * from a previous launch (which would make notification_notify fail). */
-	snprintf(item_id, sizeof(item_id), "term49_%d_%u", (int)getpid(), ++seq);
+
+	const char *app_id  = sanitize_id(spec->app_id, INVOKE_TARGET_ID,
+	                                  app_buf, sizeof(app_buf));
+	const char *item_id = sanitize_id(spec->item_id, NOTIFY_DEFAULT_ITEM_ID,
+	                                  item_buf, sizeof(item_buf));
+	const char *title   = (spec->title != NULL && spec->title[0] != '\0')
+	                          ? spec->title : NOTIFY_DEFAULT_TITLE;
 
 	int ok =
+		notification_message_set_app_id(m, app_id) == BPS_SUCCESS &&
 		notification_message_set_item_id(m, item_id) == BPS_SUCCESS &&
-		notification_message_set_title(m, "Term49") == BPS_SUCCESS &&
-		(msg == NULL || notification_message_set_subtitle(m, msg) == BPS_SUCCESS) &&
+		notification_message_set_title(m, title) == BPS_SUCCESS &&
+		(spec->body == NULL ||
+		 notification_message_set_subtitle(m, spec->body) == BPS_SUCCESS) &&
 		notification_message_set_invocation_target(m, INVOKE_TARGET_ID) == BPS_SUCCESS &&
 		notification_message_set_invocation_action(m, INVOKE_ACTION_OPEN) == BPS_SUCCESS &&
-		(uri == NULL ||
-		 notification_message_set_invocation_payload_uri(m, uri) == BPS_SUCCESS) &&
-		notification_notify(m) == BPS_SUCCESS;
+		(spec->uri == NULL ||
+		 notification_message_set_invocation_payload_uri(m, spec->uri) == BPS_SUCCESS) &&
+		(spec->alert ? notification_alert(m) : notification_notify(m)) == BPS_SUCCESS;
 
 	notification_message_destroy(&m);
 	return ok ? 0 : -1;
@@ -416,8 +449,8 @@ static const platform_ops_t SCREEN_PLATFORM_OPS = {
 	.vkb_hide             = screen_plat_vkb_hide,
 	.vkb_height           = screen_plat_vkb_height,
 	.is_passport          = screen_plat_is_passport,
+	.toast                = screen_plat_toast,
 	.notify               = screen_plat_notify,
-	.notify_invoke        = screen_plat_notify_invoke,
 	.open_url             = screen_plat_open_url,
 	.apply_pending_resize = screen_plat_apply_pending_resize,
 	.destroy              = screen_plat_destroy,
