@@ -80,18 +80,18 @@ int platform_is_passport(platform_t *p) {
 	return p->ops->is_passport(p);
 }
 
-int platform_notify(platform_t *p, const char *msg) {
-	if (p == NULL || p->ops->notify == NULL) {
+int platform_toast(platform_t *p, const char *msg) {
+	if (p == NULL || p->ops->toast == NULL) {
 		return -1;
 	}
-	return p->ops->notify(p, msg);
+	return p->ops->toast(p, msg);
 }
 
-int platform_notify_invoke(platform_t *p, const char *msg, const char *payload) {
-	if (p == NULL || p->ops->notify_invoke == NULL) {
+int platform_notify(platform_t *p, const notification_spec_t *spec) {
+	if (p == NULL || p->ops->notify == NULL || spec == NULL) {
 		return -1;
 	}
-	return p->ops->notify_invoke(p, msg, payload);
+	return p->ops->notify(p, spec);
 }
 
 int platform_open_url(platform_t *p, const char *url) {

@@ -33,6 +33,11 @@ void control_drain_deferred(void);
 
 /* ---- glue implemented in main.c (keeps control.c free of app internals) ---- */
 int      ctl_run_action_string(const char *s); /* parse+dispatch one action */
+/* Post/update a replaceable Hub notification (#35). Any field may be NULL for a
+ * default (app_id => own identity, item_id => shared slot, title => "Term49").
+ * alert!=0 uses notification_alert (sound/vibrate). 1 ok, 0 fail. */
+int      ctl_notify(const char *app_id, const char *item_id, const char *title,
+                    const char *body, const char *uri, int alert);
 void     ctl_wake(void);                        /* push a BPS wake event */
 int      ctl_screen_size(int *cols, int *rows); /* active session geometry; 1 ok */
 unsigned ctl_session_count(void);               /* live session count */

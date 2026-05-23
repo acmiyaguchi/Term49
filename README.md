@@ -137,24 +137,72 @@ Unknown verbs (and any query string) are ignored.
 > therefore restricted to the in-sandbox control socket (#5, `$TERM49_CONTROL`),
 > which only Term49's own child processes can reach.
 
+## Notifications
+
+Term49 exposes two distinct primitives (#35), named consistently across the
+control socket and Lua:
+
+* **toast** — a transient, auto-dismissing flash. No Hub entry, so it never
+  accumulates. `term.toast("msg")`, or the `toast:<msg>` action string.
+* **notify** — a persistent, **replaceable** BlackBerry Hub entry.
+
+### Replaceable Hub entries
+
+The Hub reuse key is the `(app_id, item_id)` pair: posting again with the same
+pair **updates that entry in place** instead of stacking a new one. Term49 makes
+reuse the default — `item_id` is the logical slot, and a repeated post to the
+same slot replaces it. This keeps high-frequency callers (build status, job
+progress) from clogging the Hub.
+
+Control socket:
+
+```sh
+termctl notify --id build --title "Build" --body "job #1"   # one Hub entry
+termctl notify --id build --title "Build" --body "job #2"   # SAME entry, updated
+termctl notify --id deploy --body "shipping"                # a separate entry
+```
+
+| Flag | Meaning | Default |
+|------|---------|---------|
+| `--id S` | logical slot; same id replaces in place | a single shared slot |
+| `--title T` | Hub entry title | `Term49` |
+| `--body B` | subtitle / body text | none |
+| `--uri U` | `term49://…` invoke payload (see below) | no invoke |
+| `--app-id A` | route through a specific app identity | Term49's own identity |
+| `--alert` | post with sound/vibrate (`notification_alert`) | silent (`notification_notify`) |
+
+Lua takes the same fields as a table (or a bare string for the body):
+
+```lua
+term.notify{ id = "build", title = "Build", body = "job #2" }
+term.notify("quick status")           -- body only, default slot
+```
+
+`app_id`/`item_id` are restricted to `[A-Za-z0-9_]`; other bytes are folded to
+`_` so a caller's name still maps to one stable slot. Foreign `--app-id` values
+are passed through, but reuse is only reliable for Term49's own identity (the
+default). The invoke `target`/`action` are intentionally **not** exposed: the
+only invocation Term49 routes is back into itself, so the target is fixed to its
+own id and the action to `bb.action.OPEN`. (Posting needs the
+`post_notification` permission, already in `bar-descriptor.xml`.)
+
+A device-side proof of concept at
+`/accounts/1000/shared/documents/scripts/bb10-notify.py` exercises the same
+`libbps` setters (`notification_message_set_app_id` / `_item_id` / `_title` /
+`_subtitle` / `_invocation_*`) directly via `ctypes`, and mirrors this flag
+shape.
+
 ### Round-trip: notify, then tap to return
 
-The built-in action **`notify_invoke:<message>`** closes the loop without a
-second app. It posts a persistent notification-center entry whose invocation
-opens `term49://tab/<the posting tab>`. Tapping the notification re-foregrounds
-Term49 and jumps to the tab that posted it.
+Give a notification a `term49://` invoke URI and tapping it re-foregrounds Term49
+and acts on the URI. To jump back to a specific tab, point it at that tab:
 
-It is a normal action string, so trigger it however you bind actions:
+```sh
+termctl notify --id return --body "tap to return" --uri term49://tab/2
+```
 
-* **Keybinding** — the reference config binds it to metamode + `k`
-  (`share/term49.lua.reference`).
-* **Control socket** — `termctl run "notify_invoke:back to shell"`.
-* **Lua** — `term.action("notify_invoke:back to shell")`.
-
-To verify: post the notification, switch to another tab, open the notification
-center, and tap the Term49 entry — you should land back on the originating tab.
-(Posting needs the `post_notification` permission, already in
-`bar-descriptor.xml`.)
+To verify: post it, switch to another tab, open the notification center, and tap
+the Term49 entry — you should land on tab 2.
 
 ### Discoverability
 

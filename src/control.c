@@ -222,6 +222,10 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "  tabs stats          report stats for all tabs, one line each\n"
 		          "  clipboard read      print current clipboard text\n"
 		          "  action <name>       run an action (keybinding/builtin/lua:fn)\n"
+		          "  notify [flags]      post/update a Hub notification; reuse is keyed\n"
+		          "                      on --id (same id updates in place). flags:\n"
+		          "                      [--id S] [--title T] [--body B] [--uri U]\n"
+		          "                      [--app-id A] [--alert]\n"
 		          "  send-text <text>    send text to the active session\n"
 		          "  subscribe <event>   enable async events\n"
 		          "  unsubscribe <event> disable async events\n"
@@ -230,8 +234,8 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "events (for subscribe/unsubscribe): " CTL_EVENTS_HELP "\n"
 		          "cross-app entry (#23): other apps/links open term49://tab[/N] or\n"
 		          "  term49://focus to open/focus a tab (navigation only -- it cannot\n"
-		          "  run commands; that is what this socket is for). The action\n"
-		          "  notify_invoke:<msg> posts a Hub entry that opens term49://tab/<this tab>.\n"
+		          "  run commands; that is what this socket is for). A Hub entry posted\n"
+		          "  with `notify --uri term49://tab/N` opens that tab when tapped.\n"
 		          "agent capability doc: $TERM49_AGENT_DOC");
 		return;
 	}
@@ -275,6 +279,31 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 	if (strcmp(argv[0], "action") == 0 && argc >= 2) {
 		int ok = ctl_run_action_string(argv[1]);
 		ctl_reply(c, id, ok ? 0 : 1, NULL);
+		return;
+	}
+	if (strcmp(argv[0], "notify") == 0) {
+		/* Post/update a replaceable Hub entry (#35). Reuse is keyed on --id:
+		 * the same id updates that entry in place; a new id adds one. */
+		const char *app_id = NULL, *item_id = NULL, *title = NULL;
+		const char *body = NULL, *uri = NULL;
+		int alert = 0, bad = 0;
+		for (int i = 1; i < argc && !bad; i++) {
+			if (strcmp(argv[i], "--alert") == 0)              alert = 1;
+			else if (i + 1 >= argc)                           bad = 1;
+			else if (strcmp(argv[i], "--id") == 0)            item_id = argv[++i];
+			else if (strcmp(argv[i], "--app-id") == 0)        app_id = argv[++i];
+			else if (strcmp(argv[i], "--title") == 0)         title = argv[++i];
+			else if (strcmp(argv[i], "--body") == 0)          body = argv[++i];
+			else if (strcmp(argv[i], "--uri") == 0)           uri = argv[++i];
+			else                                              bad = 1;
+		}
+		if (bad) {
+			ctl_reply(c, id, 1, "notify: usage: notify [--id S] [--title T] "
+			          "[--body B] [--uri U] [--app-id A] [--alert]");
+		} else {
+			int ok = ctl_notify(app_id, item_id, title, body, uri, alert);
+			ctl_reply(c, id, ok ? 0 : 1, NULL);
+		}
 		return;
 	}
 	if (strcmp(argv[0], "send-text") == 0 && argc >= 2) {

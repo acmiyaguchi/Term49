@@ -33,10 +33,10 @@ typedef enum builtin_action {
 	TERM_BUILTIN_PASTE_CLIPBOARD,
 	TERM_BUILTIN_KEYBOARD_SHOW,
 	TERM_BUILTIN_KEYBOARD_HIDE,
-	TERM_BUILTIN_NOTIFY,
-	/* arg = message; posts a tappable notification that invokes Term49 back
-	 * to the tab that posted it (#23 round-trip test entry point). */
-	TERM_BUILTIN_NOTIFY_INVOKE,
+	/* arg = message; transient auto-dismiss flash, no Hub entry. The
+	 * persistent, replaceable Hub notification (#35) is posted via the
+	 * control socket / Lua (term.notify), not a keybinding. */
+	TERM_BUILTIN_TOAST,
 	TERM_BUILTIN_OPEN_URL,
 	TERM_BUILTIN_TAB_NEW,
 	TERM_BUILTIN_TAB_NEXT,

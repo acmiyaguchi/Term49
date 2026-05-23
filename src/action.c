@@ -117,24 +117,16 @@ int action_parse(const char *value, action_t *out) {
 		return 1;
 	}
 
-	/* "notify:<msg>" / "open_url:<uri>" carry an argument the same way
+	/* "toast:<msg>" / "open_url:<uri>" carry an argument the same way
 	 * "lua:<fn>" does: arg points into `value` (the keymap's heap-owned
-	 * ->to string), so it lives as long as the binding. */
-	/* "notify_invoke:<msg>" must precede "notify:" so the longer prefix wins
-	 * (they diverge at index 6, ':' vs '_', so strncmp wouldn't confuse them
-	 * anyway -- ordering is just defensive). */
-	if (strncmp(value, "notify_invoke:", 14) == 0) {
+	 * ->to string), so it lives as long as the binding. The richer,
+	 * replaceable Hub notification (#35) is reached via the control socket /
+	 * Lua, not a keybinding string. */
+	if (strncmp(value, "toast:", 6) == 0) {
 		out->kind = TERM_ACTION_BUILTIN;
-		out->as.builtin.id = TERM_BUILTIN_NOTIFY_INVOKE;
-		out->as.builtin.arg = value + 14;
-		out->as.builtin.arg_len = strlen(value + 14);
-		return 1;
-	}
-	if (strncmp(value, "notify:", 7) == 0) {
-		out->kind = TERM_ACTION_BUILTIN;
-		out->as.builtin.id = TERM_BUILTIN_NOTIFY;
-		out->as.builtin.arg = value + 7;
-		out->as.builtin.arg_len = strlen(value + 7);
+		out->as.builtin.id = TERM_BUILTIN_TOAST;
+		out->as.builtin.arg = value + 6;
+		out->as.builtin.arg_len = strlen(value + 6);
 		return 1;
 	}
 	if (strncmp(value, "open_url:", 9) == 0) {

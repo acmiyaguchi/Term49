@@ -999,10 +999,26 @@ int app_run_action_string(const char *s){
 	return app_dispatch_action(g_app, &a);
 }
 
+/* Post (or update) a replaceable Hub notification (#35). Shared entry point for
+ * the control socket and Lua, mirroring app_run_action_string's lifetime model:
+ * spec fields are borrowed only for this synchronous call. 1 ok, 0 fail. */
+int app_post_notification(const notification_spec_t *spec){
+	if(!term_runtime_ready() || spec == NULL) return 0;
+	return platform_notify(g_platform, spec) == 0;
+}
+
 /* Glue for the control socket (src/control.c). Kept here so control.c stays a
  * leaf TU with no view of g_app / cols / rows / the BPS wake domain. */
 int ctl_run_action_string(const char *s) {
 	return app_run_action_string(s);
+}
+int ctl_notify(const char *app_id, const char *item_id, const char *title,
+               const char *body, const char *uri, int alert) {
+	notification_spec_t spec = {
+		.app_id = app_id, .item_id = item_id, .title = title,
+		.body = body, .uri = uri, .alert = alert,
+	};
+	return app_post_notification(&spec);
 }
 void ctl_wake(void) {
 	post_wake_event();
@@ -1092,7 +1108,7 @@ static void app_reload_config(void){
 		 * happened. The full message is also on stderr for dev builds. */
 		const char *err = prefs_lua_last_error();
 		char msg[256];
-		snprintf(msg, sizeof(msg), "notify:config reload failed: %s",
+		snprintf(msg, sizeof(msg), "toast:config reload failed: %s",
 		         err != NULL ? err : "unknown error");
 		app_run_action_string(msg);
 		return;
@@ -1226,21 +1242,8 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_KEYBOARD_HIDE:
 			platform_vkb_hide(g_platform);
 			return 1;
-		case TERM_BUILTIN_NOTIFY:
-			return platform_notify(g_platform, action->as.builtin.arg) == 0;
-		case TERM_BUILTIN_NOTIFY_INVOKE: {
-			/* Post a notification that, when tapped, opens a term49:// URI
-			 * focusing the tab that posted it -- the round-trip test entry
-			 * point for #23 (matches handle_invoke_open's tab/N grammar). */
-			char uri[32];
-			const char *msg = action->as.builtin.arg;
-			snprintf(uri, sizeof(uri), "term49://tab/%u",
-			         app_active_index(app) + 1);
-			return platform_notify_invoke(g_platform,
-			                              (msg != NULL && msg[0] != '\0')
-			                                  ? msg : "Term49: tap to return",
-			                              uri) == 0;
-		}
+		case TERM_BUILTIN_TOAST:
+			return platform_toast(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_OPEN_URL:
 			return platform_open_url(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_FONT_SIZE_INCREASE:
