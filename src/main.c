@@ -1164,6 +1164,20 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			return 1;
 		case TERM_BUILTIN_NOTIFY:
 			return platform_notify(g_platform, action->as.builtin.arg) == 0;
+		case TERM_BUILTIN_NOTIFY_INVOKE: {
+			/* Post a notification that, when tapped, invokes RUN back to the
+			 * tab that posted it -- the round-trip test entry point for #23.
+			 * Payload is the 1-based active tab index (matches handle_invoke_run's
+			 * tab= contract). */
+			char payload[32];
+			const char *msg = action->as.builtin.arg;
+			snprintf(payload, sizeof(payload), "tab=%u",
+			         app_active_index(app) + 1);
+			return platform_notify_invoke(g_platform,
+			                              (msg != NULL && msg[0] != '\0')
+			                                  ? msg : "Term49: tap to return",
+			                              payload) == 0;
+		}
 		case TERM_BUILTIN_OPEN_URL:
 			return platform_open_url(g_platform, action->as.builtin.arg) == 0;
 		case TERM_BUILTIN_FONT_SIZE_INCREASE:
@@ -2500,6 +2514,75 @@ static void reap_exited_children(void){
 	}
 }
 
+/* Act on a RUN invocation (#23). Payload is text/plain "key=value" lines:
+ *   tab=N   1-based visible tab index to focus, if it still exists
+ *   cmd=... command text; written + a newline to the resolved session's PTY
+ *
+ * Resolution:
+ *   - tab=N names a live tab        -> focus it; run cmd there if present
+ *   - cmd present, tab absent/stale -> open a fresh tab; run cmd there
+ *   - neither (a bare re-foreground)-> nothing (the OS already raised us)
+ * Either key may be omitted. Both keys are single-line; embedded newlines end
+ * the value (a RUN payload is one command, not a script).
+ *
+ * SECURITY: cmd bytes go straight to the active shell, and any app on the
+ * device can invoke us -- the same trust surface as an OSC 52 paste. A
+ * hostile invoker can run arbitrary commands in the user's shell. Accepted
+ * for v1 (flagged in #23); a future gate could prompt or require a token. */
+static void handle_invoke_run(app_t *app, const char *payload, size_t len) {
+	long tab = -1;            /* 1-based; -1 = unspecified */
+	const char *cmd = NULL;
+	size_t cmd_len = 0;
+
+	const char *p = payload;
+	const char *end = payload + len;
+	while (p < end) {
+		const char *nl = memchr(p, '\n', (size_t)(end - p));
+		const char *line_end = nl ? nl : end;
+		const char *eq = memchr(p, '=', (size_t)(line_end - p));
+		if (eq != NULL) {
+			size_t klen = (size_t)(eq - p);
+			const char *val = eq + 1;
+			size_t vlen = (size_t)(line_end - val);
+			if (klen == 3 && memcmp(p, "tab", 3) == 0) {
+				long n = 0;
+				int ok = vlen > 0;
+				for (size_t i = 0; i < vlen; i++) {
+					if (val[i] < '0' || val[i] > '9') { ok = 0; break; }
+					n = n * 10 + (val[i] - '0');
+					if (n > APP_MAX_SESSIONS) { ok = 0; break; }
+				}
+				if (ok) tab = n;
+			} else if (klen == 3 && memcmp(p, "cmd", 3) == 0) {
+				cmd = val;
+				cmd_len = vlen;
+			}
+		}
+		p = nl ? nl + 1 : end;
+	}
+
+	int have_target = 0;
+	if (tab > 0 && app_session_select_index(app, (unsigned)(tab - 1))) {
+		have_target = 1;
+		tab_overlay_set(1);
+		mark_screen_dirty(1);
+	} else if (cmd != NULL && cmd_len > 0) {
+		action_t a;
+		memset(&a, 0, sizeof(a));
+		a.kind = TERM_ACTION_BUILTIN;
+		a.as.builtin.id = TERM_BUILTIN_TAB_NEW;
+		have_target = app_dispatch_action(app, &a);
+	}
+
+	if (have_target && cmd != NULL && cmd_len > 0) {
+		session_t *s = app_active_session(app);
+		if (s != NULL) {
+			session_write_bytes(s, cmd, cmd_len);
+			session_write_bytes(s, "\n", 1);
+		}
+	}
+}
+
 int app_handle_event(app_t *app, const event_t *event) {
 	if (event == NULL) {
 		return 0;
@@ -2594,6 +2677,14 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	case TERM_EVENT_ACTIVATE:
 		handle_activeevent(event->as.activate.active, event->as.activate.state);
+		return 1;
+	case TERM_EVENT_INVOKE:
+		/* Borrowed payload: valid only this iteration (see event.h), so act
+		 * now rather than deferring. RUN is the only action registered. */
+		if (event->as.invoke.action == TERM_INVOKE_RUN) {
+			handle_invoke_run(app, event->as.invoke.payload,
+			                  event->as.invoke.len);
+		}
 		return 1;
 	case TERM_EVENT_VKB:
 		{

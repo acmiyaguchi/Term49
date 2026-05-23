@@ -8,6 +8,8 @@
 #ifndef EVENT_H_
 #define EVENT_H_
 
+#include <stddef.h>
+
 #include "term_types.h"
 
 typedef enum event_type {
@@ -20,7 +22,20 @@ typedef enum event_type {
 	TERM_EVENT_RESIZE,
 	TERM_EVENT_ACTIVATE,
 	TERM_EVENT_VKB,
+	/* A cross-app navigator invocation targeting Term49 (#23). The backend
+	 * matched the invoke action string to an invoke_action_t and copied the
+	 * raw payload into backend-owned storage; the event's payload pointer
+	 * borrows that storage and is valid only until the next
+	 * platform_next_event, so the run loop must consume it in the same
+	 * iteration. */
+	TERM_EVENT_INVOKE,
 } event_type_t;
+
+/* Registered invoke actions (the suffix of the bar-descriptor invoke-target
+ * action id, e.g. com.example.Term49.RUN -> TERM_INVOKE_RUN). */
+typedef enum invoke_action {
+	TERM_INVOKE_RUN,
+} invoke_action_t;
 
 typedef struct key_event {
 	int keycode;
@@ -46,6 +61,9 @@ typedef struct event {
 		/* visible: 1 show, 0 hide, -1 height-only update (keep current
 		 * visibility). height: reported keyboard height for the -1 case. */
 		struct { int visible; int height; } vkb;
+		/* payload borrows backend-owned storage (see TERM_EVENT_INVOKE);
+		 * NUL-terminated for convenience but len is authoritative. */
+		struct { invoke_action_t action; const char *payload; size_t len; } invoke;
 	} as;
 } event_t;
 
