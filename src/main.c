@@ -1336,322 +1336,430 @@ static symmenu_t *get_keyhold_actions(int keycode) {
 	return NULL;
 }
 
-/* App-layer keyboard handler. Moved verbatim from the old handleKeyboardEvent
- * body (screen_val -> k->sym, the screen_flags KEY_DOWN/KEY_REPEAT bits decoded
- * to k->pressed/k->repeat at the platform boundary, tty writes ->
- * session_write_text) so device behavior is unchanged. It now runs behind the
- * typed event model: any platform key source builds a TERM_EVENT_KEY and the
- * app routes it here. */
+/* ---- Keyboard pipeline (#30 PR2): accumulate-then-resolve --------------------
+ *
+ * app_handle_key splits into two phases. The ACCUMULATE phase mutates the
+ * input_state `kbd` (doubletap, the modifier-key toggles, the vmodifier merge)
+ * and never short-circuits the precedence below it. The RESOLVE phase walks one
+ * ordered list of binding layers; the first layer that consumes the key wins.
+ *
+ * This is a faithful transcription of the former 14-rung if/return ladder --
+ * each layer body is the old rung verbatim, with `if (...) return;` becoming
+ * `return 1;`, and precedence is now the layer order rather than source order.
+ * Two rungs stay imperative because they are state-coupled, not table lookups:
+ * the keyhold step (reads back already-emitted bytes, can open a symmenu) runs
+ * between the meta-sticky and meta-keys groups, and the vmodifier merge/clear
+ * runs between the symmenu and Site-B groups -- so the path-dependent
+ * `vmodifiers = 0` still only fires when control reaches it (layers above
+ * return first), exactly as before. Layers wrap the existing lookup/dispatch
+ * helpers, so behavior is unchanged. */
+
+typedef int (*kbd_layer_fn)(app_t *app, const key_event_t *k,
+                            int *modifiers, int just_set);
+typedef struct kbd_layer {
+	const char *name;
+	kbd_layer_fn fn;
+} kbd_layer_t;
+
+/* rung 1: the help overlay is modal -- any keypress dismisses it and is
+ * consumed (so the dismiss key doesn't also fire its action). */
+static int help_dismiss_step(const key_event_t *k){
+	if (current_help_overlay && !k->repeat) {
+		current_help_overlay = 0;
+		mark_screen_dirty(1);
+		return 1;
+	}
+	return 0;
+}
+
+/* rung 2: toggle metamode on/off with a doubletap of the configured key.
+ * Returns 1 if metamode was just set this event, so the meta-* layers below
+ * skip it (the press that *enters* metamode must not also be consumed by it). */
+static int doubletap_step(const key_event_t *k){
+	struct timespec now;
+	uint64_t now_t, diff_t, metamode_last_t;
+	int just_set = 0;
+	if ((k->sym == kbd.metamode_doubletap_key) && !k->repeat) {
+		clock_gettime(CLOCK_MONOTONIC, &now);
+		now_t = timespec2nsec(&now);
+		metamode_last_t = timespec2nsec(&kbd.metamode_last);
+		diff_t = now_t > metamode_last_t ? now_t - metamode_last_t : now_t;
+		if (diff_t <= prefs->metamode_doubletap_delay) {
+			metamode_toggle();
+			just_set = 1;
+		}
+		kbd.metamode_last = now;
+	}
+	return just_set;
+}
+
+/* rung 3: Site A modifier-key chords. A modifier key pressed while another
+ * modifier is already stuck (BB keys are tap-to-stick) fires a chord instead
+ * of its default toggle -- e.g. shift then alt -> Ctrl. Independent of the
+ * sticky_*_key prefs, so the default toggle survives only when no chord
+ * matches. Initial press only. */
+static int layer_modkey_chord(app_t *app, const key_event_t *k,
+                              int *modifiers, int just_set){
+	int trig, is_mod_trigger = 1;
+	unsigned self = 0;
+	(void)modifiers; (void)just_set;
+	if (k->repeat) {
+		return 0;
+	}
+	trig = k->sym;
+	switch (trig) {
+	case KEYCODE_BB_SYM_KEY: self = CHORD_MOD_SYM; break;
+	case KEYCODE_BB_ALT_KEY: self = KEYMOD_ALT;    break;
+	case KEYCODE_RIGHT_SHIFT:
+	case KEYCODE_LEFT_SHIFT:
+		/* only a trigger with the physical keyboard up; normalize L/R. */
+		if (kbd.virtualkeyboard_visible) {
+			is_mod_trigger = 0;
+		} else {
+			trig = KEYCODE_LEFT_SHIFT;
+			self = KEYMOD_SHIFT;
+		}
+		break;
+	default: is_mod_trigger = 0; break;
+	}
+	if (is_mod_trigger) {
+		unsigned prefix = current_modmask() & ~self;
+		if (prefix != 0) {
+			chord_t *chord = chord_lookup(trig, prefix, prefs->chord_bindings);
+			if (chord != NULL) {
+				chord_clear_prefix(prefix);
+				app_dispatch_action(app, &chord->action);
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
+/* rung 4: sym key -- tap toggles the menu, hold sticks it. */
+static int layer_sym_toggle(app_t *app, const key_event_t *k,
+                            int *modifiers, int just_set){
+	(void)app; (void)modifiers; (void)just_set;
+	if (k->sym == KEYCODE_BB_SYM_KEY) {
+		if (!k->repeat) {
+			symmenu_toggle(prefs->main_symmenu);
+		} else {
+			symmenu_stick();
+		}
+		return 1;
+	}
+	return 0;
+}
+
+/* rung 5: alt key toggles the alt layer (only when sticky_alt_key; otherwise
+ * the key falls through to later layers). */
+static int layer_alt_toggle(app_t *app, const key_event_t *k,
+                            int *modifiers, int just_set){
+	(void)app; (void)modifiers; (void)just_set;
+	if (k->sym == KEYCODE_BB_ALT_KEY && prefs->sticky_alt_key) {
+		if (!k->repeat) {
+			altsym_toggle();
+		}
+		return 1;
+	}
+	return 0;
+}
+
+/* rung 6: shift key toggles sticky shift (physical keyboard up only, and only
+ * when sticky_shift_key). */
+static int layer_shift_toggle(app_t *app, const key_event_t *k,
+                              int *modifiers, int just_set){
+	(void)app; (void)modifiers; (void)just_set;
+	if (!kbd.virtualkeyboard_visible
+	    && (k->sym == KEYCODE_LEFT_SHIFT || k->sym == KEYCODE_RIGHT_SHIFT)
+	    && prefs->sticky_shift_key) {
+		if (!k->repeat) {
+			toggle_vkeymod(KEYMOD_SHIFT);
+		}
+		return 1;
+	}
+	return 0;
+}
+
+/* rung 7: metamode sticky keys (don't fire on repeat, don't exit metamode). */
+static int layer_meta_sticky(app_t *app, const key_event_t *k,
+                             int *modifiers, int just_set){
+	(void)modifiers;
+	if (kbd.metamode && !just_set) {
+		keymap_t *km = metamode_lookup(k, prefs->metamode_sticky_keys);
+		if (km != NULL) {
+			app_dispatch_action(app, &km->action);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* rung 9: metamode keys, then func keys (+ a stale-config fallback that
+ * dispatches the default tab builtins for c/n/p/x when the user's config has
+ * not claimed them). Always exits metamode afterwards. */
+static int layer_meta_keys(app_t *app, const key_event_t *k,
+                           int *modifiers, int just_set){
+	(void)modifiers;
+	if (kbd.metamode && !just_set) {
+		keymap_t *km = metamode_lookup(k, prefs->metamode_keys);
+		if (km != NULL) {
+			app_dispatch_action(app, &km->action);
+			metamode_toggle();
+			return 1;
+		}
+		km = metamode_lookup(k, prefs->metamode_func_keys);
+		if (km != NULL) {
+			app_dispatch_action(app, &km->action);
+		} else {
+			/* Fallback for stale .term49.lua files that predate the tab
+			 * bindings: dispatch the current defaults when the user's config
+			 * has not claimed the key. */
+			action_t tab_action = {0};
+			tab_action.kind = TERM_ACTION_BUILTIN;
+			switch ((char)k->sym) {
+			case 'c': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEW; break;
+			case 'n': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEXT; break;
+			case 'p': tab_action.as.builtin.id = TERM_BUILTIN_TAB_PREV; break;
+			case 'x': tab_action.as.builtin.id = TERM_BUILTIN_TAB_CLOSE; break;
+			default: tab_action.kind = 0; break;
+			}
+			if (tab_action.kind == TERM_ACTION_BUILTIN) {
+				app_dispatch_action(app, &tab_action);
+			}
+		}
+		metamode_toggle();
+		return 1;
+	}
+	return 0;
+}
+
+/* rung 10: alt layer. Always disarms the lock; consumes only on a hit. */
+static int layer_altsym(app_t *app, const key_event_t *k,
+                        int *modifiers, int just_set){
+	(void)modifiers; (void)just_set;
+	if (kbd.altsym_lock) {
+		keymap_t *km = keymap_lookup((char)k->sym, prefs->altsym_entries);
+		altsym_toggle();
+		if (km != NULL) {
+			app_dispatch_action(app, &km->action);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* rung 11: open sym menu. Consumes + closes the menu only on a hit. */
+static int layer_symmenu(app_t *app, const key_event_t *k,
+                         int *modifiers, int just_set){
+	(void)modifiers; (void)just_set;
+	if (kbd.current_symmenu != NULL) {
+		keymap_t *km = keymap_lookup((char)k->sym, kbd.current_symmenu->entries);
+		if (km != NULL) {
+			app_dispatch_action(app, &km->action);
+			symmenu_toggle(NULL);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* rung 13: Site B ordinary-key chords -- a real modifier (external ctrl/alt or
+ * a merged sticky vmodifier) plus a key. Exact mask match, initial press only.
+ * Modifier-key triggers returned at rung 3 and never reach here. */
+static int layer_ordinary_chord(app_t *app, const key_event_t *k,
+                                int *modifiers, int just_set){
+	(void)just_set;
+	if (!k->repeat) {
+		chord_t *chord = chord_lookup(k->sym,
+		        (unsigned)(*modifiers) & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT),
+		        prefs->chord_bindings);
+		if (chord != NULL) {
+			app_dispatch_action(app, &chord->action);
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* rung 8: key-repeat keyhold -- upcase the last write, open an accent menu, or
+ * toggle metamode on the hold key. State-coupled (reads back emitted bytes via
+ * io_upcase_last_write, latches on key_repeat_done), so it stays imperative
+ * rather than a layer. Returns 1 when it consumes the event. */
+static int keyhold_step(app_t *app, session_t *session, const key_event_t *k){
+	UChar backspace = 0x8;
+	UChar c[CHARACTER_BUFFER];
+	UChar *target = c;
+	int32_t last_len, bs_i;
+	if (k->repeat &&
+	    prefs->keyhold_actions &&
+	    !is_int_member(prefs->keyhold_actions_exempt, k->sym)) {
+		if (!kbd.key_repeat_done) {
+			/* Check for a metamode toggle key first */
+			if (k->sym == prefs->metamode_hold_key) {
+				session_write_text(session, &backspace, 1);
+				metamode_toggle();
+				kbd.key_repeat_done = 1;
+				return 1;
+			}
+
+			symmenu_t *menu = get_keyhold_actions(k->sym);
+			if (menu == NULL) {
+				return 1;
+			}
+
+			last_len = io_upcase_last_write(&target, CHARACTER_BUFFER);
+			/* write backspace */
+			for (bs_i = 1; bs_i <= last_len; ++bs_i) {
+				session_write_text(session, &backspace, 1);
+			}
+
+			/* uppercase automatically if there's no accents or accents disabled */
+			if ((menu->entries[1].to == NULL) || (!prefs->keyhold_accents)) {
+				/* upcase: the backspaces above replaced the last write; this
+				 * only works if the far end understands unicode and marries
+				 * backspaces with codepoints. */
+				app_dispatch_action(app, &menu->entries[0].action);
+			} else {
+				symmenu_toggle(menu);
+			}
+			kbd.key_repeat_done = 1;
+			return 1;
+		} else {
+			/* already handled this key repeat */
+			return 1;
+		}
+	} else {
+		kbd.key_repeat_done = 0;
+	}
+	return 0;
+}
+
+/* rung 12: merge the sticky virtual modifiers into this event's modifiers and
+ * clear them. The on-screen ctrl/alt/shift indicators reflect vmodifiers, so
+ * clearing them is a visible frame change -- repaint even if the key emits
+ * nothing. Reached only when no layer above consumed the key, so the clear is
+ * path-dependent exactly as before. */
+static void vmodifier_merge_and_clear(int *modifiers){
+	*modifiers |= kbd.vmodifiers;
+	if (kbd.vmodifiers != 0) {
+		mark_screen_dirty(1);
+	}
+	kbd.vmodifiers = 0;
+}
+
+/* rung 14: plain dispatch. Modifier keycodes are swallowed or toggle a
+ * vmodifier; everything else becomes a terminal byte sequence. */
+static void terminal_fallback(session_t *session, const key_event_t *k, int modifiers){
+	UChar c[CHARACTER_BUFFER];
+	int num_chars, nc;
+	switch (k->sym) {
+	case KEYCODE_PAUSE      :
+	case KEYCODE_SCROLL_LOCK:
+	case KEYCODE_PRINT      :
+	case KEYCODE_SYSREQ     :
+	case KEYCODE_BREAK      :
+	case KEYCODE_LEFT_ALT   :
+	case KEYCODE_RIGHT_ALT  :
+	case KEYCODE_LEFT_SHIFT :
+	case KEYCODE_RIGHT_SHIFT:
+	case KEYCODE_MENU       :
+	case KEYCODE_NUM_LOCK   :
+		PRINT(stderr, "Modifier %d\n", k->sym);
+		break;
+	case KEYCODE_LEFT_CTRL  :
+	case KEYCODE_RIGHT_CTRL :
+		toggle_vkeymod(KEYMOD_CTRL);
+		break;
+	case KEYCODE_LEFT_HYPER :
+	case KEYCODE_RIGHT_HYPER:
+		toggle_vkeymod(KEYMOD_CTRL);
+		break;
+	case KEYCODE_CAPS_LOCK  :
+		toggle_vkeymod(KEYMOD_CTRL);
+		break;
+	default:
+		num_chars = terminal_key_sequence(k->sym, modifiers, c);
+		for (nc = 0; nc < num_chars; ++nc) {
+			PRINT(stderr, "Writing 0x%x\n", (int)c[nc]);
+		}
+		session_write_text(session, (const UChar*)&c, num_chars);
+		break;
+	}
+}
+
+/* Ordered binding layers walked during the resolve phase (see comment above).
+ * Split into three groups by the imperative steps interleaved between them. */
+static const kbd_layer_t kbd_layers_pre[] = {   /* rungs 3-7 */
+	{ "modkey_chord", layer_modkey_chord },
+	{ "sym_toggle",   layer_sym_toggle },
+	{ "alt_toggle",   layer_alt_toggle },
+	{ "shift_toggle", layer_shift_toggle },
+	{ "meta_sticky",  layer_meta_sticky },
+};
+static const kbd_layer_t kbd_layers_meta[] = {  /* rungs 9-11 */
+	{ "meta_keys", layer_meta_keys },
+	{ "altsym",    layer_altsym },
+	{ "symmenu",   layer_symmenu },
+};
+static const kbd_layer_t kbd_layers_post[] = {  /* rung 13 */
+	{ "ordinary_chord", layer_ordinary_chord },
+};
+
+static int run_layers(const kbd_layer_t *layers, size_t n, app_t *app,
+                      const key_event_t *k, int *modifiers, int just_set){
+	size_t i;
+	for (i = 0; i < n; ++i) {
+		if (layers[i].fn(app, k, modifiers, just_set)) {
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* App-layer keyboard handler: accumulate modifier state, then resolve the key
+ * through the ordered binding-layer walk (see the pipeline comment above).
+ * Runs behind the typed event model -- any platform key source builds a
+ * TERM_EVENT_KEY and the app routes it here. */
 static void app_handle_key(app_t *app, const key_event_t *k)
 {
 	session_t *session = app_active_session(app);
 	int modifiers = k->modifiers;
-	int num_chars;
-	int vkbd_h;
-	int metamode_just_set = 0;
-	UChar c[CHARACTER_BUFFER];
-	UChar *target = c;
-	struct timespec now;
-	uint64_t now_t, diff_t, metamode_last_t;
-	keymap_t *keymap = NULL;
-	int32_t last_len = 0;
-	int32_t bs_i = 0;
-	size_t upcase_len = 0;
-	UChar backspace = 0x8;
+	int just_set;
 
-	if (k->pressed) {
-		PRINT(stderr, "The '%d' key was pressed (modifiers: %d) (char %c) (alt %d)\n", (int)k->sym, modifiers, (char)k->sym, (int)k->alternate_sym);
-		fflush(stdout);
-
-		/* The help overlay is modal: any keypress dismisses it and is
-		 * consumed (so the dismiss key doesn't also fire its action). */
-		if (current_help_overlay && !k->repeat) {
-			current_help_overlay = 0;
-			mark_screen_dirty(1);
-			return;
-		}
-
-		/* if we're toggling metamode on or off with doubletap */
-		if((k->sym == kbd.metamode_doubletap_key) && !k->repeat){
-			clock_gettime(CLOCK_MONOTONIC, &now);
-			now_t = timespec2nsec(&now);
-			metamode_last_t = timespec2nsec(&kbd.metamode_last);
-			diff_t = now_t > metamode_last_t ? now_t - metamode_last_t : now_t;
-			if(diff_t <= prefs->metamode_doubletap_delay){
-				metamode_toggle();
-				metamode_just_set = 1;
-			}
-			kbd.metamode_last = now;
-		}
-
-		/* Site A: modifier-key chords. A modifier key pressed while
-		 * another modifier is already stuck (the BB keys are tap-to-stick)
-		 * fires a chord instead of its default toggle -- e.g. shift then
-		 * alt -> Ctrl, shift then sym -> metamode. Runs before the sticky
-		 * sym/alt/shift handlers below and independent of the sticky_*_key
-		 * prefs, so the default behavior survives only when no chord
-		 * matches. Initial press only. */
-		if (!k->repeat) {
-			int trig = k->sym;
-			unsigned self = 0;
-			int is_mod_trigger = 1;
-			switch (trig) {
-			case KEYCODE_BB_SYM_KEY: self = CHORD_MOD_SYM; break;
-			case KEYCODE_BB_ALT_KEY: self = KEYMOD_ALT;    break;
-			case KEYCODE_RIGHT_SHIFT:
-			case KEYCODE_LEFT_SHIFT:
-				/* match the shift handler below: only a trigger with the
-				 * physical keyboard up; normalize L/R to one keycode. */
-				if (kbd.virtualkeyboard_visible) {
-					is_mod_trigger = 0;
-				} else {
-					trig = KEYCODE_LEFT_SHIFT;
-					self = KEYMOD_SHIFT;
-				}
-				break;
-			default: is_mod_trigger = 0; break;
-			}
-			if (is_mod_trigger) {
-				unsigned prefix = current_modmask() & ~self;
-				if (prefix != 0) {
-					chord_t *chord = chord_lookup(trig, prefix,
-					                              prefs->chord_bindings);
-					if (chord != NULL) {
-						chord_clear_prefix(prefix);
-						app_dispatch_action(app, &chord->action);
-						return;
-					}
-				}
-			}
-		}
-
-		/* handle sticky keys */
-		if(k->sym == KEYCODE_BB_SYM_KEY){
-			if(!k->repeat){
-				symmenu_toggle(prefs->main_symmenu);
-			} else{
-				/* they are holding it down */
-				symmenu_stick();
-			}
-			return;
-		}
-
-		if(k->sym == KEYCODE_BB_ALT_KEY){
-			if (prefs->sticky_alt_key) {
-				if(k->repeat){
-					return;
-				} else {
-					altsym_toggle();
-					return;
-				}
-			}
-		}
-
-		if(!kbd.virtualkeyboard_visible
-		   && ((k->sym == KEYCODE_LEFT_SHIFT) || (k->sym == KEYCODE_RIGHT_SHIFT))){
-			if (prefs->sticky_shift_key) {
-				if(k->repeat){
-					return;
-				} else {
-					toggle_vkeymod(KEYMOD_SHIFT);
-					return;
-				}
-			}
-		}
-
-		/* metamode sticky keys don't trigger repreat */
-		if (kbd.metamode && !metamode_just_set) {
-			keymap = metamode_lookup(k, prefs->metamode_sticky_keys);
-			if (keymap != NULL){
-				app_dispatch_action(app, &keymap->action);
-				return;
-			}
-		}
-
-		/* handle key repeat to upcase / metamode */
-		if (k->repeat &&
-		    prefs->keyhold_actions &&
-		    !is_int_member(prefs->keyhold_actions_exempt, k->sym)) {
-			if (!kbd.key_repeat_done) {
-				/* Check for a metamode toggle key first */
-				if (k->sym == prefs->metamode_hold_key) {
-					session_write_text(session, &backspace, 1);
-					metamode_toggle();
-					kbd.key_repeat_done = 1;
-					return;
-				}
-
-				symmenu_t *menu = get_keyhold_actions(k->sym);
-				if (menu == NULL) {
-					return;
-				}
-
-				last_len = io_upcase_last_write(&target, CHARACTER_BUFFER);
-				/* write backspace */
-				for(bs_i = 1; bs_i <= last_len; ++bs_i) {
-					session_write_text(session, &backspace, 1);
-				}
-
-				/* select the mapping */
-
-				// uppercase automatically if there's no accents or accents disabled
-				if ((menu->entries[1].to == NULL) || (!prefs->keyhold_accents)) {
-					/* We can upcase, send last_len backspaces and then the upcase char.
-					 * Note that this really only works if the program on the other
-					 * end of the line understands unicode, and can marry up backspaces
-					 * with codepoints, instead of just blindly deleting one byte at a time. */
-					app_dispatch_action(app, &menu->entries[0].action);
-				} else {
-					symmenu_toggle(menu);
-				}
-				kbd.key_repeat_done = 1;
-				return;
-			} else {
-				// We have already handled this key repeat
-				return;
-			}
-		} else {
-			kbd.key_repeat_done = 0;
-		}
-
-		if(kbd.metamode && !metamode_just_set){
-			keymap = metamode_lookup(k, prefs->metamode_keys);
-			if(keymap != NULL){
-				app_dispatch_action(app, &keymap->action);
-				metamode_toggle();
-				return;
-			}
-			// else
-			keymap = metamode_lookup(k, prefs->metamode_func_keys);
-			if(keymap != NULL){
-				app_dispatch_action(app, &keymap->action);
-			} else {
-				/* Fallback for stale .term49.lua files that predate the
-				 * tab bindings: dispatch the current defaults when the
-				 * user's config has not claimed the key. */
-				action_t tab_action = {0};
-				tab_action.kind = TERM_ACTION_BUILTIN;
-				switch ((char)k->sym) {
-				case 'c': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEW; break;
-				case 'n': tab_action.as.builtin.id = TERM_BUILTIN_TAB_NEXT; break;
-				case 'p': tab_action.as.builtin.id = TERM_BUILTIN_TAB_PREV; break;
-				case 'x': tab_action.as.builtin.id = TERM_BUILTIN_TAB_CLOSE; break;
-				default: tab_action.kind = 0; break;
-				}
-				if (tab_action.kind == TERM_ACTION_BUILTIN) {
-					app_dispatch_action(app, &tab_action);
-				}
-			}
-			metamode_toggle();
-			return;
-		}
-
-		/* handle alt keys */
-		if (kbd.altsym_lock) {
-			keymap = keymap_lookup((char)k->sym, prefs->altsym_entries);
-			altsym_toggle();
-			if (keymap != NULL){
-				app_dispatch_action(app, &keymap->action);
-				return;
-			}
-		}
-
-		/* handle sym keys */
-		if (kbd.current_symmenu != NULL) {
-			keymap = keymap_lookup((char)k->sym, kbd.current_symmenu->entries);
-			if (keymap != NULL){
-				app_dispatch_action(app, &keymap->action);
-				symmenu_toggle(NULL);
-				return;
-			}
-		}
-
-		/* if we have virtual keymods, then put them in, then turn them off */
-		modifiers |= kbd.vmodifiers;
-		if (kbd.vmodifiers != 0) {
-			/* the on-screen ctrl/alt/shift indicators reflect vmodifiers
-			 * clearing them changes the frame, so the
-			 * dirty gate must repaint even if this key emits nothing
-			 * visible itself -- otherwise a stale indicator lingers. */
-			mark_screen_dirty(1);
-		}
-		kbd.vmodifiers = 0;
-
-		/* Site B: ordinary-key chords -- a real modifier (an external
-		 * keyboard's ctrl/alt, or a merged sticky vmodifier) plus a key.
-		 * Consulted after the sticky merge and before plain-key dispatch,
-		 * so a matched ctrl+t fires the action instead of emitting its
-		 * control byte. Exact mask match; initial press only. Modifier-key
-		 * triggers (sym/alt/shift) returned earlier at Site A and never
-		 * reach here. */
-		if (!k->repeat) {
-			chord_t *chord = chord_lookup(k->sym,
-			        (unsigned)modifiers & (KEYMOD_CTRL | KEYMOD_ALT | KEYMOD_SHIFT),
-			        prefs->chord_bindings);
-			if (chord != NULL) {
-				app_dispatch_action(app, &chord->action);
-				return;
-			}
-		}
-
-		/* now process the keypress */
-		switch (k->sym) {
-		case KEYCODE_PAUSE      :
-		case KEYCODE_SCROLL_LOCK:
-		case KEYCODE_PRINT      :
-		case KEYCODE_SYSREQ     :
-		case KEYCODE_BREAK      :
-			//case KEYCODE_ESCAPE     :
-			//case KEYCODE_BACKSPACE  :
-			//case KEYCODE_TAB        :
-			//case KEYCODE_BACK_TAB   :
-		case KEYCODE_LEFT_ALT   :
-		case KEYCODE_RIGHT_ALT  :
-		case KEYCODE_LEFT_SHIFT :
-		case KEYCODE_RIGHT_SHIFT:
-		case KEYCODE_MENU       :
-			//case KEYCODE_INSERT     :
-			//case KEYCODE_HOME       :
-			//case KEYCODE_PG_UP      :
-			//case KEYCODE_DELETE     :
-			//case KEYCODE_END        :
-			//case KEYCODE_PG_DOWN    :
-		case KEYCODE_NUM_LOCK   :
-			//case KEYCODE_F1         :
-			//case KEYCODE_F2         :
-			//case KEYCODE_F3         :
-			//case KEYCODE_F4         :
-			//case KEYCODE_F5         :
-			//case KEYCODE_F6         :
-			//case KEYCODE_F7         :
-			//case KEYCODE_F8         :
-			//case KEYCODE_F9         :
-			//case KEYCODE_F10        :
-			//case KEYCODE_F11        :
-			//case KEYCODE_F12        :
-			PRINT(stderr, "Modifier %d\n", k->sym);
-			break;
-		case KEYCODE_LEFT_CTRL  :
-		case KEYCODE_RIGHT_CTRL :
-			toggle_vkeymod(KEYMOD_CTRL);
-			break;
-		case KEYCODE_LEFT_HYPER :
-		case KEYCODE_RIGHT_HYPER:
-			toggle_vkeymod(KEYMOD_CTRL);
-			break;
-		case KEYCODE_CAPS_LOCK  :
-			toggle_vkeymod(KEYMOD_CTRL);
-			break;
-		default:
-			num_chars = terminal_key_sequence(k->sym, modifiers, c);
-			int nc;
-			for(nc = 0; nc < num_chars; ++nc){
-				PRINT(stderr, "Writing 0x%x\n", (int)c[nc]);
-			}
-			session_write_text(session, (const UChar*)&c, num_chars);
-			break;
-		}
+	if (!k->pressed) {
+		return;
 	}
+
+	PRINT(stderr, "The '%d' key was pressed (modifiers: %d) (char %c) (alt %d)\n",
+	      (int)k->sym, modifiers, (char)k->sym, (int)k->alternate_sym);
+	fflush(stdout);
+
+	if (help_dismiss_step(k)) {                  /* rung 1  */
+		return;
+	}
+	just_set = doubletap_step(k);                /* rung 2  (no return) */
+
+	if (run_layers(kbd_layers_pre,
+	               sizeof(kbd_layers_pre) / sizeof(kbd_layers_pre[0]),
+	               app, k, &modifiers, just_set)) {        /* rungs 3-7 */
+		return;
+	}
+	if (keyhold_step(app, session, k)) {         /* rung 8  */
+		return;
+	}
+	if (run_layers(kbd_layers_meta,
+	               sizeof(kbd_layers_meta) / sizeof(kbd_layers_meta[0]),
+	               app, k, &modifiers, just_set)) {        /* rungs 9-11 */
+		return;
+	}
+	vmodifier_merge_and_clear(&modifiers);       /* rung 12 */
+	if (run_layers(kbd_layers_post,
+	               sizeof(kbd_layers_post) / sizeof(kbd_layers_post[0]),
+	               app, k, &modifiers, just_set)) {        /* rung 13 */
+		return;
+	}
+	terminal_fallback(session, k, modifiers);    /* rung 14 */
 }
 
 /* Push the current cell grid into one session's pty + child shell. */
