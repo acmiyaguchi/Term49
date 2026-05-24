@@ -69,6 +69,9 @@ int  platform_is_passport(platform_t *p);
 int  platform_toast(platform_t *p, const char *msg);
 int  platform_notify(platform_t *p, const notification_spec_t *spec);
 int  platform_open_url(platform_t *p, const char *url);
+/* Power-friendly default for the event-pump idle timeout; what the backend
+ * starts at and what callers restore to after transiently lowering it. */
+#define PLATFORM_IDLE_TIMEOUT_MS_DEFAULT 250
 void platform_set_idle_timeout(platform_t *p, int ms);
 void platform_apply_pending_resize(platform_t *p);
 

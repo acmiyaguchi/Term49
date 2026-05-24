@@ -894,6 +894,8 @@ enum {
 	ARROW_POLL_MS            = 50,   /* event-pump timeout while armed (still-finger ticks) */
 };
 
+#define MS_TO_NS(ms) ((uint64_t)(ms) * 1000000ULL)
+
 static struct {
 	enum drag_mode mode;
 	int committed;
@@ -962,12 +964,22 @@ static void arrow_emit(app_t *app, int dir) {
  * than off input. While armed, the pump timeout is dropped to ARROW_POLL_MS
  * so these ticks arrive fast enough to feel like key autorepeat. */
 static void gesture_tick(app_t *app) {
-	uint64_t now = now_nsec();
 	if (g_drag.mode == DRAG_ARROW) {
+		/* The latched session can be freed mid-gesture (child exits, SIGCHLD
+		 * reaper). With no TOUCH_UP yet, nothing else restores the lowered
+		 * pump timeout — so disarm here rather than poll fast until lift. */
+		unsigned idx;
+		if (g_drag.origin == NULL ||
+		    !app_session_index_of(app, g_drag.origin, &idx)) {
+			platform_set_idle_timeout(g_platform, PLATFORM_IDLE_TIMEOUT_MS_DEFAULT);
+			drag_reset();
+			mark_screen_dirty(1);
+			return;
+		}
+		uint64_t now = now_nsec();
 		if (g_drag.cur_dir != DIR_NONE && now >= g_drag.next_fire_ns) {
 			arrow_emit(app, g_drag.cur_dir);
-			g_drag.next_fire_ns = now +
-			    (uint64_t)ARROW_REPEAT_INTERVAL_MS * 1000000ULL;
+			g_drag.next_fire_ns = now + MS_TO_NS(ARROW_REPEAT_INTERVAL_MS);
 		}
 		return;
 	}
@@ -981,7 +993,8 @@ static void gesture_tick(app_t *app) {
 	    kbd.current_symmenu != NULL || g_drag.origin == NULL) {
 		return;
 	}
-	if (now - g_drag.down_ns < (uint64_t)ARROW_HOLD_MS * 1000000ULL) {
+	uint64_t now = now_nsec();
+	if (now - g_drag.down_ns < MS_TO_NS(ARROW_HOLD_MS)) {
 		return;
 	}
 	g_drag.mode = DRAG_ARROW;
@@ -990,7 +1003,7 @@ static void gesture_tick(app_t *app) {
 	                               g_drag.last_y - g_drag.start_y, text_height);
 	if (g_drag.cur_dir != DIR_NONE) {
 		arrow_emit(app, g_drag.cur_dir);
-		g_drag.next_fire_ns = now + (uint64_t)ARROW_REPEAT_DELAY_MS * 1000000ULL;
+		g_drag.next_fire_ns = now + MS_TO_NS(ARROW_REPEAT_DELAY_MS);
 	}
 	mark_screen_dirty(1);
 }
@@ -2345,16 +2358,16 @@ static int render_ghostty(int force_full_repaint) {
 	 * Reuses the metamode black-on-green colours; arrows are the same glyphs
 	 * the shift indicator proves the font carries (U+2191 etc.). */
 	if (g_drag.mode == DRAG_ARROW) {
-		uint32_t glyph;
-		switch (g_drag.cur_dir) {
-			case DIR_UP:    glyph = 0x2191; break;  /* ↑ */
-			case DIR_DOWN:  glyph = 0x2193; break;  /* ↓ */
-			case DIR_LEFT:  glyph = 0x2190; break;  /* ← */
-			case DIR_RIGHT: glyph = 0x2192; break;  /* → */
-			default:        glyph = 0x00B7; break;  /* · */
-		}
+		static const uint32_t arrow_glyphs[] = {
+			[DIR_NONE]  = 0x00B7,  /* · neutral, before a direction is picked */
+			[DIR_UP]    = 0x2191,  /* ↑ */
+			[DIR_DOWN]  = 0x2193,  /* ↓ */
+			[DIR_LEFT]  = 0x2190,  /* ← */
+			[DIR_RIGHT] = 0x2192,  /* → */
+		};
 		renderer_draw_glyph(renderer, (cols - 1) * advance, (fb_h - text_height) / 2,
-		                    glyph, FONT_STYLE_NORMAL, metamode_cursor_fg, metamode_cursor_bg);
+		                    arrow_glyphs[g_drag.cur_dir], FONT_STYLE_NORMAL,
+		                    metamode_cursor_fg, metamode_cursor_bg);
 	}
 
 	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, kbd.current_symmenu);
@@ -2825,15 +2838,15 @@ int app_handle_event(app_t *app, const event_t *event) {
 			int dir = arrow_dir_for(x - g_drag.start_x, y - g_drag.start_y,
 			                        text_height);
 			g_drag.last_y = y;
-			if (dir != g_drag.cur_dir) {
-				g_drag.cur_dir = dir;
-				/* Re-fire immediately on a direction change, then ramp. */
-				if (dir != DIR_NONE) {
-					arrow_emit(app, dir);
-					g_drag.next_fire_ns = now_nsec() +
-					    (uint64_t)ARROW_REPEAT_DELAY_MS * 1000000ULL;
-				}
-				mark_screen_dirty(1);
+			if (dir == g_drag.cur_dir) {
+				return 1;
+			}
+			g_drag.cur_dir = dir;
+			mark_screen_dirty(1);
+			/* Re-fire immediately on a direction change, then ramp. */
+			if (dir != DIR_NONE) {
+				arrow_emit(app, dir);
+				g_drag.next_fire_ns = now_nsec() + MS_TO_NS(ARROW_REPEAT_DELAY_MS);
 			}
 			return 1;
 		}
@@ -2880,7 +2893,7 @@ int app_handle_event(app_t *app, const event_t *event) {
 		if (g_drag.mode == DRAG_ARROW) {
 			/* End the pad: a held gesture, not a tap, so no keyboard. Restore
 			 * the idle pump timeout that arming dropped. */
-			platform_set_idle_timeout(g_platform, 250);
+			platform_set_idle_timeout(g_platform, PLATFORM_IDLE_TIMEOUT_MS_DEFAULT);
 			mark_screen_dirty(1);
 		} else if (g_drag.mode != DRAG_IDLE && !g_drag.committed &&
 		           g_drag.mode != DRAG_LOCKED) {

@@ -483,7 +483,7 @@ platform_t *platform_screen_create(void) {
 	if (self == NULL) {
 		goto fail_bps;
 	}
-	self->poll_timeout_ms = 250;   /* idle default; arrow-pad lowers it transiently */
+	self->poll_timeout_ms = PLATFORM_IDLE_TIMEOUT_MS_DEFAULT;   /* arrow-pad lowers it transiently */
 
 	if (screen_create_context(&self->ctx, SCREEN_APPLICATION_CONTEXT) != 0) {
 		fprintf(stderr, "platform_screen: screen_create_context failed\n");
