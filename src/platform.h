@@ -37,6 +37,11 @@ typedef struct platform_ops {
 	 * 0 ok, -1 fail. */
 	int  (*notify)(platform_t *p, const notification_spec_t *spec);
 	int  (*open_url)(platform_t *p, const char *url);  /* 0 ok, -1 fail */
+	/* Set the event-pump idle timeout (ms): the longest next_event may block
+	 * before returning with no event. Defaults to a power-friendly value; the
+	 * touch arrow-pad gesture lowers it while armed so auto-repeat fires on a
+	 * motionless finger, then restores it. May be NULL (no-op). */
+	void (*set_idle_timeout)(platform_t *p, int ms);
 	/* Apply any pending window-geometry changes (rotation + size + render
 	 * buffer rebuild) stashed by next_event. Called from the main thread
 	 * during the TERM_EVENT_RESIZE handler, before the renderer's next
@@ -64,6 +69,10 @@ int  platform_is_passport(platform_t *p);
 int  platform_toast(platform_t *p, const char *msg);
 int  platform_notify(platform_t *p, const notification_spec_t *spec);
 int  platform_open_url(platform_t *p, const char *url);
+/* Power-friendly default for the event-pump idle timeout; what the backend
+ * starts at and what callers restore to after transiently lowering it. */
+#define PLATFORM_IDLE_TIMEOUT_MS_DEFAULT 250
+void platform_set_idle_timeout(platform_t *p, int ms);
 void platform_apply_pending_resize(platform_t *p);
 
 #endif
