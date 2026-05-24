@@ -62,6 +62,10 @@ typedef struct platform_screen {
 	 * run loop consumes the event synchronously in the same iteration.
 	 * NUL-terminated. */
 	char             invoke_uri[INVOKE_URI_MAX];
+	/* Event-pump block timeout in ms (screen_plat_set_idle_timeout). The
+	 * arrow-pad gesture drops this while armed so auto-repeat fires on a
+	 * motionless finger; otherwise it stays at the idle default. */
+	int              poll_timeout_ms;
 } platform_screen_t;
 
 static platform_screen_t *self_of(platform_t *p) {
@@ -254,14 +258,15 @@ static int screen_plat_next_event(platform_t *p, event_t *out) {
 		return 0;
 	}
 	bps_event_t *event = NULL;
-	/* 250 ms timeout instead of indefinite block: belt-and-braces for
-	 * the bps_add_fd path. The pty / SIGCHLD io_handlers push a no-op
-	 * wake event after dirtying state, which should return the pump
+	/* poll_timeout_ms (default 250) instead of indefinite block: belt-and-
+	 * braces for the bps_add_fd path. The pty / SIGCHLD io_handlers push a
+	 * no-op wake event after dirtying state, which should return the pump
 	 * immediately — but if that mechanism ever drops a wake, the timeout
-	 * still pulls the loop back so the render check can fire. Idle cost
-	 * is 4 wakes/sec; the main loop fast-paths through them when nothing
-	 * is dirty. */
-	if (bps_get_event(&event, 250) != BPS_SUCCESS || event == NULL) {
+	 * still pulls the loop back so the render check can fire. Idle cost at
+	 * 250 ms is 4 wakes/sec; the main loop fast-paths through them when
+	 * nothing is dirty. The arrow-pad gesture lowers it transiently so a
+	 * held-still finger still gets auto-repeat ticks. */
+	if (bps_get_event(&event, self->poll_timeout_ms) != BPS_SUCCESS || event == NULL) {
 		memset(out, 0, sizeof(*out));
 		out->type = TERM_EVENT_NONE;
 		return 0;
@@ -427,6 +432,14 @@ static void screen_plat_apply_pending_resize(platform_t *p) {
 	self->pending_resize_valid = 0;
 }
 
+static void screen_plat_set_idle_timeout(platform_t *p, int ms) {
+	platform_screen_t *self = self_of(p);
+	if (self == NULL || ms <= 0) {
+		return;
+	}
+	self->poll_timeout_ms = ms;
+}
+
 static void screen_plat_destroy(platform_t *p) {
 	platform_screen_t *self = self_of(p);
 	if (self == NULL) {
@@ -452,6 +465,7 @@ static const platform_ops_t SCREEN_PLATFORM_OPS = {
 	.toast                = screen_plat_toast,
 	.notify               = screen_plat_notify,
 	.open_url             = screen_plat_open_url,
+	.set_idle_timeout     = screen_plat_set_idle_timeout,
 	.apply_pending_resize = screen_plat_apply_pending_resize,
 	.destroy              = screen_plat_destroy,
 };
@@ -469,6 +483,7 @@ platform_t *platform_screen_create(void) {
 	if (self == NULL) {
 		goto fail_bps;
 	}
+	self->poll_timeout_ms = 250;   /* idle default; arrow-pad lowers it transiently */
 
 	if (screen_create_context(&self->ctx, SCREEN_APPLICATION_CONTEXT) != 0) {
 		fprintf(stderr, "platform_screen: screen_create_context failed\n");

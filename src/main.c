@@ -871,19 +871,43 @@ void handle_mousedown(uint16_t x, uint16_t y){
  *   WHEEL  = alt-screen with SGR mouse reporting enabled, forward each
  *            row of drag as an xterm wheel event to the running TUI.
  *   LOCKED = gesture started while a symmenu was open, or in alt-screen
- *            without mouse reporting; consume the touch without action. */
+ *            without mouse reporting; consume the touch without action.
+ *   ARROW  = press-and-hold (no symmenu) promoted a still, uncommitted
+ *            gesture into a 4-way directional pad: drag toward a direction
+ *            to send that arrow key to the latched session, auto-repeating
+ *            while held. The touchscreen analog of the metamode arrow keys. */
 enum drag_mode {
 	DRAG_IDLE = 0,
 	DRAG_SCROLL,
 	DRAG_WHEEL,
 	DRAG_LOCKED,
+	DRAG_ARROW,
 };
+
+enum arrow_dir { DIR_NONE = 0, DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT };
+
+/* Touch arrow-pad (joystick) tunables, in milliseconds. */
+enum {
+	ARROW_HOLD_MS            = 300,  /* finger held still this long arms the pad */
+	ARROW_REPEAT_DELAY_MS    = 300,  /* pause after the first arrow before repeat */
+	ARROW_REPEAT_INTERVAL_MS = 100,  /* auto-repeat cadence while held in a direction */
+	ARROW_POLL_MS            = 50,   /* event-pump timeout while armed (still-finger ticks) */
+};
+
 static struct {
 	enum drag_mode mode;
 	int committed;
+	int start_x;
 	int start_y;
+	int last_x;
 	int last_y;
 	int accum_dy;
+	/* Arrow-pad: armable unless a symmenu owned the TOUCH_DOWN; current 4-way
+	 * direction; and the next auto-repeat deadline. */
+	int arrow_eligible;
+	int cur_dir;
+	uint64_t down_ns;       /* TOUCH_DOWN timestamp, for the hold-to-arm timer */
+	uint64_t next_fire_ns;  /* when the held direction next emits */
 	/* Session the gesture was latched against at TOUCH_DOWN. Both the
 	 * mode decision and every subsequent TOUCH_MOVE target this session,
 	 * so a programmatic tab switch mid-stroke (control socket / Lua)
@@ -893,6 +917,82 @@ static struct {
 
 static void drag_reset(void) {
 	memset(&g_drag, 0, sizeof(g_drag));
+}
+
+static uint64_t now_nsec(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return timespec2nsec(&ts);
+}
+
+/* Dominant-axis 4-way pick with a square deadzone, joystick orientation:
+ * screen y grows downward, so a finger above the origin (dy<0) is UP. */
+static int arrow_dir_for(int dx, int dy, int deadzone) {
+	if (abs(dx) < deadzone && abs(dy) < deadzone) { return DIR_NONE; }
+	if (abs(dx) > abs(dy)) { return dx > 0 ? DIR_RIGHT : DIR_LEFT; }
+	return dy > 0 ? DIR_DOWN : DIR_UP;
+}
+
+/* Emit one arrow keypress into the latched origin session, byte-for-byte
+ * identical to a physical arrow key (same terminal_key_sequence path, same
+ * snap-to-bottom as TERM_EVENT_KEY). Guards the latched session in case its
+ * child exited mid-gesture and freed it. */
+static void arrow_emit(app_t *app, int dir) {
+	unsigned idx;
+	UChar buf[CHARACTER_BUFFER];
+	int n, sym;
+	if (g_drag.origin == NULL || !app_session_index_of(app, g_drag.origin, &idx)) {
+		return;
+	}
+	switch (dir) {
+		case DIR_UP:    sym = KEYCODE_UP;    break;
+		case DIR_DOWN:  sym = KEYCODE_DOWN;  break;
+		case DIR_LEFT:  sym = KEYCODE_LEFT;  break;
+		case DIR_RIGHT: sym = KEYCODE_RIGHT; break;
+		default: return;
+	}
+	n = terminal_key_sequence(sym, 0, buf);
+	ghostty_bridge_scroll_to_bottom(session_bridge(g_drag.origin));
+	session_write_text(g_drag.origin, buf, n);
+}
+
+/* Time-driven half of the arrow pad, called once per main-loop iteration.
+ * A motionless finger generates no TOUCH_MOVE events, so the hold-to-arm
+ * promotion and the auto-repeat both have to run off the loop clock rather
+ * than off input. While armed, the pump timeout is dropped to ARROW_POLL_MS
+ * so these ticks arrive fast enough to feel like key autorepeat. */
+static void gesture_tick(app_t *app) {
+	uint64_t now = now_nsec();
+	if (g_drag.mode == DRAG_ARROW) {
+		if (g_drag.cur_dir != DIR_NONE && now >= g_drag.next_fire_ns) {
+			arrow_emit(app, g_drag.cur_dir);
+			g_drag.next_fire_ns = now +
+			    (uint64_t)ARROW_REPEAT_INTERVAL_MS * 1000000ULL;
+		}
+		return;
+	}
+	/* Arm a still, uncommitted, non-symmenu gesture into the pad — regardless
+	 * of the latched scroll mode, so it works on a primary-screen shell
+	 * (SCROLL), a mouse-reporting TUI (WHEEL), and a plain alt-screen app with
+	 * no reporting (LOCKED, e.g. default vi/less). A fast swipe sets `committed`
+	 * first on the scroll paths and so never arms; symmenu gestures are excluded
+	 * outright. */
+	if (!g_drag.arrow_eligible || g_drag.committed ||
+	    kbd.current_symmenu != NULL || g_drag.origin == NULL) {
+		return;
+	}
+	if (now - g_drag.down_ns < (uint64_t)ARROW_HOLD_MS * 1000000ULL) {
+		return;
+	}
+	g_drag.mode = DRAG_ARROW;
+	platform_set_idle_timeout(g_platform, ARROW_POLL_MS);
+	g_drag.cur_dir = arrow_dir_for(g_drag.last_x - g_drag.start_x,
+	                               g_drag.last_y - g_drag.start_y, text_height);
+	if (g_drag.cur_dir != DIR_NONE) {
+		arrow_emit(app, g_drag.cur_dir);
+		g_drag.next_fire_ns = now + (uint64_t)ARROW_REPEAT_DELAY_MS * 1000000ULL;
+	}
+	mark_screen_dirty(1);
 }
 
 enum {
@@ -2240,6 +2340,23 @@ static int render_ghostty(int force_full_repaint) {
 		renderer_draw_bitmap(renderer, (cols - 1) * advance, grid_top_pad + 3 * text_height, altsym_indicator);
 	}
 
+	/* Arrow-pad feedback: a green glyph on the right edge, vertically centred,
+	 * showing the active direction (or a neutral dot before one is picked).
+	 * Reuses the metamode black-on-green colours; arrows are the same glyphs
+	 * the shift indicator proves the font carries (U+2191 etc.). */
+	if (g_drag.mode == DRAG_ARROW) {
+		uint32_t glyph;
+		switch (g_drag.cur_dir) {
+			case DIR_UP:    glyph = 0x2191; break;  /* ↑ */
+			case DIR_DOWN:  glyph = 0x2193; break;  /* ↓ */
+			case DIR_LEFT:  glyph = 0x2190; break;  /* ← */
+			case DIR_RIGHT: glyph = 0x2192; break;  /* → */
+			default:        glyph = 0x00B7; break;  /* · */
+		}
+		renderer_draw_glyph(renderer, (cols - 1) * advance, (fb_h - text_height) / 2,
+		                    glyph, FONT_STYLE_NORMAL, metamode_cursor_fg, metamode_cursor_bg);
+	}
+
 	const bitmap_t *symmenu_surface = renderer_symmenu_surface_for(renderer, kbd.current_symmenu);
 	if (symmenu_surface != NULL) {
 		renderer_draw_bitmap(renderer, 0, fb_h - symmenu_surface->h, symmenu_surface);
@@ -2674,8 +2791,12 @@ int app_handle_event(app_t *app, const event_t *event) {
 		ghostty_bridge_t *bridge = session_bridge(origin);
 		drag_reset();
 		g_drag.origin  = origin;
+		g_drag.start_x = event->as.touch.x;
 		g_drag.start_y = event->as.touch.y;
+		g_drag.last_x  = event->as.touch.x;
 		g_drag.last_y  = event->as.touch.y;
+		g_drag.down_ns = now_nsec();   /* gesture_tick arms the arrow pad off this */
+		g_drag.cur_dir = DIR_NONE;
 		/* Latch the mode for the whole gesture so e.g. a symmenu tap
 		 * that dismisses the menu mid-stroke can't start scrolling. */
 		if (kbd.current_symmenu != NULL) {
@@ -2687,12 +2808,35 @@ int app_handle_event(app_t *app, const event_t *event) {
 		} else {
 			g_drag.mode = DRAG_SCROLL;
 		}
+		/* The arrow pad may arm from any of those except a symmenu gesture. */
+		g_drag.arrow_eligible = (kbd.current_symmenu == NULL);
 		handle_mousedown(event->as.touch.x, event->as.touch.y);
 		mark_screen_dirty(1);
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_MOVE: {
 		unsigned origin_idx;
+		int y = event->as.touch.y;
+		int x = event->as.touch.x;
+		/* Tracked for the arrow pad's direction; the scroll path below
+		 * ignores last_x and keeps owning last_y for its row delta. */
+		g_drag.last_x = x;
+		if (g_drag.mode == DRAG_ARROW) {
+			int dir = arrow_dir_for(x - g_drag.start_x, y - g_drag.start_y,
+			                        text_height);
+			g_drag.last_y = y;
+			if (dir != g_drag.cur_dir) {
+				g_drag.cur_dir = dir;
+				/* Re-fire immediately on a direction change, then ramp. */
+				if (dir != DIR_NONE) {
+					arrow_emit(app, dir);
+					g_drag.next_fire_ns = now_nsec() +
+					    (uint64_t)ARROW_REPEAT_DELAY_MS * 1000000ULL;
+				}
+				mark_screen_dirty(1);
+			}
+			return 1;
+		}
 		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
 			return 1;
 		}
@@ -2703,8 +2847,6 @@ int app_handle_event(app_t *app, const event_t *event) {
 		    !app_session_index_of(app, g_drag.origin, &origin_idx)) {
 			return 1;
 		}
-		int y = event->as.touch.y;
-		int x = event->as.touch.x;
 		int dy = y - g_drag.last_y;
 		g_drag.last_y = y;
 		if (!g_drag.committed) {
@@ -2735,7 +2877,13 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_UP:
-		if (g_drag.mode != DRAG_IDLE && !g_drag.committed && g_drag.mode != DRAG_LOCKED) {
+		if (g_drag.mode == DRAG_ARROW) {
+			/* End the pad: a held gesture, not a tap, so no keyboard. Restore
+			 * the idle pump timeout that arming dropped. */
+			platform_set_idle_timeout(g_platform, 250);
+			mark_screen_dirty(1);
+		} else if (g_drag.mode != DRAG_IDLE && !g_drag.committed &&
+		           g_drag.mode != DRAG_LOCKED) {
 			maybe_show_vkb();
 		}
 		drag_reset();
@@ -2891,6 +3039,10 @@ int main(int argc, char **argv) {
 		if (have) {
 			app_handle_event(g_app, &event);
 		}
+		/* Time-driven gestures (arrow-pad arm + auto-repeat). Runs every
+		 * iteration, including the no-event timeout wakes, so a held-still
+		 * finger still gets repeat ticks. */
+		gesture_tick(g_app);
 		/* Safe point: the triggering event (and any lua_pcall within
 		 * it) has fully returned; rescreen / lua reload can run
 		 * without unwinding through an active dispatch. */
