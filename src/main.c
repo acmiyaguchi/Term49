@@ -2686,7 +2686,12 @@ static int pty_init(session_t *session) {
 		char bbnix_shell[1024];
 		bbnix_shell[0] = '\0';
 		setup_bbnix_env(bbnix_shell, sizeof(bbnix_shell));
+		/* login(1) normally seeds $SHELL from /etc/passwd; the navigator
+		 * doesn't, so set it to the shell we exec here. tmux's default-shell,
+		 * vim's :sh/:terminal, and $SHELL -c all fall back to /bin/sh without
+		 * it. Set immediately before each execl so it tracks the real shell. */
 		if(bbnix_shell[0] != '\0'){
+			setenv("SHELL", bbnix_shell, 1);
 			execl(bbnix_shell, "zsh", "-l", (char*)0);
 			fprintf(stderr, "bbnix zsh exec failed: %s - falling back to mksh\n",
 			        strerror(errno));
@@ -2698,9 +2703,12 @@ static int pty_init(session_t *session) {
 		char mksh[1024];
 		if(sandbox != NULL &&
 		   snprintf(mksh, sizeof(mksh), "%s/app/native/root/bin/mksh", sandbox) < (int)sizeof(mksh)){
+			setenv("SHELL", mksh, 1);
 			execl(mksh, "mksh", "-l", (char*)0);
 		}
+		setenv("SHELL", "../app/native/root/bin/mksh", 1);
 		if(execl("../app/native/root/bin/mksh", "mksh", "-l", (char*)0) == -1){
+			setenv("SHELL", "/bin/sh", 1);
 			execl("/bin/sh", "sh", "-l", (char*)0);
 		}
 	}
