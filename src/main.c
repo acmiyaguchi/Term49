@@ -2511,6 +2511,83 @@ static int tab_overlay_new_button_at(int touch_x) {
 	return (touch_x >= plus_x && touch_x < plus_x + plus_w);
 }
 
+/* Prepend "<root>/<sub>" to the colon-list env var `var`, preserving any
+ * existing value. Leaves the var unchanged on allocation failure. */
+static void env_prepend_subdir(const char *var, const char *root, const char *sub) {
+	const char *cur = getenv(var);
+	size_t len = strlen(root) + 1 + strlen(sub) + 1
+	           + ((cur != NULL && cur[0] != '\0') ? strlen(cur) + 1 : 0);
+	char *val = malloc(len);
+	if(val == NULL){
+		fprintf(stderr, "bbnix: could not allocate %s - leaving unchanged\n", var);
+		return;
+	}
+	if(cur != NULL && cur[0] != '\0'){
+		snprintf(val, len, "%s/%s:%s", root, sub, cur);
+	} else {
+		snprintf(val, len, "%s/%s", root, sub);
+	}
+	setenv(var, val, 1);
+	free(val);
+}
+
+/* Resolve the bbnix userland root. An explicit $BBNIX_ROOT (e.g. a rooted
+ * /data/bbnix dev install) wins; otherwise default to the copy bundled in
+ * the .bar at $SANDBOX/app/native/bbnix. Returns 1 and fills `out` only when
+ * the root has an exec-able bin/, so an absent bbnix is a clean no-op. */
+static int resolve_bbnix_root(char *out, size_t cap) {
+	const char *env = getenv("BBNIX_ROOT");
+	const char *sandbox = getenv("SANDBOX");
+	char bindir[1024];
+
+	if(env != NULL && env[0] != '\0'){
+		if(snprintf(out, cap, "%s", env) >= (int)cap){ return 0; }
+	} else if(sandbox != NULL){
+		if(snprintf(out, cap, "%s/app/native/bbnix", sandbox) >= (int)cap){ return 0; }
+	} else {
+		return 0;
+	}
+
+	if(snprintf(bindir, sizeof(bindir), "%s/bin", out) >= (int)sizeof(bindir)){ return 0; }
+	return access(bindir, X_OK) == 0;
+}
+
+/* Wire PATH / LD_LIBRARY_PATH / TERMINFO for a bbnix userland if one is
+ * present (see bbnix AGENTS.md). Additive and opt-in: a stock build with no
+ * bbnix root is untouched. When bbnix ships zsh, its absolute path is written
+ * into `shell` so the caller can prefer it over the bundled mksh. */
+static void setup_bbnix_env(char *shell, size_t shell_cap) {
+	char root[1024];
+	char buf[1024];
+	struct stat st;
+
+	if(!resolve_bbnix_root(root, sizeof(root))){ return; }
+
+	env_prepend_subdir("PATH", root, "bin");
+	/* bbnix binaries link from-source .so's the device lacks, and the device
+	 * ldqnx does not expand $ORIGIN, so the libs are found via LD_LIBRARY_PATH
+	 * rather than RUNPATH. */
+	env_prepend_subdir("LD_LIBRARY_PATH", root, "lib");
+
+	/* Prefer bbnix's own terminfo DB if it ships one; otherwise keep the
+	 * bundled TERMINFO that main() already exported. */
+	if(snprintf(buf, sizeof(buf), "%s/terminfo", root) < (int)sizeof(buf)
+	   && stat(buf, &st) == 0 && S_ISDIR(st.st_mode)){
+		setenv("TERMINFO", buf, 1);
+	}
+
+	/* tmux's nl_langinfo path is locale-gated; set if-absent so a user
+	 * .profile can still override. Harmless for zsh / ssh / mosh. */
+	setenv("LC_ALL", "C", 0);
+	setenv("BBNIX_CODESET", "UTF-8", 0);
+
+	if(shell != NULL
+	   && snprintf(buf, sizeof(buf), "%s/bin/zsh", root) < (int)sizeof(buf)
+	   && access(buf, X_OK) == 0){
+		snprintf(shell, shell_cap, "%s", buf);
+	}
+}
+
 static void terminal_setenv(void) {
 	/* terminfo is located via $TERMINFO (an absolute path to the bundled
 	 * database, exported in main() before fork). */
@@ -2590,43 +2667,37 @@ static int pty_init(session_t *session) {
 
 		terminal_setenv();
 
-		/* add in our private binary path */
-		char* home = getenv("SANDBOX");
-		char* path = getenv("PATH");
-		char* root = "app/native/root/bin";
-		char* newpath;
-		int err = 0;
-		int newpath_len = 0;
-		if(home == NULL || path == NULL){
-			fprintf(stderr, "Could not get $HOME or $PATH - not setting private bin dir.\n");
+		/* Baseline private bin dir: the bundled mksh / ssh / scp, always in
+		 * the .bar at $SANDBOX/app/native/root/bin. */
+		char* sandbox = getenv("SANDBOX");
+		if(sandbox == NULL){
+			fprintf(stderr, "Could not get $SANDBOX - not setting private bin dir.\n");
 		} else {
-			newpath_len = strlen(home) + strlen(path) + strlen(root) + 10;
-			newpath = calloc(newpath_len, sizeof(char));
-			if(newpath == NULL){
-				fprintf(stderr, "Could not calloc new $PATH - not setting private bin dir..\n");
-			} else {
-				err = snprintf(newpath, newpath_len, "PATH=%s/%s:%s\n", home, root, path);
-				if(err > 0){
-					err = putenv(strdup(newpath));
-					if(err < 0){
-						fprintf(stderr, "Error in putenv: %d\n%s - private bin may not bein $PATH.\n", errno, newpath);
-					}
-				} else {
-					fprintf(stderr, "Error snprintf setting $PATH: %d\n", errno);
-				}
-				free(newpath);
-			}
+			env_prepend_subdir("PATH", sandbox, "app/native/root/bin");
 		}
 
 		/* Set LC_CTYPE=en_US.UTF-8
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
+
+		/* Opt-in bbnix userland (zsh/tmux/mosh/ssh). Prepends its bin/ + lib/
+		 * ahead of the baseline and upgrades the login shell to zsh if shipped.
+		 * No-op when no bbnix root is present. */
+		char bbnix_shell[1024];
+		bbnix_shell[0] = '\0';
+		setup_bbnix_env(bbnix_shell, sizeof(bbnix_shell));
+		if(bbnix_shell[0] != '\0'){
+			execl(bbnix_shell, "zsh", "-l", (char*)0);
+			fprintf(stderr, "bbnix zsh exec failed: %s - falling back to mksh\n",
+			        strerror(errno));
+		}
+
 		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
 		 * absolute path: CWD is now the shared HOME, so the old
 		 * "../app/native/..." relative path no longer resolves. */
 		char mksh[1024];
-		if(home != NULL &&
-		   snprintf(mksh, sizeof(mksh), "%s/%s/mksh", home, root) < (int)sizeof(mksh)){
+		if(sandbox != NULL &&
+		   snprintf(mksh, sizeof(mksh), "%s/app/native/root/bin/mksh", sandbox) < (int)sizeof(mksh)){
 			execl(mksh, "mksh", "-l", (char*)0);
 		}
 		if(execl("../app/native/root/bin/mksh", "mksh", "-l", (char*)0) == -1){
