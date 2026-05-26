@@ -13,41 +13,41 @@
    -->
 
 <qnx xmlns="http://www.qnx.com/schemas/application/1.0">
-    <id>com.example.Term49</id>
+    <id>io.github.term50</id>
     <asset path="share/terminfo">terminfo</asset>
     <asset path="share/root">root</asset>
     <asset path="share/NOTICE">NOTICE</asset>
     <asset path="share/LICENSE">LICENSE</asset>
     <asset path="share/README">README</asset>
     <asset path="share/README45">README45</asset>
-    <asset path="share/term49.lua.reference">term49.lua.reference</asset>
+    <asset path="share/term.lua.reference">term.lua.reference</asset>
     <asset path="share/AGENTS.md">AGENTS.md</asset>
-    <asset path="icons/term4986x86.png">term4986x86.png</asset>
-    <asset path="icons/term4990x90.png">term4990x90.png</asset>
-    <asset path="icons/term4996x96.png">term4996x96.png</asset>
-    <asset path="icons/term49110x110.png">term49110x110.png</asset>
-    <asset path="icons/term49144x144.png">term49144x144.png</asset>
+    <asset path="icons/icon-86x86.png">icon-86x86.png</asset>
+    <asset path="icons/icon-90x90.png">icon-90x90.png</asset>
+    <asset path="icons/icon-96x96.png">icon-96x96.png</asset>
+    <asset path="icons/icon-110x110.png">icon-110x110.png</asset>
+    <asset path="icons/icon-144x144.png">icon-144x144.png</asset>
 
     <configuration name="Device-Debug">
        <platformArchitecture>armle-v7</platformArchitecture>
-       <asset path="Device-Debug/Term49" entry="true" type="Qnx/Elf">Term49</asset>
+       <asset path="Device-Debug/Term50" entry="true" type="Qnx/Elf">Term50</asset>
        <asset path="Device-Debug/termctl" entry="false" type="Qnx/Elf">root/bin/termctl</asset>
     </configuration>
     <configuration name="Device-Release">
        <platformArchitecture>armle-v7</platformArchitecture>
-       <asset path="Device-Release/Term49" entry="true" type="Qnx/Elf">Term49</asset>
+       <asset path="Device-Release/Term50" entry="true" type="Qnx/Elf">Term50</asset>
        <asset path="Device-Release/termctl" entry="false" type="Qnx/Elf">root/bin/termctl</asset>
     </configuration>
 
-    <name>Term49</name>
+    <name>Term50</name>
     <versionNumber>1.0.0</versionNumber>
     <buildId>1</buildId>
 
     <!-- May have multiple values for each language. See samples or xsd schema file. -->
-    <description>The Term49 application</description>
+    <description>The Term50 application</description>
 
     <!--  Must match the developer name of your developer certificate. -->
-    <author>Example Inc.</author>
+    <author>Anthony Miyaguchi</author>
     <!--  Unique author ID assigned by signing authority. Required if using debug tokens.
           Left commented so -devMode self-signing auto-derives a valid dev author-id. -->
     <!-- <authorId>Package-Author-Id</authorId> -->
@@ -58,11 +58,11 @@
     </initialWindow>
 
     <icon>
-      <image>term4986x86.png</image>
-      <image>term4990x90.png</image>
-      <image>term4996x96.png</image>
-      <image>term49110x110.png</image>
-      <image>term49144x144.png</image>
+      <image>icon-86x86.png</image>
+      <image>icon-90x90.png</image>
+      <image>icon-96x96.png</image>
+      <image>icon-110x110.png</image>
+      <image>icon-144x144.png</image>
     </icon>
 
     <!-- Request permission to execute native code.  Required for native applications. -->
@@ -98,24 +98,24 @@
     <!-- Ensure that shared libraries in the package are found at run-time. -->
     <env var="LD_LIBRARY_PATH" value="app/native/lib"/>
 
-    <!-- Cross-app entry point (#23). Registers the term49:// URI scheme so a
+    <!-- Cross-app entry point (#23). Registers the term:// URI scheme so a
          tapped link, a homescreen shortcut, another app, or one of our own
-         notifications can ask the navigator to open Term49. Navigation-only
-         grammar (see README "Cross-app invoke"): term49://tab[/N] opens or
-         focuses a tab; term49://focus just re-foregrounds. It deliberately
+         notifications can ask the navigator to open Term50. Navigation-only
+         grammar (see README "Cross-app invoke"): term://tab[/N] opens or
+         focuses a tab; term://focus just re-foregrounds. It deliberately
          cannot run commands; driving the shell is restricted to the in-sandbox
          control socket (#5). One-way, no reply. Being a URI handler needs no
          extra permission. -->
-    <invoke-target id="com.example.Term49">
+    <invoke-target id="io.github.term50">
         <type>APPLICATION</type>
         <filter>
             <action>bb.action.OPEN</action>
-            <!-- The match is scoped by the term49:// scheme below; mime-type
+            <!-- The match is scoped by the term:// scheme below; mime-type
                  "*" is the documented form for a custom URI-scheme filter (a
                  URI-only open carries no concrete type), NOT a claim to handle
                  every content type. -->
             <mime-type>*</mime-type>
-            <property var="uris" value="term49://"/>
+            <property var="uris" value="term://"/>
         </filter>
     </invoke-target>
 

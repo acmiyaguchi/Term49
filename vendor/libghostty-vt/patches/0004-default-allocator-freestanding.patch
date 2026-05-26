@@ -8,7 +8,7 @@ index fc56033..2bfa672 100644
  
 +    // Freestanding targets: std.heap.smp_allocator's page allocator needs
 +    // posix mmap (posix.MAP/mmap), absent here. On freestanding
-+    // the embedder MUST pass a GhosttyAllocator (Term49 always does), so
++    // the embedder MUST pass a GhosttyAllocator (Term50 always does), so
 +    // this fallback is dead code at runtime and only has to compile
 +    // posix-free. An empty FixedBufferAllocator does that; if ever reached
 +    // allocations fail cleanly via the Result-returning C API.

@@ -1,5 +1,5 @@
 /*
- * Term49 control-protocol framing shared by the in-app server (src/control.c)
+ * Term50 control-protocol framing shared by the in-app server (src/control.c)
  * and the termctl client (tools/termctl/main.c). Dependency-free (string.h
  * only, no BB10 headers) so the same source compiles into both link targets.
  *

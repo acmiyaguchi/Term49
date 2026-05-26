@@ -106,7 +106,7 @@ int action_parse(const char *value, action_t *out) {
 	 * explicitly when routing to a specific session. */
 	out->target.session = 0;
 
-	/* "lua:<fn>" binds a key to a no-arg Lua function from .term49.lua.
+	/* "lua:<fn>" binds a key to a no-arg Lua function from .term.lua.
 	 * arg points into `value` (the keymap's heap-owned ->to string), the
 	 * same lifetime model as TERM_ACTION_SEND_BYTES below. */
 	if (strncmp(value, "lua:", 4) == 0) {

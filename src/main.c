@@ -37,6 +37,7 @@
 
 #include <stdint.h>
 
+#include "app_identity.h"
 #include "bitmap.h"
 #include "font.h"
 #include "types.h"
@@ -59,7 +60,7 @@ static int exit_application = 0;
  * which is wiped on every app reinstall and is invisible to the File
  * Manager / bb-scp. Repoint HOME at the persistent, cross-app shared
  * Documents dir (the OS creates it once access_shared is granted) so
- * dotfiles, mksh history and .term49rc survive redeploys and can be
+ * dotfiles, mksh history and .termrc survive redeploys and can be
  * seeded from the dev box. Also export TERMINFO with an absolute path
  * to the bundled terminfo, since the shared filesystem is FUSE-backed
  * and rejects the ~/.terminfo symlink we used to rely on. Falls back
@@ -86,14 +87,14 @@ static void set_persistent_home(void) {
 		}
 	}
 
-	/* TERM49_AGENT_DOC = absolute path to the bundled agent capability doc
-	 * (#23), so an in-shell agent can `cat "$TERM49_AGENT_DOC"` to discover the
-	 * control socket + term49:// invoke surface. Same asset layout as TERMINFO. */
+	/* TERMCTL_AGENT_DOC = absolute path to the bundled agent capability doc
+	 * (#23), so an in-shell agent can `cat "$TERMCTL_AGENT_DOC"` to discover the
+	 * control socket + term:// invoke surface. Same asset layout as TERMINFO. */
 	{
 		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/AGENTS.md",
 		                 (int)(appid_end - sandbox_home), sandbox_home);
 		if (n > 0 && n < (int)sizeof(buf)) {
-			setenv("TERM49_AGENT_DOC", buf, 1);
+			setenv(APP_ENV_AGENT_DOC, buf, 1);
 		}
 	}
 
@@ -620,7 +621,7 @@ static void help_overlay_build(void){
 			snprintf(lines[n], HELP_LINE_MAX, __VA_ARGS__); ++n; } \
 	} while (0)
 
-	HELP_PUSH("%s", "Term49 keybindings  (any key closes)");
+	HELP_PUSH("%s", APP_DISPLAY_NAME " keybindings  (any key closes)");
 
 	if (prefs->chord_bindings && prefs->chord_bindings->keycode != 0) {
 		HELP_PUSH("%s", "");
@@ -1084,7 +1085,7 @@ void set_font_size(int new_size){
 	if(new_size < MIN_FONT_SIZE)        new_size = MIN_FONT_SIZE;
 	if(new_size > TERM_MAX_FONT_SIZE)   new_size = TERM_MAX_FONT_SIZE;
 	/* The `term` table is inert until the runtime is up: term.font_size_set
-	 * called at .term49.lua load time is a no-op, NOT a way to set the
+	 * called at .term.lua load time is a no-op, NOT a way to set the
 	 * startup size. The declarative startup size is the `font_size` scalar
 	 * global (PREFS_SCALARS -> prefs->font_size -> font_init at startup).
 	 * (At reload time the runtime IS ready, so a top-level term.* there acts
@@ -1103,7 +1104,7 @@ int term_current_font_size(void){
 }
 
 /* The runtime is "ready" once the app, video surface, and prefs all
- * exist. Until then (notably while .term49.lua is executing inside the
+ * exist. Until then (notably while .term.lua is executing inside the
  * startup loader) the global prefs/g_app/screen are still NULL, so every
  * term.* C entry point must bail before dereferencing them. */
 int term_runtime_ready(void){
@@ -1201,7 +1202,7 @@ int ctl_tabs_stats(char *buf, size_t cap) {
 	return (int)n;
 }
 
-/* Re-run .term49.lua and re-apply it live. MUST be called only from the
+/* Re-run .term.lua and re-apply it live. MUST be called only from the
  * deferred safe point in the run loop (never from action dispatch / a
  * lua_pcall): the loader closes and reopens the lua_State, and frees the
  * old keymaps/symmenus a keypress may still be unwinding through.
@@ -2106,7 +2107,7 @@ static int startup_init() {
 
 	/* Control socket (#5). Best-effort: a failure here logs and leaves the
 	 * app fully usable, just without the scripting socket. Runs before the
-	 * pty fork so child shells inherit $TERM49_CONTROL. */
+	 * pty fork so child shells inherit $TERMCTL_SOCKET. */
 	control_init();
 
 	if(font_library_init() != 0){
@@ -2814,19 +2815,19 @@ static void reap_exited_children(void){
 	}
 }
 
-/* Act on an OPEN invocation (#23): a term49:// URI. Grammar:
- *   term49://tab     open a new (empty) tab
- *   term49://tab/N   focus the 1-based tab N if it is still live, else new tab
- *   term49://focus   re-foreground only (the OS already raised us)
+/* Act on an OPEN invocation (#23): a term:// URI. Grammar:
+ *   term://tab     open a new (empty) tab
+ *   term://tab/N   focus the 1-based tab N if it is still live, else new tab
+ *   term://focus   re-foreground only (the OS already raised us)
  * Unknown verbs are ignored (we were still brought to the foreground).
  *
  * NAVIGATION-ONLY BY DESIGN: this scheme is openable by any app -- or a tapped
  * web link -- so it deliberately cannot run commands or inject input. Driving
  * the shell (writing a command) is restricted to the in-sandbox control socket
- * (#5, $TERM49_CONTROL), reachable only by Term49's own child processes. A
+ * (#5, $TERMCTL_SOCKET), reachable only by Term50's own child processes. A
  * query string, if present, is ignored. */
 static void handle_invoke_open(app_t *app, const char *uri) {
-	const char *rest = uri + (sizeof("term49://") - 1);  /* past the scheme */
+	const char *rest = uri + (sizeof(APP_URI_SCHEME) - 1);  /* past the scheme */
 	const char *q = strchr(rest, '?');
 	size_t path_len = q ? (size_t)(q - rest) : strlen(rest);
 

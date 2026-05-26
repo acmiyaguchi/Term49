@@ -22,8 +22,8 @@ ZIG_TARGET ?= arm-freestanding-eabi
 ZIG_MCPU   ?= cortex_a9
 ZIG_OPT    ?= ReleaseSmall
 
-# BBNDK cross toolchain (resolved inside BB_SHELL). Match Term49's exact
-# compiler — Term49/Makefile uses `qcc -V4.6.3,gcc_ntoarmv7le` (GCC 4.6.3),
-# NOT fen-blackberry's bare `-Vgcc_ntoarmv7le`. ABI must match Term49's.
+# BBNDK cross toolchain (resolved inside BB_SHELL). Match Term50's exact
+# compiler — Term50/Makefile uses `qcc -V4.6.3,gcc_ntoarmv7le` (GCC 4.6.3),
+# NOT fen-blackberry's bare `-Vgcc_ntoarmv7le`. ABI must match Term50's.
 CC := qcc -V4.6.3,gcc_ntoarmv7le
 

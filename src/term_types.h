@@ -1,5 +1,5 @@
 /*
- * Small project-owned value types shared across Term49 modules.
+ * Small project-owned value types shared across Term50 modules.
  *
  * Keep this header free of backend/vendor types such as SDL, libconfig,
  * BPS, or Lua. Module-specific structs belong in their own headers.

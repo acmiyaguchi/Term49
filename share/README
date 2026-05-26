@@ -1,6 +1,6 @@
 Welcome!
 
-This file gives an overview of the Term49 shell, and is
+This file gives an overview of the Term50 shell, and is
 broken down into topics:
 
 1. QUICK START
@@ -35,7 +35,7 @@ and off. The default metamode keys are:
   i: font size increase
   o: font size decrease
   p: font size reset
-  r: reload ~/.term49.lua
+  r: reload ~/.term.lua
 
 After pressing a key in metamode you will be returned to
 normal input, excepting the arrow keys, which leave you in
@@ -69,23 +69,23 @@ The metamode keys are all configurable, as described below.
 
 2. PREFERENCES
 
-Preferences are read from the .term49.lua file in $HOME.
+Preferences are read from the .term.lua file in $HOME.
 If this file does not exist at startup it will be created
 at launch time with the default settings (along with this
-README). The file is a Lua 5.4 script: Term49 executes it
+README). The file is a Lua 5.4 script: Term50 executes it
 and then reads the resulting global variables (font_size,
 metamode_keys, ...) to populate preferences. Any global
 that is missing or has the wrong type falls back to the
 compiled default, so a partial config is fine. If the
-script fails to parse or run, Term49 keeps the previous
+script fails to parse or run, Term50 keeps the previous
 config (or compiled defaults at startup) and logs the
 error.
 
-SECURITY: .term49.lua runs as a full Lua program with the
+SECURITY: .term.lua runs as a full Lua program with the
 standard library (including os and io). Treat it like a
-shell rc -- only run a .term49.lua you wrote or trust.
+shell rc -- only run a .term.lua you wrote or trust.
 
-Term49 never rewrites .term49.lua, so your comments and
+Term50 never rewrites .term.lua, so your comments and
 formatting survive. To re-apply a saved file at runtime,
 press metamode 'r' (the default reload_config binding).
 Font-size changes from metamode i/o/p are session-only
@@ -99,7 +99,7 @@ font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
 -- shell. This can be an absolute or relative path.
 
 font_size = 16
--- The font size for the shell. Term49 will try to guess
+-- The font size for the shell. Term50 will try to guess
 -- a reasonable size for your screen, but otherwise
 -- defaults to this value. Metamode i / o / p change this
 -- at runtime (increase / decrease / reset).
@@ -112,7 +112,7 @@ background_color = { 0, 0, 0 }
 -- The background color as { r, g, b }.
 
 screen_idle_awake = false
--- If true, Term49 will force the screen to stay awake
+-- If true, Term50 will force the screen to stay awake
 -- when idle instead of dimming and eventually turning
 -- off as usual.
 
@@ -134,7 +134,7 @@ metamode_doubletap_delay = 500000000
 
 keyhold_actions = true
 -- Enables special actions when holding down a key. By
--- default Term49 will upcase letters if you hold them,
+-- default Term50 will upcase letters if you hold them,
 -- and will toggle metamode on if you hold space.
 
 keyhold_actions_exempt = { 8, 13 }
@@ -151,7 +151,7 @@ keyhold_accents = true
 -- chooser (for example holding 'e' offers e/é/è/ê/ë).
 
 tty_encoding = "UTF-8"
--- Term49 uses 16 bit Unicode internally, but when doing
+-- Term50 uses 16 bit Unicode internally, but when doing
 -- IO with the tty / shell, will convert between Unicode
 -- and the tty_encoding. Defaults to UTF-8, but can be
 -- any encoding that the International Components for
@@ -175,7 +175,7 @@ metamode_keys = {
 -- "\t" is TAB. You can use any character string here,
 -- including UTF-8 sequences.
 --
--- Term49 supports terminfo aliases for some common escape
+-- Term50 supports terminfo aliases for some common escape
 -- sequences. If a metamode key's value is one of kcuu1,
 -- kcud1, kcuf1, kcub1, khome, kend, or kf1 through kf12,
 -- the correct escape sequence will be sent for cursor up,
@@ -203,7 +203,7 @@ metamode_func_keys = {
   { "r", "reload_config" },
   { "?", "help_overlay" },
 }
--- These keys map to built-in functions in Term49:
+-- These keys map to built-in functions in Term50:
 --
 --   alt_down            Hold the alt key, applied to the
 --                       next keypress.
@@ -216,9 +216,9 @@ metamode_func_keys = {
 --                       only; not written to disk).
 --   font_size_decrease  Drop font_size by one.
 --   font_size_reset     Restore font_size to the value
---                       in .term49.lua (or the compiled
+--                       in .term.lua (or the compiled
 --                       default).
---   reload_config       Re-run ~/.term49.lua and apply
+--   reload_config       Re-run ~/.term.lua and apply
 --                       the new values live.
 --   metamode_toggle     Toggle metamode (also bindable as
 --                       a chord, e.g. shift+sym).
@@ -226,9 +226,9 @@ metamode_func_keys = {
 --                       cheat sheet (any key dismisses it).
 --
 -- A value of the form "lua:<name>" calls the Lua
--- function `<name>` defined in .term49.lua. The function
+-- function `<name>` defined in .term.lua. The function
 -- runs under pcall, so a Lua error logs but does not
--- crash Term49. Two helpers are exposed in the `term`
+-- crash Term50. Two helpers are exposed in the `term`
 -- table:
 --
 --   term.font_size_get()        current font_size
@@ -332,7 +332,7 @@ allow_resize_columns = false
 -- function to reset the font size to your preference.
 
 prefs_version = 4
--- The schema version of .term49.lua, written by Term49
+-- The schema version of .term.lua, written by Term50
 -- on first run. You don't need to set this by hand.
 
 ===========================================================
@@ -348,9 +348,9 @@ out with the flags for the QNX userland tools. You do have
 python so you can get some work done with that. You can edit
 files with elvis, which is like vi.
 
-The default version of ksh is quite old, so Term49 bundles
+The default version of ksh is quite old, so Term50 bundles
 mksh, which is better in general and much better about
-unicode in particular. Term49 also bundles ssh, scp, sftp
+unicode in particular. Term50 also bundles ssh, scp, sftp
 and ssh-keygen, due to popular demand.
 
 It is possible to install other programs and round out the
@@ -360,9 +360,9 @@ userland, as described below in FOR DEVELOPERS.
 
 4. FOR DEVELOPERS
 
-Term49 is Open Source
+Term50 is Open Source
 
-Term49 is a 'from scratch' terminal emulator in that it is
+Term50 is a 'from scratch' terminal emulator in that it is
 not a port of another program. It uses SDL to draw to the
 screen, freetype to render fonts, Lua for configuration
 and scripting, ICU to convert between character encodings,
@@ -370,9 +370,9 @@ and libghostty-vt as its terminal parser/state model. It
 is not by any means perfect, and will certainly have bugs
 or missing features. Because the author enjoyed access to
 so many high quality libraries that made the development
-of Term49 significantly easier, Term49 is open source:
+of Term50 significantly easier, Term50 is open source:
 
-https://github.com/mordak/Term49
+https://github.com/acmiyaguchi/Term50
 
 If you find a bug, missing feature, or something else, feel
 free to bring it up on github. Pull requests are welcome.
@@ -397,7 +397,7 @@ This has been tested with a Linux (ubuntu) build machine
 and a Passport target. Again, feel free to use github to
 contribute or raise issues. In the long term the goal is to
 port some kind of existing package management system and
-bundle it with Term49, but we're not there yet.
+bundle it with Term50, but we're not there yet.
 
 Happy hacking!
 

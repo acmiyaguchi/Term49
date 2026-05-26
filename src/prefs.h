@@ -21,9 +21,10 @@
 
 #include <stddef.h>
 #include <unicode/utf.h>
+#include "app_identity.h"
 #include "types.h"
 
-#define PREFS_LUA_FILE_PATH ".term49.lua"
+#define PREFS_LUA_FILE_PATH APP_CONFIG_BASENAME
 #define TERM_DEFAULT_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
 #define TERM_DEFAULT_FONT_SIZE 24
 
@@ -46,18 +47,18 @@ void preferences_decode_symmenu_labels(pref_t *prefs);
  * other translation unit includes any lua headers. Lua is the only
  * config language, so these are called directly (no loader vtable). */
 
-/* Execute the user's .term49.lua and build pref_t from its globals. A
+/* Execute the user's .term.lua and build pref_t from its globals. A
  * missing/broken file falls back to compiled defaults (the only sane
  * behaviour at startup). */
 pref_t *prefs_lua_load(const char *path);
 /* Free a pref_t from prefs_lua_load() and close the scripting state. */
 void prefs_lua_destroy(pref_t *pref);
-/* Re-run .term49.lua for a live reload. Returns a fresh pref_t on
+/* Re-run .term.lua for a live reload. Returns a fresh pref_t on
  * success (scripting state already committed); returns NULL on a
  * parse error / OOM WITHOUT disturbing the running config or Lua
  * state, so a broken edit can't wipe a working setup to defaults. */
 pref_t *prefs_lua_reload(void);
-/* Serialize pref_t to a .term49.lua; used to persist a first-run
+/* Serialize pref_t to a .term.lua; used to persist a first-run
  * default config. */
 void prefs_emit_lua(const pref_t *prefs, const char *path);
 /* First-run README symlink (config-format independent). */

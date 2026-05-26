@@ -1,5 +1,5 @@
 /*
- * Typed Term49 actions/commands.
+ * Typed Term50 actions/commands.
  *
  * Keybindings, future OSC/control-socket commands, Lua hooks, and touch UI
  * should converge on this representation before dispatch through app code.
@@ -45,9 +45,9 @@ typedef enum builtin_action {
 	TERM_BUILTIN_FONT_SIZE_INCREASE,
 	TERM_BUILTIN_FONT_SIZE_DECREASE,
 	TERM_BUILTIN_FONT_SIZE_RESET,
-	/* arg = name of a no-arg Lua function defined in .term49.lua */
+	/* arg = name of a no-arg Lua function defined in .term.lua */
 	TERM_BUILTIN_LUA_CALL,
-	/* re-run .term49.lua and re-apply it live (deferred to a safe point) */
+	/* re-run .term.lua and re-apply it live (deferred to a safe point) */
 	TERM_BUILTIN_RELOAD_CONFIG,
 	/* toggle metamode (the modal meta layer); a chordable alternative to
 	 * the doubletap entry. */

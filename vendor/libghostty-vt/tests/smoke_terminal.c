@@ -12,7 +12,7 @@
 #include <stdbool.h>
 #include <ghostty/vt.h>
 
-/* Embedder allocator over QNX libc malloc/free. Term49 passes a real
+/* Embedder allocator over QNX libc malloc/free. Term50 passes a real
  * allocator to libghostty-vt, so this standalone harness does too. */
 static void *gha_alloc(void *ctx, size_t len, uint8_t alignment, uintptr_t ra) {
     (void)ctx; (void)ra;

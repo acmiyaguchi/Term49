@@ -1,8 +1,8 @@
 /*
- * termctl -- command-line client for the Term49 control socket (#5).
+ * termctl -- command-line client for the Term50 control socket (#5).
  *
- * Connects to $TERM49_CONTROL (a Unix-domain socket exported by a running
- * Term49), sends one command built from argv, prints the response body, and
+ * Connects to $TERMCTL_SOCKET (a Unix-domain socket exported by a running
+ * Term50), sends one command built from argv, prints the response body, and
  * exits with the frame's status flag (0 = ok, non-zero = error).
  *
  * Speaks the tmux-style control-mode framing implemented by src/control.c:
@@ -31,12 +31,13 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+#include "app_identity.h"
 #include "control_proto.h"
 
 #define LINE_MAX_   8192
 
 static int resolve_path(char *out, size_t cap) {
-	const char *env = getenv("TERM49_CONTROL");
+	const char *env = getenv(APP_ENV_CONTROL);
 	if (env != NULL && env[0] != '\0') {
 		if (strlen(env) >= cap) {
 			return -1;
@@ -46,7 +47,7 @@ static int resolve_path(char *out, size_t cap) {
 	}
 	const char *home = getenv("HOME");
 	if (home != NULL) {
-		int n = snprintf(out, cap, "%s/.term49/control.sock", home);
+		int n = snprintf(out, cap, "%s/" APP_STATE_DIRNAME "/control.sock", home);
 		if (n > 0 && n < (int)cap) {
 			return 0;
 		}
@@ -154,7 +155,7 @@ static int read_response(int fd) {
 static void print_usage(FILE *out, const char *prog) {
 	fprintf(out,
 	        "usage: %s <command> [args...]\n"
-	        "  connects to $TERM49_CONTROL (a running Term49) and runs one command.\n"
+	        "  connects to $TERMCTL_SOCKET (a running " APP_DISPLAY_NAME ") and runs one command.\n"
 	        "  `%s help` lists the live command surface from the server.\n",
 	        prog, prog);
 }
@@ -175,7 +176,7 @@ int main(int argc, char **argv) {
 	char path[256];
 	if (resolve_path(path, sizeof(path)) != 0) {
 		fprintf(stderr, "termctl: cannot determine control socket path "
-		                "(set $TERM49_CONTROL)\n");
+		                "(set $TERMCTL_SOCKET)\n");
 		return 2;
 	}
 

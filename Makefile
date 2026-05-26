@@ -12,7 +12,7 @@ DEFINES := -D_FORTIFY_SOURCE=2 -D__PLAYBOOK__ -fstack-protector-strong
 
 LIBPATHS += -L$(QNX_TARGET)/armle-v7/usr/lib
 
-# Term49 uses libghostty-vt as its terminal parser/state model and renderer
+# Term50 uses libghostty-vt as its terminal parser/state model and renderer
 # source of truth. Build the freestanding Ghostty static library on demand.
 GHOSTTY_DIR   := vendor/libghostty-vt
 GHOSTTY_BUILD := $(GHOSTTY_DIR)/build/ghostty
@@ -21,7 +21,7 @@ GHOSTTY_H     := $(GHOSTTY_BUILD)/include/ghostty/vt.h
 INCLUDE += -I$(GHOSTTY_BUILD)/include
 LIBS += $(GHOSTTY_A)
 
-# Term49 embeds Lua 5.4 (vendored, statically linked) as its config language
+# Term50 embeds Lua 5.4 (vendored, statically linked) as its config language
 # and scripting runtime. Static archive => no new .so / bar-descriptor asset.
 # Sources live at the lua/lua repo root; exclude the interpreter main (lua.c),
 # the amalgamation (onelua.c), and the internal test harness (ltests.c).
@@ -47,8 +47,10 @@ LDOPTS    	:= -Wl,-z,relro -Wl,-z,now
 # so deleting a header doesn't wedge the build.
 DEPFLAGS  	= -Wp,-MMD,$(@:.o=.d) -Wp,-MT,$@ -Wp,-MP
 
-ASSET      	:= Device-Debug
-BINARY     	:= Term49
+# Output configuration. Overridable so `package-release` can rebuild the same
+# objects into Device-Release without editing this file (see that target).
+ASSET      	?= Device-Debug
+BINARY     	:= Term50
 BINARY_PATH	:= $(ASSET)/$(BINARY)
 
 SRCS := $(wildcard src/*.c)
@@ -97,7 +99,7 @@ $(CTL_PATH): $(CTL_OBJS)
 	mkdir -p $(ASSET)
 	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(CTL_OBJS) $(CTL_LIBS) -o $(CTL_PATH)
 
-# Lua sources are upstream third-party C: build them without Term49's
+# Lua sources are upstream third-party C: build them without Term50's
 # app DEFINES (no __PLAYBOOK__/_FORTIFY_SOURCE), only LUA_USE_POSIX for QNX.
 # More specific stem than the generic %.o rule, so make prefers this for
 # vendor/lua/*.c.
@@ -120,8 +122,7 @@ clean:
 	@rm -fv src/*.o src/*.ctl.o $(CTL_DIR)/*.ctl.o
 	@rm -fv $(DEPS)
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
-	@rm -fv $(BINARY_PATH) $(CTL_PATH)
-	@rmdir -v $(ASSET) 2>/dev/null || true
+	@rm -rfv Device-Debug Device-Release
 	@rm -fv $(BINARY).bar
 
 package-dev: $(BINARY_PATH)
@@ -135,8 +136,14 @@ connect:
 	@$(check-creds)
 	@blackberry-connect $(BBIP) -password $(BBPASS)
 
-package-release: $(BINARY_PATH)
-	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml
+# Distributable, release-mode bar. Builds the binaries into Device-Release
+# (a recursive make so the shared objects relink to the release output dir),
+# then packages WITHOUT -devMode so the bar is a real release (no test* author
+# prefix, Application-Development-Mode: false). BlackBerry's signing servers are
+# gone, so this unsigned bar is sideloaded (Sachesi/DBL) rather than signed.
+package-release:
+	$(MAKE) ASSET=Device-Release all
+	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release
 
 sign: package-release
 	blackberry-signer -bbidtoken ./signing/$(BBIDTOKEN) -storepass $(KEYSTOREPASS) -keystore ./signing/$(KEYSTORE) $(BINARY).bar
