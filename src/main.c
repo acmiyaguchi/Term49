@@ -1375,11 +1375,25 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 			session_t *new_s = NULL;
 			if (app_session_open(app, (uint16_t)cols, (uint16_t)rows, 1000, &new_s) != 0) {
 				PRINT(stderr, "tab_new: registry full or alloc failed\n");
+				char msg[64];
+				snprintf(msg, sizeof(msg), "Can't open tab (max %d)",
+				         APP_MAX_SESSIONS);
+				platform_toast(g_platform, msg);
 				return 0;
 			}
 			if (pty_init(new_s) != TERM_SUCCESS) {
+				/* pty_init preserves the failing errno. The device's
+				 * system-wide pty pool is only 8 nodes, so a busy device
+				 * hands back ENOENT here and the tab would otherwise just
+				 * silently fail to appear. Surface it. */
+				int e = errno;
 				PRINT(stderr, "tab_new: pty_init failed; rolling back\n");
 				app_session_close_index(app, app_session_count(app) - 1);
+				char msg[96];
+				snprintf(msg, sizeof(msg), "New tab failed: %s%s",
+				         strerror(e),
+				         (e == ENOENT) ? " (no free pseudo-terminal)" : "");
+				platform_toast(g_platform, msg);
 				return 0;
 			}
 			if (app_session_count(app) == 2) {
@@ -2619,10 +2633,15 @@ static int pty_init(session_t *session) {
 
 	pty_ret = openpty(&master_fd, &slave_fd, slave_ptyname, NULL, &winp);
 	if (pty_ret != 0){
-		// error
-		PRINT(stderr, "openpty returned: %s\n", strerror(errno));
+		// error. The device's pty pool is small (8 nodes, ttyp0-7) and
+		// system-wide; once it's exhausted openpty fails here with ENOENT.
+		// Preserve that errno across the cleanup closes so the caller can
+		// surface it (tab_new toasts it).
+		int e = errno;
+		PRINT(stderr, "openpty returned: %s\n", strerror(e));
 		close(master_fd);
 		close(slave_fd);
+		errno = e;
 		return TERM_FAILURE;
 	} else {
 		PRINT(stderr, "openpty returned name: %s\n", slave_ptyname);
@@ -2713,9 +2732,11 @@ static int pty_init(session_t *session) {
 		}
 	}
 	if (child_pid == -1){
-		PRINT(stderr, "fork returned: %s\n", strerror(errno));
+		int e = errno;
+		PRINT(stderr, "fork returned: %s\n", strerror(e));
 		close(master_fd);
 		session_set_master_fd(session, -1);
+		errno = e;
 		return TERM_FAILURE;
 	}
 
