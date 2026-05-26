@@ -2556,7 +2556,7 @@ static int resolve_bbnix_root(char *out, size_t cap) {
 
 	if(env != NULL && env[0] != '\0'){
 		if(snprintf(out, cap, "%s", env) >= (int)cap){ return 0; }
-	} else if(sandbox != NULL){
+	} else if(sandbox != NULL && sandbox[0] != '\0'){
 		if(snprintf(out, cap, "%s/app/native/bbnix", sandbox) >= (int)cap){ return 0; }
 	} else {
 		return 0;
@@ -2600,6 +2600,16 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	   && access(buf, X_OK) == 0){
 		snprintf(shell, shell_cap, "%s", buf);
 	}
+}
+
+/* Set $SHELL to the shell we're about to become, then exec it as a login
+ * shell. login(1) normally seeds $SHELL from /etc/passwd; the navigator
+ * doesn't, so without this tmux's default-shell, vim's :sh/:terminal, and
+ * `$SHELL -c` all fall back to /bin/sh. Returns only if execl fails, so the
+ * caller can fall through to the next candidate. */
+static void try_shell(const char *path, const char *argv0) {
+	setenv("SHELL", path, 1);
+	execl(path, argv0, "-l", (char*)0);
 }
 
 static void terminal_setenv(void) {
@@ -2705,13 +2715,8 @@ static int pty_init(session_t *session) {
 		char bbnix_shell[1024];
 		bbnix_shell[0] = '\0';
 		setup_bbnix_env(bbnix_shell, sizeof(bbnix_shell));
-		/* login(1) normally seeds $SHELL from /etc/passwd; the navigator
-		 * doesn't, so set it to the shell we exec here. tmux's default-shell,
-		 * vim's :sh/:terminal, and $SHELL -c all fall back to /bin/sh without
-		 * it. Set immediately before each execl so it tracks the real shell. */
 		if(bbnix_shell[0] != '\0'){
-			setenv("SHELL", bbnix_shell, 1);
-			execl(bbnix_shell, "zsh", "-l", (char*)0);
+			try_shell(bbnix_shell, "zsh");
 			fprintf(stderr, "bbnix zsh exec failed: %s - falling back to mksh\n",
 			        strerror(errno));
 		}
@@ -2722,14 +2727,10 @@ static int pty_init(session_t *session) {
 		char mksh[1024];
 		if(sandbox != NULL &&
 		   snprintf(mksh, sizeof(mksh), "%s/app/native/root/bin/mksh", sandbox) < (int)sizeof(mksh)){
-			setenv("SHELL", mksh, 1);
-			execl(mksh, "mksh", "-l", (char*)0);
+			try_shell(mksh, "mksh");
 		}
-		setenv("SHELL", "../app/native/root/bin/mksh", 1);
-		if(execl("../app/native/root/bin/mksh", "mksh", "-l", (char*)0) == -1){
-			setenv("SHELL", "/bin/sh", 1);
-			execl("/bin/sh", "sh", "-l", (char*)0);
-		}
+		try_shell("../app/native/root/bin/mksh", "mksh");
+		try_shell("/bin/sh", "sh");
 	}
 	if (child_pid == -1){
 		int e = errno;
