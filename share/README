@@ -95,8 +95,11 @@ Each of the preference options and their default is shown
 below.
 
 font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
--- The path to the Unicode TTF font file to use in the
--- shell. This can be an absolute or relative path.
+-- The path to the Unicode font file to use in the shell.
+-- This can be an absolute or relative path. Bundled fonts
+-- are in os.getenv("SANDBOX") .. "/app/native/fonts/":
+-- IosevkaTerm-Regular.ttf, JetBrainsMono-Regular.ttf,
+-- SourceCodePro-Regular.otf, UbuntuMono-R.ttf.
 
 font_size = 16
 -- The font size for the shell. Term50 will try to guess

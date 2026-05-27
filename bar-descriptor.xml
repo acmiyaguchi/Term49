@@ -19,6 +19,7 @@
          package-release run automatically. Provides the login shell (zsh) and
          the terminfo DB (Term50 exports TERMINFO at app/native/bbnix/terminfo). -->
     <asset path="share/bbnix">bbnix</asset>
+    <asset path="share/fonts">fonts</asset>
     <asset path="share/NOTICE">NOTICE</asset>
     <asset path="share/LICENSE">LICENSE</asset>
     <asset path="share/README">README</asset>

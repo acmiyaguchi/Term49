@@ -59,6 +59,10 @@
         "flake-utils": [
           "bbnix",
           "flake-utils"
+        ],
+        "nixpkgs": [
+          "bbnix",
+          "nixpkgs"
         ]
       }
     },
