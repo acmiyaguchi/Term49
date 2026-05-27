@@ -67,15 +67,17 @@ CTL_SRCS := $(CTL_DIR)/main.c src/control_proto.c
 CTL_OBJS := $(CTL_SRCS:.c=.ctl.o)
 CTL_LIBS := -lsocket -lm
 
-include ./signing/bbpass
+# Device credentials (BBIP, BBPASS) for deploy/connect live in an untracked
+# .env (see .env.example). Soft include so non-deploy targets work without it.
+-include .env
 
 # deploy/connect call the BlackBerry NDK tools directly (like qcc and
-# blackberry-nativepackager above). Credentials come from signing/bbpass;
-# refuse to run while BBPASS is still its "" placeholder.
-check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in signing/bbpass before deploying' >&2; exit 1; }
+# blackberry-nativepackager above). Credentials come from .env; refuse to run
+# while BBPASS is still its "" placeholder.
+check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in .env before deploying' >&2; exit 1; }
 
-.PHONY: all clean libghostty-vt package-dev package-release deploy connect sign \
-        bbnix-bundle stage-bbnix clean-bbnix package-dev-bbnix package-release-bbnix
+.PHONY: all clean libghostty-vt package-dev package-release deploy connect \
+        bbnix-bundle stage-bbnix clean-bbnix
 
 all: $(BINARY_PATH) $(CTL_PATH)
 
@@ -127,6 +129,7 @@ clean:
 	@rm -fv $(BINARY).bar
 
 package-dev:
+	$(MAKE) stage-bbnix
 	$(MAKE) ASSET=Device-Debug all
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
 
@@ -144,22 +147,17 @@ connect:
 # Application-Development-Mode: false. BlackBerry's signing servers are gone, so
 # this unsigned bar is sideloaded (Sachesi/DBL) rather than signed.
 package-release:
+	$(MAKE) stage-bbnix
 	$(MAKE) ASSET=Device-Release all
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release
 
-sign: package-release
-	blackberry-signer -bbidtoken ./signing/$(BBIDTOKEN) -storepass $(KEYSTOREPASS) -keystore ./signing/$(KEYSTORE) $(BINARY).bar
-
-# --- Optional bbnix userland bundle ---------------------------------------
-# Builds a richer ARM userland (zsh/tmux/mosh-client/ssh + CA bundle) via the
-# pinned bbnix flake (.#bbnix-bundle) and stages it under share/bbnix, which
-# bar-descriptor.xml packages to app/native/bbnix. At runtime Term50 prefers
-# bbnix's zsh and falls back to mksh when the tree is empty (src/main.c).
-#
-# These targets require Nix and a BB10 sysroot: bbnix builds are impure (they
-# read $BBNIX_SYSROOT and need a relaxed sandbox). Plain `make package-dev` /
-# `package-release` do NOT depend on any of this -- they just package whatever
-# is in share/bbnix (only a committed .keep on a clean tree).
+# --- Required bbnix userland bundle ---------------------------------------
+# bbnix is a hard dependency: it supplies the login shell (zsh), the terminfo
+# DB, ssh/tmux/mosh and a CA bundle. `make stage-bbnix` builds the pinned bbnix
+# flake (.#bbnix-bundle) and stages it under share/bbnix, which
+# bar-descriptor.xml packages to app/native/bbnix. package-dev/package-release
+# run stage-bbnix automatically, so they REQUIRE Nix and a BB10 sysroot: bbnix
+# builds are impure (they read $BBNIX_SYSROOT and need a relaxed sandbox).
 #
 # Override the variant with BBNIX_BUNDLE=bbnix-bundle-ssh (or -minimal); the
 # default bbnix-bundle alias is the full variant.
@@ -179,11 +177,3 @@ stage-bbnix: bbnix-bundle
 clean-bbnix:
 	rm -rf share/bbnix result-bbnix
 	mkdir -p share/bbnix && touch share/bbnix/.keep
-
-package-dev-bbnix:
-	$(MAKE) stage-bbnix
-	$(MAKE) package-dev
-
-package-release-bbnix:
-	$(MAKE) stage-bbnix
-	$(MAKE) package-release

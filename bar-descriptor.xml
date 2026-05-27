@@ -14,12 +14,10 @@
 
 <qnx xmlns="http://www.qnx.com/schemas/application/1.0">
     <id>io.github.term50</id>
-    <asset path="share/terminfo">terminfo</asset>
-    <asset path="share/root">root</asset>
-    <!-- Optional bbnix userland (zsh/tmux/mosh/ssh + CA bundle), staged by
-         `make stage-bbnix`. Empty (just .keep) on a clean tree, so this asset
-         is harmless for plain package-dev/-release; Term50 falls back to mksh
-         when app/native/bbnix has no bin/. -->
+    <!-- Required bbnix userland (zsh/tmux/mosh/ssh + terminfo + CA bundle),
+         staged into share/bbnix by `make stage-bbnix`, which package-dev and
+         package-release run automatically. Provides the login shell (zsh) and
+         the terminfo DB (Term50 exports TERMINFO at app/native/bbnix/terminfo). -->
     <asset path="share/bbnix">bbnix</asset>
     <asset path="share/NOTICE">NOTICE</asset>
     <asset path="share/LICENSE">LICENSE</asset>
@@ -27,11 +25,11 @@
     <asset path="share/README45">README45</asset>
     <asset path="share/term.lua.reference">term.lua.reference</asset>
     <asset path="share/AGENTS.md">AGENTS.md</asset>
-    <asset path="icons/icon-86x86.png">icon-86x86.png</asset>
-    <asset path="icons/icon-90x90.png">icon-90x90.png</asset>
-    <asset path="icons/icon-96x96.png">icon-96x96.png</asset>
-    <asset path="icons/icon-110x110.png">icon-110x110.png</asset>
-    <asset path="icons/icon-144x144.png">icon-144x144.png</asset>
+    <asset path="share/icons/icon-86x86.png">icon-86x86.png</asset>
+    <asset path="share/icons/icon-90x90.png">icon-90x90.png</asset>
+    <asset path="share/icons/icon-96x96.png">icon-96x96.png</asset>
+    <asset path="share/icons/icon-110x110.png">icon-110x110.png</asset>
+    <asset path="share/icons/icon-144x144.png">icon-144x144.png</asset>
 
     <configuration name="Device-Debug">
        <platformArchitecture>armle-v7</platformArchitecture>
