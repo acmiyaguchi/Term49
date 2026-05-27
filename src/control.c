@@ -1,4 +1,5 @@
 #include "control.h"
+#include "app_identity.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -232,11 +233,11 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 		          "  validate [path]     compile-check a config file (default: yours)\n"
 		          "  eval [lua] <chunk>  run a Lua chunk, print its return value\n"
 		          "events (for subscribe/unsubscribe): " CTL_EVENTS_HELP "\n"
-		          "cross-app entry (#23): other apps/links open term49://tab[/N] or\n"
-		          "  term49://focus to open/focus a tab (navigation only -- it cannot\n"
+		          "cross-app entry (#23): other apps/links open " APP_URI_SCHEME "tab[/N] or\n"
+		          "  " APP_URI_SCHEME "focus to open/focus a tab (navigation only -- it cannot\n"
 		          "  run commands; that is what this socket is for). A Hub entry posted\n"
-		          "  with `notify --uri term49://tab/N` opens that tab when tapped.\n"
-		          "agent capability doc: $TERM49_AGENT_DOC");
+		          "  with `notify --uri " APP_URI_SCHEME "tab/N` opens that tab when tapped.\n"
+		          "agent capability doc: $" APP_ENV_AGENT_DOC);
 		return;
 	}
 	if (strcmp(argv[0], "screen") == 0 && argc >= 2 && strcmp(argv[1], "size") == 0) {
@@ -469,7 +470,7 @@ static int build_sock_path(char *out, size_t cap) {
 	const char *home = getenv("HOME");
 	if (home != NULL) {
 		char dir[96];
-		int n = snprintf(dir, sizeof(dir), "%s/.term49", home);
+		int n = snprintf(dir, sizeof(dir), "%s/" APP_STATE_DIRNAME, home);
 		if (n > 0 && n < (int)sizeof(dir)) {
 			mkdir(dir, 0700); /* ignore EEXIST */
 			n = snprintf(out, cap, "%s/control.sock", dir);
@@ -480,7 +481,7 @@ static int build_sock_path(char *out, size_t cap) {
 	}
 	/* Fallback: per-app /tmp, which child shells in the same sandbox share. */
 	{
-		int n = snprintf(out, cap, "/tmp/term49.sock");
+		int n = snprintf(out, cap, APP_CONTROL_SOCK_FALLBACK);
 		if (n > 0 && n < (int)cap) {
 			return 0;
 		}
@@ -543,7 +544,7 @@ int control_init(void) {
 		return -1;
 	}
 
-	setenv("TERM49_CONTROL", g_sock_path, 1);
+	setenv(APP_ENV_CONTROL, g_sock_path, 1);
 	return 0;
 }
 

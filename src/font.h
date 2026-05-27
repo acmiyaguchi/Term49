@@ -1,6 +1,6 @@
 /*
  * FreeType-only glyph rasterizer. Replaces the vendored src/SDL_ttf.c when
- * #6 (SDL removal) lands. Public surface mirrors the TTF subset Term49
+ * #6 (SDL removal) lands. Public surface mirrors the TTF subset Term50
  * actually uses (TTF_OpenFont, TTF_CloseFont, TTF_FontLineSkip,
  * TTF_FontFaceIsFixedWidth, TTF_GlyphMetrics, TTF_RenderUNICODE_Shaded).
  */

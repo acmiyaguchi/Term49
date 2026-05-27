@@ -49,7 +49,7 @@ int app_run_action_string(const char *s);
 struct notification_spec;
 int app_post_notification(const struct notification_spec *spec);
 /* True once the runtime is fully up (app + video + prefs). The `term`
- * Lua table is inert until then: term.* called at .term49.lua load time
+ * Lua table is inert until then: term.* called at .term.lua load time
  * is a no-op, not a way to configure startup. */
 int term_runtime_ready(void);
 void setup_screen_size(int w, int h);

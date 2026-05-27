@@ -34,6 +34,7 @@
 #include "io.h"
 #include "symmenu.h"
 #include "prefs.h"
+#include "app_identity.h"
 
 #define README_FILE_PATH "../app/native/README"
 #define README45_FILE_PATH "../app/native/README45"
@@ -134,7 +135,7 @@ static const int font_widths[NUM_SIZES] = {0, 1, 1, 2, 2, 3, 4, 4, 5, 5, 6,
 
 
 /* First-run side effect that has nothing to do with the config format:
- * symlink the bundled README into HOME. (The default .term49.lua is
+ * symlink the bundled README into HOME. (The default .term.lua is
  * written separately by the caller via prefs_emit_lua.) */
 void prefs_first_run_readme(void) {
 	char* home = getenv("HOME");
@@ -188,7 +189,7 @@ static void keymap_set_to(keymap_t *entry, const char *to) {
 
 /* ====================================================================
  * Lua is the only config language. The builders below populate pref_t
- * fields directly from the user's .term49.lua globals, mirroring the
+ * fields directly from the user's .term.lua globals, mirroring the
  * exact allocation shape destroy_preferences() frees: calloc'd,
  * sentinel-terminated arrays; strdup'd keymap ->to via keymap_set_to;
  * symmenu_t entries + symkey matrix. A missing or ill-typed global
@@ -703,7 +704,7 @@ void destroy_preferences(pref_t *pref) {
 /* --- scalar/string preference schema ---------------------------------
  * Single source of truth for every plain int/bool/string preference:
  * key name, type, the pref_t field (by offset), and default. The Lua
- * scalar reader and the .term49.lua emitter are both driven from this
+ * scalar reader and the .term.lua emitter are both driven from this
  * table, so a preference cannot drift between the two sides. Structured
  * prefs (colour/hitbox/keymap/symmenu) keep their dedicated builders. */
 typedef enum { PS_INT, PS_BOOL, PS_STRING } prefs_scalar_type;
@@ -992,7 +993,7 @@ static pref_t *prefs_lua_try_build(const char *path, int build_on_parse_error,
 }
 
 /* Startup loader. Always returns a usable pref_t: a missing/broken
- * .term49.lua falls back to compiled defaults, which is the only
+ * .term.lua falls back to compiled defaults, which is the only
  * sensible behaviour at startup (there is no prior config to keep).
  * Destructive: commits the new lua_State unconditionally. */
 pref_t *prefs_lua_load(const char *path) {
@@ -1010,7 +1011,7 @@ pref_t *prefs_lua_load(const char *path) {
 	if (!parsed) {
 		snprintf(g_last_config_error, sizeof(g_last_config_error), "%s",
 		         lua_tostring(L, -1));
-		fprintf(stderr, "term49: error loading %s: %s\n",
+		fprintf(stderr, APP_LOG_TAG ": error loading %s: %s\n",
 		        path, lua_tostring(L, -1));
 		lua_pop(L, 1);
 	} else {
@@ -1035,11 +1036,11 @@ pref_t *prefs_lua_reload(void) {
 		if (L == NULL) {
 			snprintf(g_last_config_error, sizeof(g_last_config_error),
 			         "out of memory");
-			fprintf(stderr, "term49: reload aborted: out of memory\n");
+			fprintf(stderr, APP_LOG_TAG ": reload aborted: out of memory\n");
 		} else if (!parsed) {
 			snprintf(g_last_config_error, sizeof(g_last_config_error), "%s",
 			         lua_tostring(L, -1));
-			fprintf(stderr, "term49: reload rejected, keeping current config: %s\n",
+			fprintf(stderr, APP_LOG_TAG ": reload rejected, keeping current config: %s\n",
 			        lua_tostring(L, -1));
 			lua_close(L);
 		} else {
@@ -1093,7 +1094,7 @@ int prefs_lua_validate(const char *path, char *out, size_t outsz) {
 	return 0;
 }
 
-/* .term49.lua is hand-authored; Term49 never writes it back (a first-run
+/* .term.lua is hand-authored; Term50 never writes it back (a first-run
  * default is emitted by prefs_emit_lua, not through this path). */
 void prefs_lua_destroy(pref_t *pref) {
 	destroy_preferences(pref); /* format-agnostic: frees pref_t only */
@@ -1114,7 +1115,7 @@ int prefs_lua_invoke(const char *name) {
 		return 0;
 	}
 	if (lua_pcall(L, 0, 0, 0) != LUA_OK) {
-		fprintf(stderr, "term49: lua error in '%s': %s\n",
+		fprintf(stderr, APP_LOG_TAG ": lua error in '%s': %s\n",
 		        name, lua_tostring(L, -1));
 		lua_pop(L, 1);
 		return 0;
@@ -1167,7 +1168,7 @@ int prefs_lua_eval(const char *src, char *out, size_t outsz) {
 	return 0;
 }
 
-/* --- pref_t -> .term49.lua emitter (first-run default config) --------
+/* --- pref_t -> .term.lua emitter (first-run default config) --------
  * Emits the scalar schema + structured fields a user is expected to
  * tweak (accent menus omitted, matching the historical default). */
 static void lua_emit_qstr(FILE *f, const char *s) {
@@ -1276,16 +1277,16 @@ static void lua_emit_chords(FILE *f, const char *key, const chord_t *cb) {
 void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	FILE *f = fopen(path, "w");
 	if (f == NULL) {
-		fprintf(stderr, "term49: cannot write %s: %s\n", path, strerror(errno));
+		fprintf(stderr, APP_LOG_TAG ": cannot write %s: %s\n", path, strerror(errno));
 		return;
 	}
 
-	fputs("-- Term49 configuration (Lua). Generated automatically; safe to\n"
-	      "-- edit. This file is never rewritten by Term49.\n"
+	fputs("-- " APP_DISPLAY_NAME " configuration (Lua). Generated automatically; safe to\n"
+	      "-- edit. This file is never rewritten by " APP_DISPLAY_NAME ".\n"
 	      "--\n"
 	      "-- SECURITY: this file is executed as a full Lua program at startup\n"
 	      "-- and on reload, with the full standard library (including os and\n"
-	      "-- io). Treat it like a shell rc -- only run a .term49.lua you wrote\n"
+	      "-- io). Treat it like a shell rc -- only run a " APP_CONFIG_BASENAME " you wrote\n"
 	      "-- or trust.\n\n", f);
 	fprintf(f, "prefs_version = %d\n\n", PREFS_VERSION);
 

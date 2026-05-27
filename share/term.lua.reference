@@ -1,13 +1,13 @@
 -- ============================================================================
--- Term49 reference configuration (.term49.lua)
+-- Term50 reference configuration (.term.lua)
 -- ============================================================================
 --
--- This is a COMPLETE, annotated reference. It is NOT loaded by Term49 -- it
+-- This is a COMPLETE, annotated reference. It is NOT loaded by Term50 -- it
 -- ships under share/ as documentation. To use it, copy it to your home dir:
 --
---     cp term49.lua.reference $HOME/.term49.lua
+--     cp term.lua.reference $HOME/.term.lua
 --
--- (Term49 also writes a short starter .term49.lua on first run if none exists;
+-- (Term50 also writes a short starter .term.lua on first run if none exists;
 -- this file is the fully fleshed-out version showing every available knob.)
 --
 -- Every value below is set to its compiled-in DEFAULT, so loading this file
@@ -16,10 +16,10 @@
 --
 -- SECURITY: this file is executed as a full Lua program at startup and on
 -- every reload, with the complete standard library (including os and io).
--- Treat it like a shell rc -- only run a .term49.lua you wrote or trust.
+-- Treat it like a shell rc -- only run a .term.lua you wrote or trust.
 --
 -- A note on the scripting/control surface (issue #5): a Unix-domain control
--- socket is exposed to child shells via the $TERM49_CONTROL environment
+-- socket is exposed to child shells via the $TERMCTL_SOCKET environment
 -- variable, and the bundled `termctl` CLI (on $PATH; try `termctl help`)
 -- speaks to it. See the "Scripting" section at the bottom for the Lua
 -- `term.*` API.
@@ -37,7 +37,7 @@ font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
 -- Font size in points. metamode + i / o / z adjust this live (see func keys).
 font_size = 24
 
--- Keep the screen awake (suppress the idle dim/lock) while Term49 is focused.
+-- Keep the screen awake (suppress the idle dim/lock) while Term50 is focused.
 screen_idle_awake = false
 
 -- Pop the virtual keyboard automatically when a session gains focus.
@@ -152,10 +152,10 @@ metamode_func_keys = {
   -- argument-bearing actions use a ":" to separate the action from its arg.
   { "g", "keyboard_show" },
   { "b", "keyboard_hide" },
-  { "m", "toast:Hello from Term49" },
+  { "m", "toast:Hello from Term50" },
   { "u", "open_url:https://www.blackberry.com/" },
 
-  -- Posts a replaceable Hub entry that re-foregrounds Term49 when tapped
+  -- Posts a replaceable Hub entry that re-foregrounds Term50 when tapped
   -- (#23/#35). Reuses the "return" slot, so repeated presses update one entry
   -- rather than stacking. Defined as notify_return() below; keybindings reach
   -- the rich notify through a lua: function.
@@ -163,8 +163,8 @@ metamode_func_keys = {
 }
 
 function notify_return()
-  term.notify{ id = "return", body = "Tap to return to Term49",
-               uri = "term49://focus" }
+  term.notify{ id = "return", body = "Tap to return to Term50",
+               uri = "term://focus" }
 end
 
 -- ----------------------------------------------------------------------------

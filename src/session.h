@@ -1,5 +1,5 @@
 /*
- * A Term49 session: one pty/child + terminal emulator + IO + scrollback.
+ * A Term50 session: one pty/child + terminal emulator + IO + scrollback.
  *
  * Single session today. The app owns a session set so that multi-session
  * (#4) only grows the app's registry, not these signatures or the

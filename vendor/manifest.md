@@ -1,6 +1,6 @@
 # Vendor manifest
 
-This file records the dependency pins used by the top-level Term49 build.
+This file records the dependency pins used by the top-level Term50 build.
 
 ## Source pins
 
@@ -18,7 +18,7 @@ git submodule update --init --recursive
 ## Dependency graph
 
 ```text
-Term49
+Term50
 ├── libghostty-vt.a       built from vendor/libghostty-vt/ on demand
 ├── liblua.a              built from vendor/lua/ by the Makefile
 └── BB10 NDK libs         libscreen, libbps, libfreetype, libicui18n,
@@ -30,7 +30,7 @@ the Makefile. Lua is plain C compiled directly by `qcc` (no Zig/nix step,
 unlike libghostty-vt) and statically linked, so it adds no extra packaged
 asset to the BAR.
 
-`~/.term49.lua` is executed as arbitrary Lua with the full standard library
+`~/.term.lua` is executed as arbitrary Lua with the full standard library
 (`os`, `io`, `package`, ...) at startup and on every live reload. It is a
 trusted, user-owned config/script file (like a shell rc), not a sandbox; this
 is intentional so the config can script the terminal.

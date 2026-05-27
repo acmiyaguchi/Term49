@@ -15,7 +15,7 @@ help:
 	@echo '  all     — deps->lib->harness'
 	@echo '  clean   — rm -rf build/'
 
-# Explicit `path:` — this tree lives inside the Term49 repo, so a bare
+# Explicit `path:` — this tree lives inside the Term50 repo, so a bare
 # `.#deps` would resolve to the enclosing repo. `path:$(CURDIR)` treats this
 # dir as the flake root.
 deps:

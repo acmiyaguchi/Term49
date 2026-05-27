@@ -18,28 +18,29 @@
 #include <screen/screen.h>
 #include <sys/keycodes.h>
 
+#include "app_identity.h"
 #include "event.h"
 #include "platform.h"
 
-/* Cap on a single cross-app invoke URI (#23). A term49:// URI is short; without
+/* Cap on a single cross-app invoke URI (#23). A term:// URI is short; without
  * a cap any app on the device could hand us an arbitrarily large copy.
  * Oversized URIs are truncated, not rejected. */
 #define INVOKE_URI_MAX 4096
 
 /* The invoke action we accept (the standard "open this" action; a tapped
- * notification, a homescreen shortcut, or a term49:// link in any app all
+ * notification, a homescreen shortcut, or a term:// link in any app all
  * arrive as bb.action.OPEN), the URI scheme we register, and the target id
  * that addresses this app (must match bar-descriptor's <invoke-target id>).
  * Used both to receive (translate_navigator) and to post a notification that
  * invokes us back (screen_plat_notify). */
 #define INVOKE_ACTION_OPEN "bb.action.OPEN"
-#define INVOKE_URI_SCHEME  "term49://"
-#define INVOKE_TARGET_ID   "com.example.Term49"
+#define INVOKE_URI_SCHEME  APP_URI_SCHEME
+#define INVOKE_TARGET_ID   APP_ID
 
 /* Defaults for a notification posted without a caller-supplied slot/title (#35):
  * a single shared item_id so bare posts coalesce, and the app name as title. */
-#define NOTIFY_DEFAULT_ITEM_ID "term49"
-#define NOTIFY_DEFAULT_TITLE   "Term49"
+#define NOTIFY_DEFAULT_ITEM_ID APP_NOTIFY_ITEM_ID
+#define NOTIFY_DEFAULT_TITLE   APP_DISPLAY_NAME
 
 typedef struct platform_screen {
 	screen_context_t ctx;
@@ -77,7 +78,7 @@ static const char *window_group_name(char *buf, size_t buflen) {
 	if (env != NULL && *env != '\0') {
 		return env;
 	}
-	snprintf(buf, buflen, "Term49-%d", (int)getpid());
+	snprintf(buf, buflen, APP_DISPLAY_NAME "-%d", (int)getpid());
 	return buf;
 }
 
@@ -194,7 +195,7 @@ static int translate_navigator(platform_screen_t *self, bps_event_t *event, even
 		return 1;
 	case NAVIGATOR_INVOKE_TARGET: {
 		/* A cross-app invocation reached us (#23). The OS has already
-		 * re-foregrounded Term49; we just extract the term49:// URI and
+		 * re-foregrounded Term50; we just extract the term:// URI and
 		 * fold a TERM_EVENT_INVOKE for the run loop to act on. One-way:
 		 * no reply is sent (the protocol is fire-and-forget like OSC). */
 		const navigator_invoke_invocation_t *inv =
@@ -356,8 +357,8 @@ static const char *sanitize_id(const char *in, const char *fallback,
 
 /* Post (or update) a persistent Hub entry; see notification_spec_t in platform.h
  * for the (app_id, item_id) reuse-key semantics. The backend fixes target/action
- * to our own id + bb.action.OPEN (the only invoke Term49 routes is back into
- * itself); an optional term49:// payload uri drives the round-trip when tapped.
+ * to our own id + bb.action.OPEN (the only invoke Term50 routes is back into
+ * itself); an optional term:// payload uri drives the round-trip when tapped.
  * The message owns no resources past the send, so it's destroyed immediately.
  * Needs the post_notification permission (already in bar-descriptor.xml).
  *

@@ -1,14 +1,14 @@
-# Term49
+# Term50
 
-Term49 is a terminal emulator for BlackBerry 10. It uses `libghostty-vt` as
+Term50 is a terminal emulator for BlackBerry 10. It uses `libghostty-vt` as
 its terminal parser/state model and renders the visible grid directly through
 the BB10 Screen API + FreeType.
 
-The [current release](https://github.com/BerryFarm/Term49/releases) requires OS version >= 10.3.
+The [current release](https://github.com/acmiyaguchi/Term50/releases) requires OS version >= 10.3.
 
 ## Development
 
-To compile Term49 you need the BlackBerry 10 NDK. There are no vendored ARM
+To compile Term50 you need the BlackBerry 10 NDK. There are no vendored ARM
 prebuilts -- everything links against headers + libraries that ship with the
 NDK (`libscreen`, `libbps`, `libfreetype`, `libicu*`, `libclipboard`).
 
@@ -18,9 +18,9 @@ After cloning, run `git submodule update --init --recursive`. See
 build notes.
 The Ghostty VT core is vendored under `vendor/libghostty-vt/`. The top-level
 Makefile builds `vendor/libghostty-vt/build/ghostty/lib/libghostty-vt.a` on
-demand before linking Term49. Lua 5.4 is vendored under `vendor/lua/` and
-compiled into a static `liblua.a` by the Makefile; Term49 uses it as the
-config language (`~/.term49.lua`) and as the scripting runtime for
+demand before linking Term50. Lua 5.4 is vendored under `vendor/lua/` and
+compiled into a static `liblua.a` by the Makefile; Term50 uses it as the
+config language (`~/.term.lua`) and as the scripting runtime for
 `lua:<fn>` keybindings.
 
 Typical local build inside the BBNDK shell:
@@ -47,7 +47,7 @@ make -C vendor/libghostty-vt lib
 make -C vendor/libghostty-vt harness
 ```
 
-Term49 itself is the primary application example. The small standalone checks
+Term50 itself is the primary application example. The small standalone checks
 live in `vendor/libghostty-vt/tests/`.
 
 ## Architecture notes
@@ -68,7 +68,7 @@ live in `vendor/libghostty-vt/tests/`.
 
 ## Tabs
 
-Term49 runs multiple shells in a single app instance. Each tab owns its
+Term50 runs multiple shells in a single app instance. Each tab owns its
 own pty, child shell, and Ghostty bridge (so each tab has its own
 scrollback). Background tabs keep consuming output while you're focused
 on another tab.
@@ -108,38 +108,38 @@ is gone.
 
 All four actions are also reachable from Lua as
 `term.action("tab_new")`, `"tab_next"`, `"tab_prev"`, `"tab_close"`, so
-custom keybindings or scripted tab opening from `.term49.lua` work with
+custom keybindings or scripted tab opening from `.term.lua` work with
 no extra wiring.
 
 ## Cross-app invoke
 
-Term49 registers the **`term49://` URI scheme** as a navigator invoke target
+Term50 registers the **`term://` URI scheme** as a navigator invoke target
 (`bar-descriptor.xml`), so a tapped link, a homescreen shortcut, another app, or
-one of our own notifications can ask the OS to open Term49 and act. This is the
+one of our own notifications can ask the OS to open Term50 and act. This is the
 idiomatic cross-app entry point on BB10 — anything that can open a URI can drive
-Term49 — and is distinct from the #5 control socket: the socket is for processes
-*inside* Term49's sandbox; the URI handler is for openers *outside* it.
+Term50 — and is distinct from the #5 control socket: the socket is for processes
+*inside* Term50's sandbox; the URI handler is for openers *outside* it.
 
 The scheme is opened with the standard `bb.action.OPEN` action. Grammar:
 
 | URI | Effect |
 |-----|--------|
-| `term49://tab` | Open a new (empty) tab. |
-| `term49://tab/N` | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it is still live; otherwise open a fresh tab. |
-| `term49://focus` | Re-foreground only (the OS already raised us). |
+| `term://tab` | Open a new (empty) tab. |
+| `term://tab/N` | Focus the 1-indexed tab `N` (the same numbering as the tab strip), if it is still live; otherwise open a fresh tab. |
+| `term://focus` | Re-foreground only (the OS already raised us). |
 
 Unknown verbs (and any query string) are ignored.
 
 > **Navigation-only by design.** The scheme cannot run commands or inject input
 > — it only opens or focuses tabs. Because *any* app, or even a tapped web link,
-> can open a `term49://` URI, letting it drive the shell would be the same abuse
+> can open a `term://` URI, letting it drive the shell would be the same abuse
 > surface as an OSC 52 paste but reachable from a link. Running a command is
-> therefore restricted to the in-sandbox control socket (#5, `$TERM49_CONTROL`),
-> which only Term49's own child processes can reach.
+> therefore restricted to the in-sandbox control socket (#5, `$TERMCTL_SOCKET`),
+> which only Term50's own child processes can reach.
 
 ## Notifications
 
-Term49 exposes two distinct primitives (#35), named consistently across the
+Term50 exposes two distinct primitives (#35), named consistently across the
 control socket and Lua:
 
 * **toast** — a transient, auto-dismissing flash. No Hub entry, so it never
@@ -149,7 +149,7 @@ control socket and Lua:
 ### Replaceable Hub entries
 
 The Hub reuse key is the `(app_id, item_id)` pair: posting again with the same
-pair **updates that entry in place** instead of stacking a new one. Term49 makes
+pair **updates that entry in place** instead of stacking a new one. Term50 makes
 reuse the default — `item_id` is the logical slot, and a repeated post to the
 same slot replaces it. This keeps high-frequency callers (build status, job
 progress) from clogging the Hub.
@@ -165,10 +165,10 @@ termctl notify --id deploy --body "shipping"                # a separate entry
 | Flag | Meaning | Default |
 |------|---------|---------|
 | `--id S` | logical slot; same id replaces in place | a single shared slot |
-| `--title T` | Hub entry title | `Term49` |
+| `--title T` | Hub entry title | `Term50` |
 | `--body B` | subtitle / body text | none |
-| `--uri U` | `term49://…` invoke payload (see below) | no invoke |
-| `--app-id A` | route through a specific app identity | Term49's own identity |
+| `--uri U` | `term://…` invoke payload (see below) | no invoke |
+| `--app-id A` | route through a specific app identity | Term50's own identity |
 | `--alert` | post with sound/vibrate (`notification_alert`) | silent (`notification_notify`) |
 
 Lua takes the same fields as a table (or a bare string for the body):
@@ -180,9 +180,9 @@ term.notify("quick status")           -- body only, default slot
 
 `app_id`/`item_id` are restricted to `[A-Za-z0-9_]`; other bytes are folded to
 `_` so a caller's name still maps to one stable slot. Foreign `--app-id` values
-are passed through, but reuse is only reliable for Term49's own identity (the
+are passed through, but reuse is only reliable for Term50's own identity (the
 default). The invoke `target`/`action` are intentionally **not** exposed: the
-only invocation Term49 routes is back into itself, so the target is fixed to its
+only invocation Term50 routes is back into itself, so the target is fixed to its
 own id and the action to `bb.action.OPEN`. (Posting needs the
 `post_notification` permission, already in `bar-descriptor.xml`.)
 
@@ -194,29 +194,40 @@ shape.
 
 ### Round-trip: notify, then tap to return
 
-Give a notification a `term49://` invoke URI and tapping it re-foregrounds Term49
+Give a notification a `term://` invoke URI and tapping it re-foregrounds Term50
 and acts on the URI. To jump back to a specific tab, point it at that tab:
 
 ```sh
-termctl notify --id return --body "tap to return" --uri term49://tab/2
+termctl notify --id return --body "tap to return" --uri term://tab/2
 ```
 
 To verify: post it, switch to another tab, open the notification center, and tap
-the Term49 entry — you should land on tab 2.
+the Term50 entry — you should land on tab 2.
 
 ### Discoverability
 
-* **Another app** finds Term49 the BB10-native way: `navigator_invoke_query()`
-  reports Term49 as a `term49://` handler because the target is declared in the
+* **Another app** finds Term50 the BB10-native way: `navigator_invoke_query()`
+  reports Term50 as a `term://` handler because the target is declared in the
   bar descriptor — no out-of-band registry needed.
 * **An agent inside a shell** has the capability summary bundled on-device at
-  `$TERM49_AGENT_DOC` (`cat "$TERM49_AGENT_DOC"`), and the control socket's
-  `termctl help` lists both this socket and the `term49://` scheme.
+  `$TERMCTL_AGENT_DOC` (`cat "$TERMCTL_AGENT_DOC"`), and the control socket's
+  `termctl help` lists both this socket and the `term://` scheme.
 
-## Signing the release
+## Distributing
 
-To distribute Term49 through the BlackBerry signing flow, run `make sign`
-after configuring `signing/bbpass`.
+`make package-release` builds the optimized binaries into `Device-Release/` and
+packages a release bar (`Term50.bar`) — no `-devMode`, so the manifest reports
+`Application-Development-Mode: false` (unlike a `make package-dev` bar).
+
+BlackBerry's code-signing / BBID servers are gone, so the bar can no longer be
+signed for BlackBerry World. The unsigned release bar therefore still carries a
+locally-derived `test`-prefixed `Package-Id`/`Package-Author-Id` (a `testRel_…`
+prefix, versus a dev bar's `testDev_…`); that prefix is unavoidable without
+signing. Distribute it by **sideloading** (e.g. Sachesi, or `blackberry-deploy`
+to a device with Development Mode on); recipients install it the same way.
+
+The legacy `make sign` target (and `signing/`) is kept for reference only; it
+depends on signing infrastructure that no longer exists.
 
 ## See also
 

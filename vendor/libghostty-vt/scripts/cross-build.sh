@@ -56,7 +56,7 @@ lib() {
       --prefix "$GH" )
   # For freestanding targets we skip Ghostty's shared lib, and the static-lib
   # install path only installs the archive. Copy the public C headers explicitly
-  # so Term49 can include <ghostty/vt.h> from the build prefix.
+  # so Term50 can include <ghostty/vt.h> from the build prefix.
   mkdir -p "$GH/include"
   rm -rf "$GH/include/ghostty"
   cp -R "$GSRC/include/ghostty" "$GH/include/ghostty"

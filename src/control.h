@@ -1,5 +1,5 @@
 /*
- * Term49 control socket (#5). A Unix-domain stream socket that lets external
+ * Term50 control socket (#5). A Unix-domain stream socket that lets external
  * processes drive the terminal through the same action IR keybindings use.
  *
  * Runs entirely on the single-threaded BPS pump (#16-H): the listener and
@@ -17,9 +17,9 @@
 
 #include <stddef.h>   /* size_t */
 
-/* Create $HOME/.term49/control.sock (or a /tmp fallback if that path is too
+/* Create $HOME/.term/control.sock (or a /tmp fallback if that path is too
  * long for sun_path), listen, register the listener with the BPS pump, and
- * export its path as $TERM49_CONTROL. Returns 0 on success, -1 on failure
+ * export its path as $TERMCTL_SOCKET. Returns 0 on success, -1 on failure
  * (non-fatal: the app runs fine without a control socket). */
 int  control_init(void);
 
@@ -34,7 +34,7 @@ void control_drain_deferred(void);
 /* ---- glue implemented in main.c (keeps control.c free of app internals) ---- */
 int      ctl_run_action_string(const char *s); /* parse+dispatch one action */
 /* Post/update a replaceable Hub notification. Any field may be NULL for a
- * default (app_id => own identity, item_id => shared slot, title => "Term49").
+ * default (app_id => own identity, item_id => shared slot, title => "Term50").
  * alert!=0 uses notification_alert (sound/vibrate). 1 ok, 0 fail. */
 int      ctl_notify(const char *app_id, const char *item_id, const char *title,
                     const char *body, const char *uri, int alert);

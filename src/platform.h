@@ -13,14 +13,14 @@ typedef struct platform platform_t;
 /* A persistent Hub notification (#35). The reuse key is (app_id, item_id):
  * posting again with the same pair updates that Hub entry in place rather than
  * stacking a new one. All fields are borrowed for the duration of the call.
- * target/action are intentionally absent -- Term49 only ever routes an invoke
+ * target/action are intentionally absent -- Term50 only ever routes an invoke
  * back into itself, so the backend fixes them to its own id + bb.action.OPEN. */
 typedef struct notification_spec {
-	const char *app_id;   /* NULL => Term49's own identity (reliable reuse) */
+	const char *app_id;   /* NULL => Term50's own identity (reliable reuse) */
 	const char *item_id;  /* logical slot; NULL => a shared default. Same id replaces. */
-	const char *title;    /* NULL => "Term49" */
+	const char *title;    /* NULL => "Term50" */
 	const char *body;     /* subtitle; may be NULL */
-	const char *uri;      /* term49:// invoke payload; NULL => no invoke */
+	const char *uri;      /* term:// invoke payload; NULL => no invoke */
 	int         alert;    /* 0 => notification_notify; 1 => notification_alert */
 } notification_spec_t;
 
@@ -33,7 +33,7 @@ typedef struct platform_ops {
 	/* Transient auto-dismissing flash (no Hub entry). 0 ok, -1 fail. */
 	int  (*toast)(platform_t *p, const char *msg);
 	/* Post/update a persistent, replaceable Hub entry (#35); when spec->uri is
-	 * set, selecting it invokes Term49 back via the navigator (#23 round-trip).
+	 * set, selecting it invokes Term50 back via the navigator (#23 round-trip).
 	 * 0 ok, -1 fail. */
 	int  (*notify)(platform_t *p, const notification_spec_t *spec);
 	int  (*open_url)(platform_t *p, const char *url);  /* 0 ok, -1 fail */
