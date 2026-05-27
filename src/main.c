@@ -2596,6 +2596,18 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	setenv("LC_ALL", "C", 0);
 	setenv("BBNIX_CODESET", "UTF-8", 0);
 
+	/* tmux mkdir()s $TMUX_TMPDIR/tmux-<uid> for its socket; the default
+	 * $TMPDIR is /tmp -> /dev/shmem on QNX, a flat shm namespace where
+	 * subdir creation fails with ENOENT ("couldn't create directory
+	 * /dev/shmem/tmux-N"). Point it at the persistent HOME, a real writable
+	 * dir, so the socket dir works. if-absent so a user can override. */
+	{
+		const char *home = getenv("HOME");
+		if(home != NULL && home[0] != '\0'){
+			setenv("TMUX_TMPDIR", home, 0);
+		}
+	}
+
 	/* HTTPS trust for bundled curl/git/openssl. The ssh/full bundle ships a
 	 * relocatable CA bundle; point the common env vars at it (if-absent, only
 	 * when present) instead of relying on curl's baked device default path. */
