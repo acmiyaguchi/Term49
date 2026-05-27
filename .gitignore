@@ -10,3 +10,10 @@ signing/*.csk
 signing/*.bar
 signing/*.p12
 signing/ssh-key*
+
+# bbnix bundle staged by `make stage-bbnix`; keep only the placeholder so the
+# bar-descriptor asset path always exists.
+share/bbnix/*
+!share/bbnix/.keep
+result
+result-bbnix

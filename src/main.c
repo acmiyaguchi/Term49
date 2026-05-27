@@ -2567,6 +2567,17 @@ static int resolve_bbnix_root(char *out, size_t cap) {
 	return access(bindir, X_OK) == 0;
 }
 
+/* Compose "<root>/<sub>" into buf and test it: a directory (want_dir) via
+ * stat()+S_ISDIR, else accessible with `mode` (R_OK/X_OK). Returns 0 if the
+ * path would overflow buf, so callers skip the setenv. */
+static int bbnix_subpath(char *buf, size_t cap, const char *root,
+                         const char *sub, int mode, int want_dir) {
+	struct stat st;
+	if(snprintf(buf, cap, "%s/%s", root, sub) >= (int)cap){ return 0; }
+	if(want_dir){ return stat(buf, &st) == 0 && S_ISDIR(st.st_mode); }
+	return access(buf, mode) == 0;
+}
+
 /* Wire PATH / LD_LIBRARY_PATH / TERMINFO for a bbnix userland if one is
  * present (see bbnix AGENTS.md). Additive and opt-in: a stock build with no
  * bbnix root is untouched. When bbnix ships zsh, its absolute path is written
@@ -2574,7 +2585,7 @@ static int resolve_bbnix_root(char *out, size_t cap) {
 static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	char root[1024];
 	char buf[1024];
-	struct stat st;
+	const char *home;
 
 	if(!resolve_bbnix_root(root, sizeof(root))){ return; }
 
@@ -2586,8 +2597,7 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 
 	/* Prefer bbnix's own terminfo DB if it ships one; otherwise keep the
 	 * bundled TERMINFO that main() already exported. */
-	if(snprintf(buf, sizeof(buf), "%s/terminfo", root) < (int)sizeof(buf)
-	   && stat(buf, &st) == 0 && S_ISDIR(st.st_mode)){
+	if(bbnix_subpath(buf, sizeof(buf), root, "terminfo", 0, 1)){
 		setenv("TERMINFO", buf, 1);
 	}
 
@@ -2596,9 +2606,30 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	setenv("LC_ALL", "C", 0);
 	setenv("BBNIX_CODESET", "UTF-8", 0);
 
+	/* tmux mkdir()s $TMUX_TMPDIR/tmux-<uid> for its socket; the default
+	 * $TMPDIR is /tmp -> /dev/shmem on QNX, a flat shm namespace where
+	 * subdir creation fails with ENOENT ("couldn't create directory
+	 * /dev/shmem/tmux-N"). Point it at the persistent HOME, a real writable
+	 * dir, so the socket dir works. if-absent so a user can override. */
+	home = getenv("HOME");
+	if(home != NULL && home[0] != '\0'){
+		setenv("TMUX_TMPDIR", home, 0);
+	}
+
+	/* HTTPS trust for bundled curl/git/openssl. The ssh/full bundle ships a
+	 * relocatable CA bundle; point the common env vars at it (if-absent, only
+	 * when present) instead of relying on curl's baked device default path. */
+	if(bbnix_subpath(buf, sizeof(buf), root, "ssl/cacert.pem", R_OK, 0)){
+		setenv("SSL_CERT_FILE", buf, 0);
+		setenv("CURL_CA_BUNDLE", buf, 0);
+		setenv("GIT_SSL_CAINFO", buf, 0);
+	}
+	if(bbnix_subpath(buf, sizeof(buf), root, "etc/ssl/certs", 0, 1)){
+		setenv("SSL_CERT_DIR", buf, 0);
+	}
+
 	if(shell != NULL
-	   && snprintf(buf, sizeof(buf), "%s/bin/zsh", root) < (int)sizeof(buf)
-	   && access(buf, X_OK) == 0){
+	   && bbnix_subpath(buf, sizeof(buf), root, "bin/zsh", X_OK, 0)){
 		snprintf(shell, shell_cap, "%s", buf);
 	}
 }

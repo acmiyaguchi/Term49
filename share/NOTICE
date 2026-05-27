@@ -488,3 +488,33 @@ OpenSSH contains no GPL code.
 $OpenBSD: LICENCE,v 1.19 2004/08/30 09:18:08 markus Exp $
 */
 
+
+
+================================================================================
+Optional bbnix userland bundle
+================================================================================
+
+The following third-party programs and libraries are present ONLY in BARs built
+with `make package-dev-bbnix` / `make package-release-bbnix`. They
+are cross-compiled for BlackBerry 10 / QNX ARM by the bbnix project
+(https://github.com/acmiyaguchi/bbnix) and staged under app/native/bbnix. Each
+remains under its own upstream license; the canonical license text ships with,
+or is available from, each respective project.
+
+  - zsh            — the Z shell.            Zsh license (MIT-style, BSD-like).
+  - tmux           — terminal multiplexer.   ISC license.
+  - libevent       — event loop (in tmux).   3-clause BSD license.
+  - ncurses        — terminal library        MIT/X11-style (ncurses) license.
+    (libncursesw) + terminfo database.
+  - OpenSSH        — ssh, scp, sftp,          BSD-style license, with some
+    ssh-keygen.                               public-domain components.
+  - OpenSSL        — libssl, libcrypto.       Apache License 2.0.
+  - zlib           — libz.                    zlib license.
+  - mosh           — mosh-client + launcher.  GNU GPL v3.0 or later.
+  - curl           — curl CLI.               curl license (MIT/X-style).
+  - Mozilla CA     — ca-certificates / CA     Mozilla Public License 2.0
+    certificate bundle (via nixpkgs cacert).  (the bundled trust store).
+
+Binaries compiled with the bbnix GCC cross-toolchain carry the GCC Runtime
+Library Exception and are not made GPL merely by being built with GCC; see the
+bbnix NOTICE for toolchain provenance.

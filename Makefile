@@ -74,7 +74,8 @@ include ./signing/bbpass
 # refuse to run while BBPASS is still its "" placeholder.
 check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in signing/bbpass before deploying' >&2; exit 1; }
 
-.PHONY: all clean libghostty-vt package-dev package-release deploy connect sign
+.PHONY: all clean libghostty-vt package-dev package-release deploy connect sign \
+        bbnix-bundle stage-bbnix clean-bbnix package-dev-bbnix package-release-bbnix
 
 all: $(BINARY_PATH) $(CTL_PATH)
 
@@ -148,3 +149,41 @@ package-release:
 
 sign: package-release
 	blackberry-signer -bbidtoken ./signing/$(BBIDTOKEN) -storepass $(KEYSTOREPASS) -keystore ./signing/$(KEYSTORE) $(BINARY).bar
+
+# --- Optional bbnix userland bundle ---------------------------------------
+# Builds a richer ARM userland (zsh/tmux/mosh-client/ssh + CA bundle) via the
+# pinned bbnix flake (.#bbnix-bundle) and stages it under share/bbnix, which
+# bar-descriptor.xml packages to app/native/bbnix. At runtime Term50 prefers
+# bbnix's zsh and falls back to mksh when the tree is empty (src/main.c).
+#
+# These targets require Nix and a BB10 sysroot: bbnix builds are impure (they
+# read $BBNIX_SYSROOT and need a relaxed sandbox). Plain `make package-dev` /
+# `package-release` do NOT depend on any of this -- they just package whatever
+# is in share/bbnix (only a committed .keep on a clean tree).
+#
+# Override the variant with BBNIX_BUNDLE=bbnix-bundle-ssh (or -minimal); the
+# default bbnix-bundle alias is the full variant.
+BBNIX_BUNDLE ?= bbnix-bundle
+
+bbnix-bundle:
+	@test -n "$(BBNIX_SYSROOT)" || { echo 'Set BBNIX_SYSROOT to your bbndk-linux tree, e.g. BBNIX_SYSROOT=/mnt/data/fun/bbdev/sdk/bbndk-linux' >&2; exit 1; }
+	BBNIX_SYSROOT="$(BBNIX_SYSROOT)" nix build --impure --option sandbox relaxed .#$(BBNIX_BUNDLE) -o result-bbnix
+
+stage-bbnix: bbnix-bundle
+	rm -rf share/bbnix
+	mkdir -p share/bbnix
+	cp -RL result-bbnix/. share/bbnix/
+	chmod -R u+w share/bbnix
+	touch share/bbnix/.keep
+
+clean-bbnix:
+	rm -rf share/bbnix result-bbnix
+	mkdir -p share/bbnix && touch share/bbnix/.keep
+
+package-dev-bbnix:
+	$(MAKE) stage-bbnix
+	$(MAKE) package-dev
+
+package-release-bbnix:
+	$(MAKE) stage-bbnix
+	$(MAKE) package-release
