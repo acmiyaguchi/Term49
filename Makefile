@@ -125,7 +125,8 @@ clean:
 	@rm -rfv Device-Debug Device-Release
 	@rm -fv $(BINARY).bar
 
-package-dev: $(BINARY_PATH)
+package-dev:
+	$(MAKE) ASSET=Device-Debug all
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
 
 deploy: package-dev
@@ -138,9 +139,9 @@ connect:
 
 # Distributable, release-mode bar. Builds the binaries into Device-Release
 # (a recursive make so the shared objects relink to the release output dir),
-# then packages WITHOUT -devMode so the bar is a real release (no test* author
-# prefix, Application-Development-Mode: false). BlackBerry's signing servers are
-# gone, so this unsigned bar is sideloaded (Sachesi/DBL) rather than signed.
+# then packages WITHOUT -devMode so the manifest has
+# Application-Development-Mode: false. BlackBerry's signing servers are gone, so
+# this unsigned bar is sideloaded (Sachesi/DBL) rather than signed.
 package-release:
 	$(MAKE) ASSET=Device-Release all
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release
