@@ -16,6 +16,11 @@
     <id>io.github.term50</id>
     <asset path="share/terminfo">terminfo</asset>
     <asset path="share/root">root</asset>
+    <!-- Optional bbnix userland (zsh/tmux/mosh/ssh + CA bundle), staged by
+         `make stage-bbnix`. Empty (just .keep) on a clean tree, so this asset
+         is harmless for plain package-dev/-release; Term50 falls back to mksh
+         when app/native/bbnix has no bin/ (issue #43). -->
+    <asset path="share/bbnix">bbnix</asset>
     <asset path="share/NOTICE">NOTICE</asset>
     <asset path="share/LICENSE">LICENSE</asset>
     <asset path="share/README">README</asset>

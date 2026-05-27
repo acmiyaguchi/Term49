@@ -2596,6 +2596,20 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	setenv("LC_ALL", "C", 0);
 	setenv("BBNIX_CODESET", "UTF-8", 0);
 
+	/* HTTPS trust for bundled curl/git/openssl. The ssh/full bundle ships a
+	 * relocatable CA bundle; point the common env vars at it (if-absent, only
+	 * when present) instead of relying on curl's baked device default path. */
+	if(snprintf(buf, sizeof(buf), "%s/ssl/cacert.pem", root) < (int)sizeof(buf)
+	   && access(buf, R_OK) == 0){
+		setenv("SSL_CERT_FILE", buf, 0);
+		setenv("CURL_CA_BUNDLE", buf, 0);
+		setenv("GIT_SSL_CAINFO", buf, 0);
+	}
+	if(snprintf(buf, sizeof(buf), "%s/etc/ssl/certs", root) < (int)sizeof(buf)
+	   && stat(buf, &st) == 0 && S_ISDIR(st.st_mode)){
+		setenv("SSL_CERT_DIR", buf, 0);
+	}
+
 	if(shell != NULL
 	   && snprintf(buf, sizeof(buf), "%s/bin/zsh", root) < (int)sizeof(buf)
 	   && access(buf, X_OK) == 0){
