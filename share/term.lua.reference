@@ -32,12 +32,11 @@ prefs_version = 9
 -- ----------------------------------------------------------------------------
 
 -- Path to the FreeType-loadable font used for the grid.
--- Bundled alternates live under os.getenv("SANDBOX") .. "/app/native/fonts/":
+-- $SANDBOX is expanded by Term50 when it opens the font.
+-- Bundled alternates live under $SANDBOX/app/native/fonts/:
 --   IosevkaTerm-Regular.ttf, JetBrainsMono-Regular.ttf,
 --   SourceCodePro-Regular.otf, UbuntuMono-R.ttf
--- Example:
---   font_path = os.getenv("SANDBOX") .. "/app/native/fonts/IosevkaTerm-Regular.ttf"
-font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
+font_path = "$SANDBOX/app/native/fonts/IosevkaTerm-Regular.ttf"
 
 -- Font size in points. metamode + i / o / z adjust this live (see func keys).
 font_size = 24

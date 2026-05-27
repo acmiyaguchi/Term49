@@ -692,9 +692,9 @@ int font_init(int font_size){
 	font = font_open(prefs->font_path, font_size);
 	if ( font == NULL ) {
 		fprintf(stderr, "Couldn't load %d pt font from %s\n", font_size, prefs->font_path);
-		font = font_open(TERM_DEFAULT_FONT_PATH, TERM_DEFAULT_FONT_SIZE);
+		font = font_open(TERM_FALLBACK_FONT_PATH, TERM_DEFAULT_FONT_SIZE);
 		if(font == NULL){
-			fprintf(stderr, "Could not open default font %s\n", TERM_DEFAULT_FONT_PATH);
+			fprintf(stderr, "Could not open fallback font %s\n", TERM_FALLBACK_FONT_PATH);
 			return TERM_FAILURE;
 		}
 	}
