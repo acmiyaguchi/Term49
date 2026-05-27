@@ -76,7 +76,7 @@ CTL_LIBS := -lsocket -lm
 # while BBPASS is still its "" placeholder.
 check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in .env before deploying' >&2; exit 1; }
 
-.PHONY: all clean libghostty-vt package-dev package-release deploy connect \
+.PHONY: all clean icons libghostty-vt package-dev package-release deploy connect \
         bbnix-bundle stage-bbnix clean-bbnix
 
 all: $(BINARY_PATH) $(CTL_PATH)
@@ -128,7 +128,10 @@ clean:
 	@rm -rfv Device-Debug Device-Release
 	@rm -fv $(BINARY).bar
 
-package-dev:
+icons:
+	tools/generate-icons.sh
+
+package-dev: icons
 	$(MAKE) stage-bbnix
 	$(MAKE) ASSET=Device-Debug all
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
@@ -146,7 +149,7 @@ connect:
 # then packages WITHOUT -devMode so the manifest has
 # Application-Development-Mode: false. BlackBerry's signing servers are gone, so
 # this unsigned bar is sideloaded (Sachesi/DBL) rather than signed.
-package-release:
+package-release: icons
 	$(MAKE) stage-bbnix
 	$(MAKE) ASSET=Device-Release all
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release

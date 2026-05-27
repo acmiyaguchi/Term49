@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Term50 terminal icon">
+  <defs>
+    <linearGradient id="case" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#151515"/>
+      <stop offset="0.55" stop-color="#050505"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="screen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#282d2b"/>
+      <stop offset="1" stop-color="#171a19"/>
+    </linearGradient>
+    <linearGradient id="topLip" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3d3d3d"/>
+      <stop offset="1" stop-color="#111111"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000" flood-opacity="0.55"/>
+    </filter>
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="1.4" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Slightly perspective terminal body, matching the old BB10 tile silhouette. -->
+  <path d="M70 37 H442 L471 70 H41 Z" fill="url(#topLip)" stroke="#555" stroke-width="4" stroke-linejoin="round"/>
+  <rect x="35" y="55" width="442" height="420" rx="34" fill="url(#case)" stroke="#505050" stroke-width="5" filter="url(#shadow)"/>
+  <rect x="66" y="93" width="380" height="328" fill="url(#screen)"/>
+
+  <!-- Subtle CRT scanlines: visible at large sizes, harmless at launcher sizes. -->
+  <g opacity="0.10" stroke="#000" stroke-width="3">
+    <path d="M66 145 H446"/>
+    <path d="M66 198 H446"/>
+    <path d="M66 251 H446"/>
+    <path d="M66 304 H446"/>
+    <path d="M66 357 H446"/>
+  </g>
+
+  <g fill="#7CFF9B" font-family="Iosevka, JetBrains Mono, DejaVu Sans Mono, Liberation Mono, Consolas, monospace" font-weight="800" text-anchor="end" filter="url(#glow)">
+    <text x="386" y="225" font-size="122">Term</text>
+    <text x="386" y="360" font-size="150">50</text>
+  </g>
+</svg>
