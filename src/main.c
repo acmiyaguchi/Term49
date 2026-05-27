@@ -60,11 +60,11 @@ static int exit_application = 0;
  * which is wiped on every app reinstall and is invisible to the File
  * Manager / bb-scp. Repoint HOME at the persistent, cross-app shared
  * Documents dir (the OS creates it once access_shared is granted) so
- * dotfiles, mksh history and .termrc survive redeploys and can be
- * seeded from the dev box. Also export TERMINFO with an absolute path
- * to the bundled terminfo, since the shared filesystem is FUSE-backed
- * and rejects the ~/.terminfo symlink we used to rely on. Falls back
- * to the sandbox HOME untouched if anything is unexpected. */
+ * dotfiles, shell history and .termrc survive redeploys and can be
+ * seeded from the dev box. Also export TERMCTL_AGENT_DOC so an in-shell
+ * agent can discover the control surface. (TERMINFO is set later by
+ * setup_bbnix_env, which points it at the bundled bbnix terminfo DB.)
+ * Falls back to the sandbox HOME untouched if anything is unexpected. */
 static void set_persistent_home(void) {
 	const char* sandbox_home = getenv("HOME");
 	const char* p;
@@ -77,15 +77,6 @@ static void set_persistent_home(void) {
 	if (p == NULL) { return; }
 	appid_end = strchr(p + strlen("/appdata/"), '/');
 	if (appid_end == NULL) { return; }
-
-	/* TERMINFO = <...>/appdata/<appid>/app/native/terminfo */
-	{
-		int n = snprintf(buf, sizeof(buf), "%.*s/app/native/terminfo",
-		                 (int)(appid_end - sandbox_home), sandbox_home);
-		if (n > 0 && n < (int)sizeof(buf)) {
-			setenv("TERMINFO", buf, 1);
-		}
-	}
 
 	/* TERMCTL_AGENT_DOC = absolute path to the bundled agent capability doc
 	 * (#23), so an in-shell agent can `cat "$TERMCTL_AGENT_DOC"` to discover the
@@ -1954,7 +1945,7 @@ static void apply_winsize_to(session_t *s){
 	/* Send SIGWINCH to the shell's process group. TIOCGPGRP on the pty
 	 * master fails on BB10/QNX, so fall back to the child process group
 	 * created by setsid() in pty_init(). Sending SIGWINCH to our own app
-	 * process group leaves mksh thinking it is still 80 columns wide. */
+	 * process group leaves the shell thinking it is still 80 columns wide. */
 	int pgrp;
 	pid_t cpid = session_child_pid(s);
 	if(ioctl(master, TIOCGPGRP, &pgrp) != -1){
@@ -2578,10 +2569,11 @@ static int bbnix_subpath(char *buf, size_t cap, const char *root,
 	return access(buf, mode) == 0;
 }
 
-/* Wire PATH / LD_LIBRARY_PATH / TERMINFO for a bbnix userland if one is
- * present (see bbnix AGENTS.md). Additive and opt-in: a stock build with no
- * bbnix root is untouched. When bbnix ships zsh, its absolute path is written
- * into `shell` so the caller can prefer it over the bundled mksh. */
+/* Wire PATH / LD_LIBRARY_PATH / TERMINFO for the bbnix userland (see bbnix
+ * AGENTS.md). bbnix is a required dependency, but this stays defensive: if the
+ * root is somehow absent it leaves the environment untouched. When bbnix ships
+ * zsh, its absolute path is written into `shell` so the caller execs it as the
+ * login shell (falling back to /bin/sh only if that exec fails). */
 static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	char root[1024];
 	char buf[1024];
@@ -2728,8 +2720,8 @@ static int pty_init(session_t *session) {
 
 		terminal_setenv();
 
-		/* Baseline private bin dir: the bundled mksh / ssh / scp, always in
-		 * the .bar at $SANDBOX/app/native/root/bin. */
+		/* Baseline private bin dir: the bundled termctl, always in the
+		 * .bar at $SANDBOX/app/native/root/bin. */
 		char* sandbox = getenv("SANDBOX");
 		if(sandbox == NULL){
 			fprintf(stderr, "Could not get $SANDBOX - not setting private bin dir.\n");
@@ -2741,27 +2733,19 @@ static int pty_init(session_t *session) {
 		 * Which can be overridden in .profile */
 		setenv("LC_CTYPE", "en_US.UTF-8", 0);
 
-		/* Opt-in bbnix userland (zsh/tmux/mosh/ssh). Prepends its bin/ + lib/
-		 * ahead of the baseline and upgrades the login shell to zsh if shipped.
-		 * No-op when no bbnix root is present. */
+		/* Required bbnix userland (zsh/tmux/mosh/ssh + terminfo). Prepends its
+		 * bin/ + lib/ ahead of the baseline, points TERMINFO at its terminfo DB,
+		 * and selects zsh as the login shell. */
 		char bbnix_shell[1024];
 		bbnix_shell[0] = '\0';
 		setup_bbnix_env(bbnix_shell, sizeof(bbnix_shell));
 		if(bbnix_shell[0] != '\0'){
 			try_shell(bbnix_shell, "zsh");
-			fprintf(stderr, "bbnix zsh exec failed: %s - falling back to mksh\n",
+			fprintf(stderr, "bbnix zsh exec failed: %s - falling back to /bin/sh\n",
 			        strerror(errno));
 		}
 
-		/* mksh lives at $SANDBOX/app/native/root/bin/mksh. Use an
-		 * absolute path: CWD is now the shared HOME, so the old
-		 * "../app/native/..." relative path no longer resolves. */
-		char mksh[1024];
-		if(sandbox != NULL &&
-		   snprintf(mksh, sizeof(mksh), "%s/app/native/root/bin/mksh", sandbox) < (int)sizeof(mksh)){
-			try_shell(mksh, "mksh");
-		}
-		try_shell("../app/native/root/bin/mksh", "mksh");
+		/* Last resort if bbnix's zsh is missing or fails to exec. */
 		try_shell("/bin/sh", "sh");
 	}
 	if (child_pid == -1){
