@@ -150,7 +150,7 @@ package-release:
 sign: package-release
 	blackberry-signer -bbidtoken ./signing/$(BBIDTOKEN) -storepass $(KEYSTOREPASS) -keystore ./signing/$(KEYSTORE) $(BINARY).bar
 
-# --- Optional bbnix userland bundle (issue #43) ---------------------------
+# --- Optional bbnix userland bundle ---------------------------------------
 # Builds a richer ARM userland (zsh/tmux/mosh-client/ssh + CA bundle) via the
 # pinned bbnix flake (.#bbnix-bundle) and stages it under share/bbnix, which
 # bar-descriptor.xml packages to app/native/bbnix. At runtime Term50 prefers

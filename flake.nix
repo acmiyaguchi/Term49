@@ -3,9 +3,9 @@
 
   # Term50 itself is built with the BlackBerry NDK via the Makefile, not Nix.
   # This flake exists only to pin the bbnix userland and re-expose its
-  # relocatable deploy bundle so `make stage-bbnix` can build a known revision
-  # (see issue #43). bbnix builds are impure: they read $BBNIX_SYSROOT, so the
-  # Makefile invokes `nix build --impure`.
+  # relocatable deploy bundle so `make stage-bbnix` can build a known revision.
+  # bbnix builds are impure: they read $BBNIX_SYSROOT, so the Makefile invokes
+  # `nix build --impure`.
   inputs = {
     bbnix.url = "github:acmiyaguchi/bbnix";
     flake-utils.follows = "bbnix/flake-utils";

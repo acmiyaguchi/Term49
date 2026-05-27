@@ -19,7 +19,7 @@
     <!-- Optional bbnix userland (zsh/tmux/mosh/ssh + CA bundle), staged by
          `make stage-bbnix`. Empty (just .keep) on a clean tree, so this asset
          is harmless for plain package-dev/-release; Term50 falls back to mksh
-         when app/native/bbnix has no bin/ (issue #43). -->
+         when app/native/bbnix has no bin/. -->
     <asset path="share/bbnix">bbnix</asset>
     <asset path="share/NOTICE">NOTICE</asset>
     <asset path="share/LICENSE">LICENSE</asset>

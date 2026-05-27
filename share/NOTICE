@@ -495,7 +495,7 @@ Optional bbnix userland bundle
 ================================================================================
 
 The following third-party programs and libraries are present ONLY in BARs built
-with `make package-dev-bbnix` / `make package-release-bbnix` (issue #43). They
+with `make package-dev-bbnix` / `make package-release-bbnix`. They
 are cross-compiled for BlackBerry 10 / QNX ARM by the bbnix project
 (https://github.com/acmiyaguchi/bbnix) and staged under app/native/bbnix. Each
 remains under its own upstream license; the canonical license text ships with,
@@ -514,12 +514,6 @@ or is available from, each respective project.
   - curl           — curl CLI.               curl license (MIT/X-style).
   - Mozilla CA     — ca-certificates / CA     Mozilla Public License 2.0
     certificate bundle (via nixpkgs cacert).  (the bundled trust store).
-
-The following are bbnix-original components, Copyright (c) 2026 Anthony
-Miyaguchi, under the MIT license (https://github.com/acmiyaguchi/bbnix):
-
-  - libbbnixcompat — QNX libc compatibility shim (libbbnixcompat.so).
-  - libbtcrash     — LD_PRELOAD crash tracer (libbtcrash.so).
 
 Binaries compiled with the bbnix GCC cross-toolchain carry the GCC Runtime
 Library Exception and are not made GPL merely by being built with GCC; see the
