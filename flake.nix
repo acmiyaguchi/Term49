@@ -72,8 +72,7 @@ EOF
         bbnix-bundle-ssh     = bbnix.packages.${system}.deploy-bundle-ssh;
         bbnix-bundle-full    = bbnix.packages.${system}.deploy-bundle-full;
 
-        term50-fonts-bundle         = term50FontsBundle;
-        term50-fonts-bundle-minimal = term50FontsBundle;
+        term50-fonts-bundle = term50FontsBundle;
       };
     });
 }

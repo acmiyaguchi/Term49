@@ -35,14 +35,16 @@ void font_library_quit(void) {
 
 font_t *font_open(const char *path, int pt_size) {
 	if (!g_library_initialized || !path || pt_size <= 0) return NULL;
+	static const char sandbox_prefix[] = "$SANDBOX/";
+	const size_t sandbox_prefix_len = sizeof(sandbox_prefix) - 1;
 	char expanded[1024];
 	const char *open_path = path;
-	if (strncmp(path, "$SANDBOX/", 9) == 0) {
+	if (strncmp(path, sandbox_prefix, sandbox_prefix_len) == 0) {
 		const char *sandbox = getenv("SANDBOX");
-		if (sandbox == NULL || sandbox[0] == '\0' ||
-		    snprintf(expanded, sizeof(expanded), "%s/%s", sandbox, path + 9) >= (int)sizeof(expanded)) {
-			return NULL;
-		}
+		if (sandbox == NULL || sandbox[0] == '\0') return NULL;
+		int n = snprintf(expanded, sizeof(expanded), "%s/%s",
+		                 sandbox, path + sandbox_prefix_len);
+		if (n < 0 || (size_t)n >= sizeof(expanded)) return NULL;
 		open_path = expanded;
 	}
 	font_t *f = calloc(1, sizeof(*f));
