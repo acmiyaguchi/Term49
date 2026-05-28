@@ -22,10 +22,13 @@
 #ifndef BBNIX_ENV_H_
 #define BBNIX_ENV_H_
 
-/* Apply <root>/etc/bbnix-env to the current process env. Logs a warning to
- * stderr and returns without setting anything if the manifest is missing
- * (which implies a broken stage-bbnix). Safe to call exactly once per fork
- * before execve; never affects the parent. */
-void bbnix_apply_env_manifest(const char *root);
+/* Apply <root>/etc/bbnix-env to the current process env. Returns 0 on
+ * success (file opened and read; per-line errors are logged but don't fail
+ * the apply), -1 when the manifest is missing or unreadable -- which
+ * implies a broken stage-bbnix, and the caller must not exec bundled
+ * binaries that depend on the manifest's env (LD_LIBRARY_PATH/TERMINFO).
+ * Safe to call exactly once per fork before execve; never affects the
+ * parent. */
+int bbnix_apply_env_manifest(const char *root);
 
 #endif /* BBNIX_ENV_H_ */

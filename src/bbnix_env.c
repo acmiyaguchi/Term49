@@ -79,19 +79,19 @@ static int is_directory(const char *path) {
 	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 }
 
-void bbnix_apply_env_manifest(const char *root) {
+int bbnix_apply_env_manifest(const char *root) {
 	char path[1024];
 	if(snprintf(path, sizeof(path), "%s/etc/bbnix-env", root)
 	   >= (int)sizeof(path)){
 		fprintf(stderr, "bbnix-env: root path too long, skipping manifest\n");
-		return;
+		return -1;
 	}
 
 	FILE *fp = fopen(path, "r");
 	if(fp == NULL){
 		fprintf(stderr, "bbnix-env: cannot open %s: %s\n",
 		        path, strerror(errno));
-		return;
+		return -1;
 	}
 
 	const char *home = getenv("HOME");
@@ -113,6 +113,15 @@ void bbnix_apply_env_manifest(const char *root) {
 			fprintf(stderr, "bbnix-env: line %d truncated, skipping\n", lineno);
 			while((c = fgetc(fp)) != EOF && c != '\n'){ }
 			continue;
+		}
+
+		/* Strip trailing whitespace, matching bbnix-activate's POSIX
+		 * `IFS=' \t' read -r mode rest` semantics: read strips trailing
+		 * IFS from the final field. Without this a stray trailing space
+		 * on a value line (e.g. `set TERMINFO=$ROOT/terminfo `) would
+		 * leave the space in the value here while the shim drops it. */
+		while(len > 0 && (line[len - 1] == ' ' || line[len - 1] == '\t')){
+			line[--len] = '\0';
 		}
 
 		char *p = line;

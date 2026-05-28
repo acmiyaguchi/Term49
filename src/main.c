@@ -2621,7 +2621,11 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 
 	if(!resolve_bbnix_root(root, sizeof(root))){ return; }
 
-	bbnix_apply_env_manifest(root);
+	/* If the manifest is missing the bundle is partial -- LD_LIBRARY_PATH /
+	 * TERMINFO never got set, so launching bbnix's zsh would either fail to
+	 * find its .so's or come up with a broken terminfo. Leave `shell` empty
+	 * and let the caller fall back to /bin/sh. */
+	if(bbnix_apply_env_manifest(root) != 0){ return; }
 
 	if(shell != NULL
 	   && bbnix_subpath(buf, sizeof(buf), root, "bin/zsh", X_OK, 0)){
@@ -2640,8 +2644,9 @@ static void try_shell(const char *path, const char *argv0) {
 }
 
 static void terminal_setenv(void) {
-	/* terminfo is located via $TERMINFO (an absolute path to the bundled
-	 * database, exported in main() before fork). */
+	/* TERM gates which capabilities tmux/zsh/vim believe they have. Force it
+	 * to xterm-256color; setup_bbnix_env runs after this and applies the
+	 * manifest, which points TERMINFO at the bundled bbnix terminfo DB. */
 	setenv("TERM", "xterm-256color", 1);
 	if(system("/base/bin/stty +sane erase=^H") == -1){
 		PRINT(stderr, "Error invoking system(stty..)\n");
