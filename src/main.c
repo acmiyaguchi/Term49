@@ -2193,6 +2193,10 @@ void app_shutdown(void){
 	app_shutdown_state(g_app);
 	g_app = NULL;
 
+	/* Drop the URL picker's transient state (notably the QR bitmap) before
+	 * the renderer goes away. Idempotent and safe when inactive. */
+	url_pick_exit();
+
 	/* Order matters: free the renderer first so its glyph cache (which
 	 * borrows the font) drops before font_uninit closes the font. Then
 	 * tear down the font and the FreeType library, then the platform. */

@@ -9,6 +9,7 @@ This directory owns all third-party source checkouts used by Term50. See
 | --- | --- |
 | `libghostty-vt/` | Vendored Ghostty terminal parser/state model integration. |
 | `lua/` | Source submodule for Lua 5.4 (`lua/lua` upstream), built to a static `liblua.a` by the top-level Makefile and statically linked. Term50's config language and scripting runtime. |
+| `qrcodegen/` | Project Nayuki QR Code generator (MIT), upstream `nayuki/QR-Code-generator`. Vendored C sources used by the URL picker's QR view; built as a single object by the Makefile. |
 
 ## Notes
 
