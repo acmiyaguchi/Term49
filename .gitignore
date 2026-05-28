@@ -21,6 +21,10 @@ share/bbnix/*
 share/fonts/*
 !share/fonts/.keep
 
+# fen-blackberry binary + PATH wrapper staged by `make stage-fen`.
+share/fen/
+share/root/
+
 result
 result-bbnix
 result-fonts

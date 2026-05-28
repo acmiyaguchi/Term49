@@ -4,3 +4,6 @@
 [submodule "vendor/lua"]
 	path = vendor/lua
 	url = https://github.com/lua/lua.git
+[submodule "vendor/fen-blackberry"]
+	path = vendor/fen-blackberry
+	url = https://github.com/acmiyaguchi/fen-blackberry.git

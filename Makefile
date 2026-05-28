@@ -85,7 +85,8 @@ CTL_LIBS := -lsocket -lm
 check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in .env before deploying' >&2; exit 1; }
 
 .PHONY: all clean icons libghostty-vt package-dev package-release deploy connect \
-        bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts
+        bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts \
+        fen-bundle stage-fen clean-fen
 
 all: $(BINARY_PATH) $(CTL_PATH)
 
@@ -139,7 +140,7 @@ clean:
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
 	@rm -fv $(QR_OBJS)
 	@rm -rfv Device-Debug Device-Release
-	@rm -rfv result-fonts
+	@rm -rfv share/fen share/root result-fonts
 	@rm -fv $(BINARY).bar
 
 icons:
@@ -148,6 +149,7 @@ icons:
 package-dev: icons
 	$(MAKE) stage-bbnix
 	$(MAKE) stage-fonts
+	$(MAKE) stage-fen
 	$(MAKE) ASSET=Device-Debug all
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
 
@@ -167,6 +169,7 @@ connect:
 package-release: icons
 	$(MAKE) stage-bbnix
 	$(MAKE) stage-fonts
+	$(MAKE) stage-fen
 	$(MAKE) ASSET=Device-Release all
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release
 
@@ -216,3 +219,36 @@ clean-bbnix:
 clean-fonts:
 	rm -rf share/fonts result-fonts
 	mkdir -p share/fonts && touch share/fonts/.keep
+
+# --- Bundled fen coding agent -----------------------------------------------
+# fen-blackberry builds the Fen CLI for BB10/QNX with bbnix's GCC toolchain and
+# static curl/OpenSSL/zlib. Stage the real executable outside PATH and install a
+# tiny PATH wrapper: Fen's appended Lua payload is found via argv[0], so the
+# wrapper execs the binary by absolute on-device path.
+FEN_DIR     ?= vendor/fen-blackberry
+FEN_BINARY  := $(FEN_DIR)/build/fen
+FEN_STAGE   := share/fen/bin/fen
+FEN_WRAPPER := share/root/bin/fen
+
+fen-bundle:
+	@test -n "$(BBNIX_SYSROOT)" || { echo 'Set BBNIX_SYSROOT to your bbndk-linux tree, e.g. BBNIX_SYSROOT=/mnt/data/fun/bbdev/sdk/bbndk-linux' >&2; exit 1; }
+	$(MAKE) -C $(FEN_DIR) BBNIX_SYSROOT="$(BBNIX_SYSROOT)" fen
+
+stage-fen: fen-bundle
+	rm -rf share/fen share/root/bin/fen
+	mkdir -p share/fen/bin share/root/bin
+	install -m755 $(FEN_BINARY) $(FEN_STAGE)
+	printf '%s\n' '#!/bin/sh' \
+	  'if [ -n "$$SANDBOX" ]; then' \
+	  '  exec "$$SANDBOX/app/native/fen/bin/fen" "$$@"' \
+	  'fi' \
+	  'case "$$0" in' \
+	  '  /*) native=$${0%/root/bin/fen}; exec "$$native/fen/bin/fen" "$$@" ;;' \
+	  'esac' \
+	  'echo "fen: cannot locate bundled executable; SANDBOX is not set" >&2' \
+	  'exit 127' > $(FEN_WRAPPER)
+	chmod 755 $(FEN_WRAPPER)
+
+clean-fen:
+	rm -rf share/fen share/root
+	$(MAKE) -C $(FEN_DIR) clean
