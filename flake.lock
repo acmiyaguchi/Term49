@@ -19,6 +19,22 @@
         "type": "github"
       }
     },
+    "fen-blackberry": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1779959522,
+        "narHash": "sha256-QqcuSJV/ZBfoL36Fd3iukaMjoVlRwR/pkjRFel2q0ms=",
+        "owner": "acmiyaguchi",
+        "repo": "fen-blackberry",
+        "rev": "2bd3c9bcea1cb9fd307806f41fce70a9e082fa0f",
+        "type": "github"
+      },
+      "original": {
+        "owner": "acmiyaguchi",
+        "repo": "fen-blackberry",
+        "type": "github"
+      }
+    },
     "flake-utils": {
       "inputs": {
         "systems": "systems"
@@ -56,6 +72,7 @@
     "root": {
       "inputs": {
         "bbnix": "bbnix",
+        "fen-blackberry": "fen-blackberry",
         "flake-utils": [
           "bbnix",
           "flake-utils"

@@ -36,11 +36,13 @@
        <platformArchitecture>armle-v7</platformArchitecture>
        <asset path="Device-Debug/Term50" entry="true" type="Qnx/Elf">Term50</asset>
        <asset path="Device-Debug/termctl" entry="false" type="Qnx/Elf">root/bin/termctl</asset>
+       <asset path="Device-Debug/fen" entry="false" type="Qnx/Elf">root/bin/fen</asset>
     </configuration>
     <configuration name="Device-Release">
        <platformArchitecture>armle-v7</platformArchitecture>
        <asset path="Device-Release/Term50" entry="true" type="Qnx/Elf">Term50</asset>
        <asset path="Device-Release/termctl" entry="false" type="Qnx/Elf">root/bin/termctl</asset>
+       <asset path="Device-Release/fen" entry="false" type="Qnx/Elf">root/bin/fen</asset>
     </configuration>
 
     <name>Term50</name>

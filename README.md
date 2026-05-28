@@ -8,7 +8,7 @@ The [current release](https://github.com/acmiyaguchi/Term50/releases) requires O
 
 ## Building
 
-You need the BlackBerry 10 NDK (for `qcc` and the packager) and Nix (for the bbnix userland and bundled font staging).
+You need the BlackBerry 10 NDK (for `qcc` and the packager) and Nix (for the bbnix userland, bundled Fen CLI, and bundled font staging).
 Everything links against headers + libraries that ship with the NDK (`libscreen`, `libbps`, `libfreetype`, `libicu*`, `libclipboard`); there are no vendored ARM prebuilts.
 
 Third-party source lives under `vendor/` as submodules (libghostty-vt, Lua 5.4).
@@ -27,11 +27,12 @@ make            # builds Term50 + termctl
 ## Packaging & deploying
 
 bbnix is a **required** dependency: it supplies the login shell (zsh), the terminfo database, and ssh/tmux/mosh.
-The package targets stage bbnix and the curated font bundle automatically, so they need Nix and a BB10 sysroot (`BBNIX_SYSROOT`); bbnix builds are impure.
+Term50 also bundles the BB10 Fen coding-agent CLI as `fen` on `$PATH`.
+The package targets stage bbnix, Fen, and the curated font bundle automatically, so they need Nix and a BB10 sysroot (`BBNIX_SYSROOT`); bbnix/Fen builds are impure.
 
 ```sh
 export BBNIX_SYSROOT=/path/to/bbndk-linux
-make package-dev      # stage bbnix + fonts, build, package a dev-mode Term50.bar
+make package-dev      # stage bbnix + Fen + fonts, build, package a dev-mode Term50.bar
 make deploy           # package-dev, then install + launch on the device
 ```
 

@@ -8,15 +8,24 @@
   # `nix build --impure`.
   inputs = {
     bbnix.url = "github:acmiyaguchi/bbnix";
+    fen-blackberry = {
+      url = "github:acmiyaguchi/fen-blackberry";
+      flake = false;
+    };
     flake-utils.follows = "bbnix/flake-utils";
     nixpkgs.follows = "bbnix/nixpkgs";
   };
 
-  outputs = { self, bbnix, flake-utils, nixpkgs }:
+  outputs = { self, bbnix, fen-blackberry, flake-utils, nixpkgs }:
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
         iosevkaTerm = pkgs.iosevka-bin.override { variant = "SGr-IosevkaTerm"; };
+        fenBlackberrySrc = pkgs.runCommand "fen-blackberry-src" { } ''
+          mkdir -p "$out"
+          cp -R ${fen-blackberry}/. "$out/"
+          chmod -R u+w "$out"
+        '';
         term50FontsBundle = pkgs.runCommand "term50-fonts-bundle" {
           nativeBuildInputs = [ (pkgs.python3.withPackages (ps: [ ps.fonttools ])) ];
         } ''
@@ -72,6 +81,7 @@ EOF
         bbnix-bundle-ssh     = bbnix.packages.${system}.deploy-bundle-ssh;
         bbnix-bundle-full    = bbnix.packages.${system}.deploy-bundle-full;
 
+        fen-blackberry-src = fenBlackberrySrc;
         term50-fonts-bundle = term50FontsBundle;
       };
     });
