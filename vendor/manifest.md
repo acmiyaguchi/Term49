@@ -8,6 +8,7 @@ This file records the dependency pins used by the top-level Term50 build.
 | --- | --- | --- | --- |
 | Ghostty | `vendor/libghostty-vt/vendor/ghostty` | `https://github.com/ghostty-org/ghostty.git` | `cf24a4856b24f7b381c13f1491421e84b3bf802a` |
 | Lua | `vendor/lua` | `https://github.com/lua/lua.git` | `6e22fedb74cf0c9b6656e9fce8b7331db847c605` (`v5.4.8`) |
+| qrcodegen | `vendor/qrcodegen` | `https://github.com/nayuki/QR-Code-generator` (Project Nayuki, MIT) | vendored C sources (`qrcodegen.c`/`qrcodegen.h`) |
 
 Initialize/update the source pins with:
 
@@ -21,6 +22,7 @@ git submodule update --init --recursive
 Term50
 ├── libghostty-vt.a       built from vendor/libghostty-vt/ on demand
 ├── liblua.a              built from vendor/lua/ by the Makefile
+├── qrcodegen.o           built from vendor/qrcodegen/ by the Makefile
 └── BB10 NDK libs         libscreen, libbps, libfreetype, libicui18n,
                           libicuuc, libclipboard (ship with the NDK)
 ```

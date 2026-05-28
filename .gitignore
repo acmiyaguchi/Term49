@@ -5,6 +5,8 @@ src/*.o
 src/*.d
 tools/**/*.o
 tools/**/*.d
+vendor/qrcodegen/*.o
+vendor/qrcodegen/*.d
 
 # Device credentials for `make deploy`/`connect` (see .env.example).
 .env

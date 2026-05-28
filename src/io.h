@@ -37,4 +37,8 @@ ssize_t io_read_master_raw(int fd, char *buf, size_t nbytes);
 ssize_t io_read_utf8_string(const char* utf8, size_t utf8len, UChar* buf);
 void io_paste_from_clipboard(int fd);
 
+/* Replace the system clipboard's text/plain payload with `n` bytes from
+ * `data`. Returns 0 on success, -1 on failure. NULL-safe. */
+int io_copy_to_clipboard(const char *data, size_t n);
+
 #endif /* IO_H_ */

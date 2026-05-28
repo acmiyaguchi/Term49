@@ -53,6 +53,7 @@
 #include "io.h"
 #include "ghostty_bridge.h"
 #include "control.h"
+#include "url_pick.h"
 
 static int exit_application = 0;
 
@@ -1255,6 +1256,22 @@ void toggle_vkeymod(int mod){
 	mark_screen_dirty(1);
 }
 
+/* Snapshot the layout state url_pick needs from main.c's locals. Both
+ * the dispatch case (enter) and the render pass build it from the same
+ * fields; one helper keeps them in sync. */
+static url_pick_layout_t current_url_pick_layout(void){
+	url_pick_layout_t l = {
+		.advance      = advance,
+		.text_height  = text_height,
+		.grid_top_pad = grid_top_pad,
+		.fb_w         = fb_w,
+		.fb_h         = fb_h,
+		.cols         = (uint16_t)cols,
+		.rows         = (uint16_t)rows,
+	};
+	return l;
+}
+
 /* The live modifier mask for chord matching, reconciling state that is
  * otherwise split across vmodifiers (ctrl/alt/shift bits), altsym_lock
  * (the symbol-layer alt), and the sym-menu state (no NDK KEYMOD_*, so we
@@ -1446,6 +1463,17 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_HELP_OVERLAY:
 			help_overlay_toggle();
 			return 1;
+		case TERM_BUILTIN_URL_PICK: {
+			session_t *s = app_active_session(app);
+			ghostty_bridge_t *bridge = session_bridge(s);
+			url_pick_layout_t layout = current_url_pick_layout();
+			if (url_pick_enter(bridge, &layout)) {
+				mark_screen_dirty(1);
+			} else {
+				platform_toast(g_platform, "No URLs on screen");
+			}
+			return 1;
+		}
 		default:
 			return 0;
 		}
@@ -2165,6 +2193,10 @@ void app_shutdown(void){
 	app_shutdown_state(g_app);
 	g_app = NULL;
 
+	/* Drop the URL picker's transient state (notably the QR bitmap) before
+	 * the renderer goes away. Idempotent and safe when inactive. */
+	url_pick_exit();
+
 	/* Order matters: free the renderer first so its glyph cache (which
 	 * borrows the font) drops before font_uninit closes the font. Then
 	 * tear down the font and the FreeType library, then the platform. */
@@ -2387,6 +2419,11 @@ static int render_ghostty(int force_full_repaint) {
 		if (hx < 0) { hx = 0; }
 		if (hy < 0) { hy = 0; }
 		renderer_draw_bitmap(renderer, hx, hy, help_overlay_surface);
+	}
+
+	if (url_pick_active()) {
+		url_pick_layout_t layout = current_url_pick_layout();
+		url_pick_render(renderer, &layout);
 	}
 
 	ghostty_bridge_finish_frame(bridge);
@@ -2905,6 +2942,19 @@ int app_handle_event(app_t *app, const event_t *event) {
 		mark_screen_dirty(1);
 		return 1;
 	case TERM_EVENT_KEY:
+		/* URL picker is fully modal: consume every pressed key (including
+		 * repeats) before scroll-to-bottom or tab-overlay side effects, so
+		 * a hint key viewed from scrollback can't snap the viewport while
+		 * labels still point at the scrolled grid. Releases pass through
+		 * to app_handle_key, which already drops them. */
+		if (url_pick_active() && event->as.key.pressed) {
+			url_pick_handle_key(event->as.key.sym,
+			                    event->as.key.modifiers,
+			                    event->as.key.repeat,
+			                    g_platform);
+			mark_screen_dirty(1);
+			return 1;
+		}
 		if (event->as.key.pressed) {
 			/* Snap viewport to live bottom so the keystroke isn't typed into history. */
 			ghostty_bridge_scroll_to_bottom(session_bridge(app_active_session(app)));
@@ -2917,6 +2967,13 @@ int app_handle_event(app_t *app, const event_t *event) {
 		app_handle_key(app, &event->as.key);
 		return 1;
 	case TERM_EVENT_TOUCH_DOWN: {
+		/* URL picker eats taps too: a tap acts as Esc rather than letting
+		 * the metamode/tab/symmenu hitboxes fire under the modal. */
+		if (url_pick_active()) {
+			url_pick_exit();
+			mark_screen_dirty(1);
+			return 1;
+		}
 		session_t *origin = app_active_session(app);
 		ghostty_bridge_t *bridge = session_bridge(origin);
 		drag_reset();
@@ -2945,6 +3002,9 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_MOVE: {
+		if (url_pick_active()) {
+			return 1;
+		}
 		unsigned origin_idx;
 		int y = event->as.touch.y;
 		int x = event->as.touch.x;
@@ -3007,6 +3067,9 @@ int app_handle_event(app_t *app, const event_t *event) {
 		return 1;
 	}
 	case TERM_EVENT_TOUCH_UP:
+		if (url_pick_active()) {
+			return 1;
+		}
 		if (g_drag.mode == DRAG_ARROW) {
 			/* End the pad: a held gesture, not a tap, so no keyboard. Restore
 			 * the idle pump timeout that arming dropped. */

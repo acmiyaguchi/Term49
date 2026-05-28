@@ -21,6 +21,14 @@ GHOSTTY_H     := $(GHOSTTY_BUILD)/include/ghostty/vt.h
 INCLUDE += -I$(GHOSTTY_BUILD)/include
 LIBS += $(GHOSTTY_A)
 
+# Vendored Nayuki QR-Code-generator (MIT). Compiled WITHOUT Term50's app
+# DEFINES so the third-party source builds as upstream intended; the URL
+# picker pulls it in via src/url_pick.c.
+QR_DIR  := vendor/qrcodegen
+QR_SRC  := $(QR_DIR)/qrcodegen.c
+QR_OBJS := $(QR_SRC:.c=.o)
+INCLUDE += -I$(QR_DIR)
+
 # Term50 embeds Lua 5.4 (vendored, statically linked) as its config language
 # and scripting runtime. Static archive => no new .so / bar-descriptor asset.
 # Sources live at the lua/lua repo root; exclude the interpreter main (lua.c),
@@ -88,9 +96,9 @@ $(GHOSTTY_A) $(GHOSTTY_H):
 
 $(BINARY): $(BINARY_PATH)
 
-$(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(LUA_A) $(OBJS)
+$(BINARY_PATH): $(GHOSTTY_A) $(GHOSTTY_H) $(LUA_A) $(OBJS) $(QR_OBJS)
 	mkdir -p $(ASSET)
-	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(LIBS) -o $(BINARY_PATH)
+	$(CC) $(CFLAGS) $(LIBPATHS) $(LDOPTS) $(OBJS) $(QR_OBJS) $(LIBS) -o $(BINARY_PATH)
 
 # Client objects: no app DEFINES, but -Isrc so they find control_proto.h.
 $(CTL_DIR)/%.ctl.o: $(CTL_DIR)/%.c
@@ -109,6 +117,10 @@ $(CTL_PATH): $(CTL_OBJS)
 $(LUA_DIR)/%.o: $(LUA_DIR)/%.c
 	$(CC) $(CFLAGS) $(DEPFLAGS) -DLUA_USE_POSIX -c $< -o $@
 
+# Same exemption for the vendored QR encoder. Pure C, no app defines.
+$(QR_DIR)/%.o: $(QR_DIR)/%.c
+	$(CC) $(CFLAGS) $(DEPFLAGS) -c $< -o $@
+
 $(LUA_A): $(LUA_OBJS)
 	mkdir -p $(dir $@)
 	$(LUA_AR) rcs $@ $(LUA_OBJS)
@@ -118,13 +130,14 @@ $(LUA_A): $(LUA_OBJS)
 
 # Auto-generated header dependencies (absent on a clean tree -> the leading
 # - makes the include a no-op until the first build writes them).
-DEPS := $(OBJS:.o=.d) $(CTL_OBJS:.o=.d) $(LUA_OBJS:.o=.d)
+DEPS := $(OBJS:.o=.d) $(CTL_OBJS:.o=.d) $(LUA_OBJS:.o=.d) $(QR_OBJS:.o=.d)
 -include $(DEPS)
 
 clean:
 	@rm -fv src/*.o src/*.ctl.o $(CTL_DIR)/*.ctl.o
 	@rm -fv $(DEPS)
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
+	@rm -fv $(QR_OBJS)
 	@rm -rfv Device-Debug Device-Release
 	@rm -rfv result-fonts
 	@rm -fv $(BINARY).bar
