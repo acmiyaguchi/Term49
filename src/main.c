@@ -54,6 +54,7 @@
 #include "ghostty_bridge.h"
 #include "control.h"
 #include "url_pick.h"
+#include "bbnix_env.h"
 
 static int exit_application = 0;
 
@@ -2606,56 +2607,25 @@ static int bbnix_subpath(char *buf, size_t cap, const char *root,
 	return access(buf, mode) == 0;
 }
 
-/* Wire PATH / LD_LIBRARY_PATH / TERMINFO for the bbnix userland (see bbnix
- * AGENTS.md). bbnix is a required dependency, but this stays defensive: if the
- * root is somehow absent it leaves the environment untouched. When bbnix ships
- * zsh, its absolute path is written into `shell` so the caller execs it as the
- * login shell (falling back to /bin/sh only if that exec fails). */
+/* Wire the bbnix userland for the spawned shell: resolve the bundle root,
+ * apply the activation manifest at <root>/etc/bbnix-env (the bundle's
+ * published contract: PATH/LD_LIBRARY_PATH prepends, TERMINFO, LC_ALL/
+ * BBNIX_CODESET, TMUX_TMPDIR, the SSL_* trust knobs), and -- if bbnix ships
+ * a zsh -- write its absolute path into `shell` for the caller to exec as
+ * the login shell. The manifest is the source of truth; new keys come along
+ * by re-staging the bundle, no C edits. Stays defensive: a missing root or
+ * missing manifest leaves the env untouched (the parser logs to stderr). */
 static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	char root[1024];
 	char buf[1024];
-	const char *home;
 
 	if(!resolve_bbnix_root(root, sizeof(root))){ return; }
 
-	env_prepend_subdir("PATH", root, "bin");
-	/* bbnix binaries link from-source .so's the device lacks, and the device
-	 * ldqnx does not expand $ORIGIN, so the libs are found via LD_LIBRARY_PATH
-	 * rather than RUNPATH. */
-	env_prepend_subdir("LD_LIBRARY_PATH", root, "lib");
-
-	/* Prefer bbnix's own terminfo DB if it ships one; otherwise keep the
-	 * bundled TERMINFO that main() already exported. */
-	if(bbnix_subpath(buf, sizeof(buf), root, "terminfo", 0, 1)){
-		setenv("TERMINFO", buf, 1);
-	}
-
-	/* tmux's nl_langinfo path is locale-gated; set if-absent so a user
-	 * .profile can still override. Harmless for zsh / ssh / mosh. */
-	setenv("LC_ALL", "C", 0);
-	setenv("BBNIX_CODESET", "UTF-8", 0);
-
-	/* tmux mkdir()s $TMUX_TMPDIR/tmux-<uid> for its socket; the default
-	 * $TMPDIR is /tmp -> /dev/shmem on QNX, a flat shm namespace where
-	 * subdir creation fails with ENOENT ("couldn't create directory
-	 * /dev/shmem/tmux-N"). Point it at the persistent HOME, a real writable
-	 * dir, so the socket dir works. if-absent so a user can override. */
-	home = getenv("HOME");
-	if(home != NULL && home[0] != '\0'){
-		setenv("TMUX_TMPDIR", home, 0);
-	}
-
-	/* HTTPS trust for bundled curl/git/openssl. The ssh/full bundle ships a
-	 * relocatable CA bundle; point the common env vars at it (if-absent, only
-	 * when present) instead of relying on curl's baked device default path. */
-	if(bbnix_subpath(buf, sizeof(buf), root, "ssl/cacert.pem", R_OK, 0)){
-		setenv("SSL_CERT_FILE", buf, 0);
-		setenv("CURL_CA_BUNDLE", buf, 0);
-		setenv("GIT_SSL_CAINFO", buf, 0);
-	}
-	if(bbnix_subpath(buf, sizeof(buf), root, "etc/ssl/certs", 0, 1)){
-		setenv("SSL_CERT_DIR", buf, 0);
-	}
+	/* If the manifest is missing the bundle is partial -- LD_LIBRARY_PATH /
+	 * TERMINFO never got set, so launching bbnix's zsh would either fail to
+	 * find its .so's or come up with a broken terminfo. Leave `shell` empty
+	 * and let the caller fall back to /bin/sh. */
+	if(bbnix_apply_env_manifest(root) != 0){ return; }
 
 	if(shell != NULL
 	   && bbnix_subpath(buf, sizeof(buf), root, "bin/zsh", X_OK, 0)){
@@ -2674,8 +2644,9 @@ static void try_shell(const char *path, const char *argv0) {
 }
 
 static void terminal_setenv(void) {
-	/* terminfo is located via $TERMINFO (an absolute path to the bundled
-	 * database, exported in main() before fork). */
+	/* TERM gates which capabilities tmux/zsh/vim believe they have. Force it
+	 * to xterm-256color; setup_bbnix_env runs after this and applies the
+	 * manifest, which points TERMINFO at the bundled bbnix terminfo DB. */
 	setenv("TERM", "xterm-256color", 1);
 	if(system("/base/bin/stty +sane erase=^H") == -1){
 		PRINT(stderr, "Error invoking system(stty..)\n");
