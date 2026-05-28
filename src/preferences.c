@@ -59,7 +59,7 @@ static const int PREFS_VERSION = 10;
 #define DEFAULT_TTY_ENCODING "UTF-8"
 /* One metamode table; `sticky` entries keep metamode armed after firing (the
  * former metamode_sticky_keys), the rest exit it (former keys + func_keys). */
-#define DEFAULT_METAMODE_KEYS_LEN 19
+#define DEFAULT_METAMODE_KEYS_LEN 20
 #define DEFAULT_METAMODE_KEYS (keymap_t[]){{'e', "\x1b"}, \
                                            {'t', "\x09"}, \
                                            {'a', "alt_down"}, \
@@ -75,6 +75,7 @@ static const int PREFS_VERSION = 10;
                                            {'p', "tab_prev"}, \
                                            {'x', "tab_close"}, \
                                            {'?', "help_overlay"}, \
+                                           {'u', "url_pick"}, \
                                            {.from='k', .to="kcuu1", .sticky=1}, \
                                            {.from='j', .to="kcud1", .sticky=1}, \
                                            {.from='l', .to="kcuf1", .sticky=1}, \
@@ -884,6 +885,10 @@ static int luaC_open_url(lua_State *L) {
 	lua_pushboolean(L, app_run_action_string(s));
 	return 1;
 }
+static int luaC_url_pick(lua_State *L) {
+	lua_pushboolean(L, app_run_action_string("url_pick"));
+	return 1;
+}
 static int luaC_keyboard_show(lua_State *L) {
 	lua_pushboolean(L, app_run_action_string("keyboard_show"));
 	return 1;
@@ -899,6 +904,7 @@ static const luaL_Reg TERM_LUA_LIB[] = {
 	{ "toast",         luaC_toast },
 	{ "notify",        luaC_notify },
 	{ "open_url",      luaC_open_url },
+	{ "url_pick",      luaC_url_pick },
 	{ "keyboard_show", luaC_keyboard_show },
 	{ "keyboard_hide", luaC_keyboard_hide },
 	{ NULL, NULL }

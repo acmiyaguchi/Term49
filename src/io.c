@@ -163,3 +163,15 @@ void io_paste_from_clipboard(int fd){
     }
   }
 }
+
+int io_copy_to_clipboard(const char *data, size_t n){
+  if(data == NULL || n == 0){
+    return -1;
+  }
+  /* set_clipboard_data() appends a new format alongside existing ones;
+   * empty_clipboard() first so the new text/plain payload is what the
+   * next paste returns (no stale html/uri formats shadowing it). */
+  empty_clipboard();
+  int written = set_clipboard_data("text/plain", n, (char*)data);
+  return written == (int)n ? 0 : -1;
+}

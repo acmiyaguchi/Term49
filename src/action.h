@@ -54,6 +54,9 @@ typedef enum builtin_action {
 	TERM_BUILTIN_METAMODE_TOGGLE,
 	/* toggle the on-screen keybinding help overlay. */
 	TERM_BUILTIN_HELP_OVERLAY,
+	/* enter the foot-style URL picker over the active session's
+	 * visible grid; no-op when nothing matches. */
+	TERM_BUILTIN_URL_PICK,
 } builtin_action_t;
 
 typedef struct action {

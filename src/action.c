@@ -76,6 +76,10 @@ static int parse_builtin(const char *value, builtin_action_t *out) {
 		*out = TERM_BUILTIN_HELP_OVERLAY;
 		return 1;
 	}
+	if (strcmp(value, "url_pick") == 0) {
+		*out = TERM_BUILTIN_URL_PICK;
+		return 1;
+	}
 	if (strcmp(value, "tab_new") == 0) {
 		*out = TERM_BUILTIN_TAB_NEW;
 		return 1;
