@@ -31,8 +31,12 @@ prefs_version = 9
 -- Scalars
 -- ----------------------------------------------------------------------------
 
--- Path to the TrueType font used for the grid. Any monospaced TTF works.
-font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
+-- Path to the FreeType-loadable font used for the grid.
+-- $SANDBOX is expanded by Term50 when it opens the font.
+-- Bundled alternates live under $SANDBOX/app/native/fonts/:
+--   IosevkaTerm-Regular.ttf, JetBrainsMono-Regular.ttf,
+--   SourceCodePro-Regular.otf, UbuntuMono-R.ttf
+font_path = "$SANDBOX/app/native/fonts/IosevkaTerm-Regular.ttf"
 
 -- Font size in points. metamode + i / o / z adjust this live (see func keys).
 font_size = 24

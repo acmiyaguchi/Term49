@@ -518,3 +518,17 @@ or is available from, each respective project.
 Binaries compiled with the bbnix GCC cross-toolchain carry the GCC Runtime
 Library Exception and are not made GPL merely by being built with GCC; see the
 bbnix NOTICE for toolchain provenance.
+
+
+================================================================================
+Optional bundled terminal fonts
+================================================================================
+
+BARs built with `make package-dev` / `make package-release` stage a small font
+bundle from pinned nixpkgs packages under app/native/fonts. The generated bundle
+includes FONT_SOURCES.txt and license texts under app/native/fonts/LICENSES.
+
+  - Iosevka Term Regular      — SIL Open Font License 1.1.
+  - JetBrains Mono Regular    — SIL Open Font License 1.1.
+  - Source Code Pro Regular   — SIL Open Font License 1.1.
+  - Ubuntu Mono Regular       — Ubuntu Font License 1.0.

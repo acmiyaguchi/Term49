@@ -13,5 +13,12 @@ tools/**/*.d
 # bar-descriptor asset path always exists.
 share/bbnix/*
 !share/bbnix/.keep
+
+# Font bundle staged by `make stage-fonts`; keep only the placeholder so the
+# bar-descriptor asset path always exists.
+share/fonts/*
+!share/fonts/.keep
+
 result
 result-bbnix
+result-fonts

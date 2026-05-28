@@ -112,10 +112,15 @@ back to the file.
 Each of the preference options and their
 default is shown below.
 
-font_path = "/usr/fonts/font_repository/monotype/andalemo.ttf"
--- The path to the Unicode TTF font file
--- to use in the shell. This can be an
--- absolute or relative path.
+font_path = "$SANDBOX/app/native/fonts/IosevkaTerm-Regular.ttf"
+-- The path to the Unicode font file to
+-- use in the shell. This can be an
+-- absolute or relative path. $SANDBOX is
+-- expanded by Term50 when it opens the
+-- font. Bundled fonts are in
+-- $SANDBOX/app/native/fonts/: IosevkaTerm,
+-- JetBrainsMono, SourceCodePro, and
+-- UbuntuMono.
 
 font_size = 16
 -- The font size for the shell. Term50

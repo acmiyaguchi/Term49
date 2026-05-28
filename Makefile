@@ -77,7 +77,7 @@ CTL_LIBS := -lsocket -lm
 check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in .env before deploying' >&2; exit 1; }
 
 .PHONY: all clean icons libghostty-vt package-dev package-release deploy connect \
-        bbnix-bundle stage-bbnix clean-bbnix
+        bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts
 
 all: $(BINARY_PATH) $(CTL_PATH)
 
@@ -126,6 +126,7 @@ clean:
 	@rm -fv $(DEPS)
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
 	@rm -rfv Device-Debug Device-Release
+	@rm -rfv result-fonts
 	@rm -fv $(BINARY).bar
 
 icons:
@@ -133,6 +134,7 @@ icons:
 
 package-dev: icons
 	$(MAKE) stage-bbnix
+	$(MAKE) stage-fonts
 	$(MAKE) ASSET=Device-Debug all
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
 
@@ -151,6 +153,7 @@ connect:
 # this unsigned bar is sideloaded (Sachesi/DBL) rather than signed.
 package-release: icons
 	$(MAKE) stage-bbnix
+	$(MAKE) stage-fonts
 	$(MAKE) ASSET=Device-Release all
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release
 
@@ -177,6 +180,26 @@ stage-bbnix: bbnix-bundle
 	chmod -R u+w share/bbnix
 	touch share/bbnix/.keep
 
+# --- Optional bundled terminal fonts ----------------------------------------
+# Fonts are sourced from pinned nixpkgs packages and staged into share/fonts,
+# which bar-descriptor.xml packages to app/native/fonts. Keep the generated
+# payload out of git; only share/fonts/.keep is tracked.
+TERM50_FONTS_BUNDLE ?= term50-fonts-bundle
+
+fonts-bundle:
+	nix build .#$(TERM50_FONTS_BUNDLE) -o result-fonts
+
+stage-fonts: fonts-bundle
+	rm -rf share/fonts
+	mkdir -p share/fonts
+	cp -RL result-fonts/. share/fonts/
+	chmod -R u+w share/fonts
+	touch share/fonts/.keep
+
 clean-bbnix:
 	rm -rf share/bbnix result-bbnix
 	mkdir -p share/bbnix && touch share/bbnix/.keep
+
+clean-fonts:
+	rm -rf share/fonts result-fonts
+	mkdir -p share/fonts && touch share/fonts/.keep

@@ -1,6 +1,7 @@
 #include "font.h"
 
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -34,9 +35,21 @@ void font_library_quit(void) {
 
 font_t *font_open(const char *path, int pt_size) {
 	if (!g_library_initialized || !path || pt_size <= 0) return NULL;
+	static const char sandbox_prefix[] = "$SANDBOX/";
+	const size_t sandbox_prefix_len = sizeof(sandbox_prefix) - 1;
+	char expanded[1024];
+	const char *open_path = path;
+	if (strncmp(path, sandbox_prefix, sandbox_prefix_len) == 0) {
+		const char *sandbox = getenv("SANDBOX");
+		if (sandbox == NULL || sandbox[0] == '\0') return NULL;
+		int n = snprintf(expanded, sizeof(expanded), "%s/%s",
+		                 sandbox, path + sandbox_prefix_len);
+		if (n < 0 || (size_t)n >= sizeof(expanded)) return NULL;
+		open_path = expanded;
+	}
 	font_t *f = calloc(1, sizeof(*f));
 	if (!f) return NULL;
-	if (FT_New_Face(g_library, path, 0, &f->face) != 0) {
+	if (FT_New_Face(g_library, open_path, 0, &f->face) != 0) {
 		free(f);
 		return NULL;
 	}

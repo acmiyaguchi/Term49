@@ -25,7 +25,8 @@
 #include "types.h"
 
 #define PREFS_LUA_FILE_PATH APP_CONFIG_BASENAME
-#define TERM_DEFAULT_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
+#define TERM_DEFAULT_FONT_PATH "$SANDBOX/app/native/fonts/IosevkaTerm-Regular.ttf"
+#define TERM_FALLBACK_FONT_PATH "/usr/fonts/font_repository/monotype/andalemo.ttf"
 #define TERM_DEFAULT_FONT_SIZE 24
 
 int preferences_guess_best_font_size(pref_t *prefs, int target_cols);
