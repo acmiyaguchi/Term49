@@ -1521,9 +1521,10 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	      "-- \"sym\"; an empty/absent mods means no modifiers. label is shown\n"
 	      "-- in the help overlay (toggle a key bound to \"help_overlay\").\n"
 	      "--\n"
-	      "-- The two defaults below give the bare BlackBerry keyboard (no\n"
-	      "-- ctrl key) a Ctrl and an extra Meta: tap shift, then alt -> the\n"
-	      "-- next key is Ctrl+key; tap shift, then sym -> toggles metamode.\n"
+	      "-- The defaults below give the bare BlackBerry keyboard (no ctrl\n"
+	      "-- key) a Ctrl and an extra Meta, plus easy Tab: tap shift, then\n"
+	      "-- alt -> the next key is Ctrl+key; tap shift, then sym -> toggles\n"
+	      "-- metamode; alt+enter -> Tab.\n"
 	      "-- This table MERGES over the defaults too: unbind one with a record\n"
 	      "-- whose action is false, e.g. { key = \"alt\", mods = {\"shift\"},\n"
 	      "-- action = false }.\n", f);

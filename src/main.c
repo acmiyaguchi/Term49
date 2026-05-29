@@ -291,26 +291,31 @@ static void post_wake_event(void) {
 }
 
 
+/* Map a terminfo capability name to the keycode whose byte sequence we send.
+ * The set of names mirrors action.c's terminfo_caps[] (the canonical list used
+ * for config validation and help labels). Exact matches only: prefix matching
+ * would let "kf10".."kf12" resolve as "kf1" (F1) before reaching their own
+ * cases. Input is an already-validated cap name, so strcmp is sufficient. */
 int is_terminfo_keystrokes(const char* keystrokes){
 	if(keystrokes[0] == 'k'){
-		if(0 == strncmp(keystrokes, "kcub1", 5)){ return KEYCODE_LEFT; }
-		if(0 == strncmp(keystrokes, "kcud1", 5)){ return KEYCODE_DOWN; }
-		if(0 == strncmp(keystrokes, "kcuf1", 5)){ return KEYCODE_RIGHT; }
-		if(0 == strncmp(keystrokes, "kcuu1", 5)){ return KEYCODE_UP; }
-		if(0 == strncmp(keystrokes, "khome", 5)){ return KEYCODE_HOME; }
-		if(0 == strncmp(keystrokes, "kend", 4)){ return KEYCODE_END; }
-		if(0 == strncmp(keystrokes, "kf1", 3)){ return KEYCODE_F1; }
-		if(0 == strncmp(keystrokes, "kf2", 3)){ return KEYCODE_F2; }
-		if(0 == strncmp(keystrokes, "kf3", 3)){ return KEYCODE_F3; }
-		if(0 == strncmp(keystrokes, "kf4", 3)){ return KEYCODE_F4; }
-		if(0 == strncmp(keystrokes, "kf5", 3)){ return KEYCODE_F5; }
-		if(0 == strncmp(keystrokes, "kf6", 3)){ return KEYCODE_F6; }
-		if(0 == strncmp(keystrokes, "kf7", 3)){ return KEYCODE_F7; }
-		if(0 == strncmp(keystrokes, "kf8", 3)){ return KEYCODE_F8; }
-		if(0 == strncmp(keystrokes, "kf9", 3)){ return KEYCODE_F9; }
-		if(0 == strncmp(keystrokes, "kf10", 4)){ return KEYCODE_F10; }
-		if(0 == strncmp(keystrokes, "kf11", 4)){ return KEYCODE_F11; }
-		if(0 == strncmp(keystrokes, "kf12", 4)){ return KEYCODE_F12; }
+		if(0 == strcmp(keystrokes, "kcub1")){ return KEYCODE_LEFT; }
+		if(0 == strcmp(keystrokes, "kcud1")){ return KEYCODE_DOWN; }
+		if(0 == strcmp(keystrokes, "kcuf1")){ return KEYCODE_RIGHT; }
+		if(0 == strcmp(keystrokes, "kcuu1")){ return KEYCODE_UP; }
+		if(0 == strcmp(keystrokes, "khome")){ return KEYCODE_HOME; }
+		if(0 == strcmp(keystrokes, "kend")){ return KEYCODE_END; }
+		if(0 == strcmp(keystrokes, "kf1")){ return KEYCODE_F1; }
+		if(0 == strcmp(keystrokes, "kf2")){ return KEYCODE_F2; }
+		if(0 == strcmp(keystrokes, "kf3")){ return KEYCODE_F3; }
+		if(0 == strcmp(keystrokes, "kf4")){ return KEYCODE_F4; }
+		if(0 == strcmp(keystrokes, "kf5")){ return KEYCODE_F5; }
+		if(0 == strcmp(keystrokes, "kf6")){ return KEYCODE_F6; }
+		if(0 == strcmp(keystrokes, "kf7")){ return KEYCODE_F7; }
+		if(0 == strcmp(keystrokes, "kf8")){ return KEYCODE_F8; }
+		if(0 == strcmp(keystrokes, "kf9")){ return KEYCODE_F9; }
+		if(0 == strcmp(keystrokes, "kf10")){ return KEYCODE_F10; }
+		if(0 == strcmp(keystrokes, "kf11")){ return KEYCODE_F11; }
+		if(0 == strcmp(keystrokes, "kf12")){ return KEYCODE_F12; }
 	}
 	return 0;
 }
