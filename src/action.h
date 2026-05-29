@@ -81,4 +81,8 @@ typedef struct action {
 int action_parse(const char *value, action_t *out);
 int action_is_builtin(const action_t *action, builtin_action_t id);
 
+/* The help-overlay label for a terminfo capability name (e.g. "kcuu1" ->
+ * "Up"), or NULL if `value` is not a capability Term50 binds. */
+const char *terminfo_display_name(const char *value);
+
 #endif /* ACTION_H_ */

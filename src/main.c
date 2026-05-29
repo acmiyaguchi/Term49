@@ -586,20 +586,10 @@ static void help_overlay_draw_line(bitmap_t *dst, font_t *f, int adv,
  * human labels (kcuu1 -> Up), and control chars become ESC/TAB/^X, so the
  * metamode bindings read cleanly. */
 static void keymap_to_display(const char *to, char *buf, size_t cap){
-	static const struct { const char *cap; const char *name; } tinames[] = {
-		{"kcuu1","Up"},   {"kcud1","Down"}, {"kcuf1","Right"}, {"kcub1","Left"},
-		{"khome","Home"}, {"kend","End"},
-		{"kf1","F1"},   {"kf2","F2"},   {"kf3","F3"},   {"kf4","F4"},
-		{"kf5","F5"},   {"kf6","F6"},   {"kf7","F7"},   {"kf8","F8"},
-		{"kf9","F9"},   {"kf10","F10"}, {"kf11","F11"}, {"kf12","F12"},
-	};
-	if (to) {
-		for (size_t i = 0; i < sizeof(tinames)/sizeof(tinames[0]); ++i) {
-			if (strcmp(to, tinames[i].cap) == 0) {
-				snprintf(buf, cap, "%s", tinames[i].name);
-				return;
-			}
-		}
+	const char *label = terminfo_display_name(to);
+	if (label != NULL) {
+		snprintf(buf, cap, "%s", label);
+		return;
 	}
 	size_t o = 0;
 	for (const char *p = to; p && *p && o + 4 < cap; ++p){
