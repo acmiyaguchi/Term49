@@ -59,11 +59,8 @@ static const int PREFS_VERSION = 10;
 #define DEFAULT_TTY_ENCODING "UTF-8"
 /* One metamode table; `sticky` entries keep metamode armed after firing (the
  * former metamode_sticky_keys), the rest exit it (former keys + func_keys). */
-#define DEFAULT_METAMODE_KEYS_LEN 20
+#define DEFAULT_METAMODE_KEYS_LEN 17
 #define DEFAULT_METAMODE_KEYS (keymap_t[]){{'e', "\x1b"}, \
-                                           {'t', "\x09"}, \
-                                           {'a', "alt_down"}, \
-                                           {'d', "ctrl_down"}, \
                                            {'s', "rescreen"}, \
                                            {'v', "paste_clipboard"}, \
                                            {'i', "font_size_increase"}, \
@@ -214,17 +211,32 @@ static int lua_get_table(lua_State *L, const char *key) {
  * -1) and *from/*to pointing into Lua strings owned by it (valid until
  * the caller pops the pair). On failure returns 0 with nothing left.
  * If `sticky` is non-NULL it receives the entry's optional `sticky`
- * boolean field (default 0); pass NULL when the flag is irrelevant. */
+ * boolean field (default 0); pass NULL when the flag is irrelevant.
+ * A boolean false in the `to` slot is an unbind marker (it removes the
+ * matching default during a merge); it is accepted as valid ONLY when
+ * `unbind` is non-NULL (the keymap merge opts in), in which case *unbind
+ * receives 1 and *to is NULL. Callers that pass unbind == NULL (e.g. the
+ * positional symmenu grid, which is replaced wholesale, not merged)
+ * reject false as malformed. A boolean false is never a valid action, so
+ * it cannot collide with a real binding. */
 static int lua_pair_at(lua_State *L, int i, const char **from, const char **to,
-                       int *sticky) {
+                       int *sticky, int *unbind) {
 	int ok = 0;
+	if (unbind) { *unbind = 0; }
 	lua_rawgeti(L, -1, (lua_Integer)i);          /* pair */
 	if (lua_type(L, -1) == LUA_TTABLE) {
 		lua_rawgeti(L, -1, 1);
 		lua_rawgeti(L, -2, 2);
 		const char *f = lua_type(L, -2) == LUA_TSTRING ? lua_tostring(L, -2) : NULL;
+		int is_unbind = (unbind != NULL)
+		             && lua_type(L, -1) == LUA_TBOOLEAN && !lua_toboolean(L, -1);
 		const char *t = lua_type(L, -1) == LUA_TSTRING ? lua_tostring(L, -1) : NULL;
-		if (f && f[0] && t) { *from = f; *to = t; ok = 1; }
+		if (f && f[0] && (t || is_unbind)) {
+			*from = f;
+			*to = t;                     /* NULL when unbind */
+			if (unbind) { *unbind = is_unbind; }
+			ok = 1;
+		}
 		lua_pop(L, 2);                       /* pop the two field values */
 		if (ok && sticky != NULL) {
 			lua_getfield(L, -1, "sticky");
@@ -242,11 +254,13 @@ static int lua_pair_at(lua_State *L, int i, const char **from, const char **to,
  * {from,to} string pairs. STACK: net zero -- the table stays at -1 in
  * every path (lua_pair_at pops what it pushed; we pop each validated
  * pair). */
-static int lua_pairs_valid(lua_State *L) {
+static int lua_pairs_valid(lua_State *L, int allow_unbind) {
+	int unbind;
 	size_t n = (size_t)lua_rawlen(L, -1);
 	for (size_t i = 1; i <= n; ++i) {
 		const char *f, *t;
-		if (!lua_pair_at(L, (int)i, &f, &t, NULL)) {
+		if (!lua_pair_at(L, (int)i, &f, &t, NULL,
+		                 allow_unbind ? &unbind : NULL)) {
 			return 0;
 		}
 		lua_pop(L, 1);                       /* pop validated pair */
@@ -254,29 +268,61 @@ static int lua_pairs_valid(lua_State *L) {
 	return 1;
 }
 
-/* Build a sentinel-terminated keymap_t[] from the table-of-pairs at
- * stack top. Validate-all-then-build, so one bad entry rejects the
- * whole table with no partial allocation. Returns NULL if any pair is
- * invalid (no log -- the caller reports with its key name); *out_n is
- * the entry count on success. STACK: the table stays at -1 in every
- * path; the caller owns and pops it. */
-static keymap_t *lua_keymap_from_top(lua_State *L, size_t *out_n) {
-	if (!lua_pairs_valid(L)) {
+/* Build a sentinel-terminated keymap_t[] by merging the table-of-pairs
+ * at stack top OVER the compiled defaults, keyed by `from`: a user entry
+ * with a new `from` is appended, one matching a default overrides it in
+ * place (keeping default order), and an unbind entry ({ "x", false })
+ * removes the matching default. Defaults a user never mentions survive,
+ * so new defaults added in a later release reach an existing config.
+ * Validate-all-then-build, so one bad entry rejects the whole table with
+ * no partial allocation -- returns NULL (no log; the caller reports with
+ * its key name). Assumes `from` is unique within `def` (it is for every
+ * shipped table). STACK: the table stays at -1; the caller owns/pops it. */
+static keymap_t *lua_keymap_merge(lua_State *L, const keymap_t *def,
+                                  size_t def_len) {
+	if (!lua_pairs_valid(L, 1)) {        /* 1: accept { "x", false } unbind */
 		return NULL;
 	}
-	size_t n = (size_t)lua_rawlen(L, -1);
-	keymap_t *result = calloc(n + 1, sizeof(keymap_t));
-	result[n] = (keymap_t){0, NULL};
-	for (size_t i = 1; i <= n; ++i) {
+	size_t un = (size_t)lua_rawlen(L, -1);
+	/* worst case: every default kept plus every user entry appended. */
+	keymap_t *result = calloc(def_len + un + 1, sizeof(keymap_t));
+	size_t n = 0;
+	for (size_t i = 0; i < def_len; ++i) {       /* seed with defaults */
+		result[n].from = def[i].from;
+		result[n].sticky = def[i].sticky;
+		keymap_set_to(&result[n], def[i].to);
+		++n;
+	}
+	for (size_t i = 1; i <= un; ++i) {           /* apply overrides in file order */
 		const char *f, *t;
-		int sticky = 0;
-		lua_pair_at(L, (int)i, &f, &t, &sticky); /* validated above => succeeds */
-		result[i - 1].from = f[0];
-		result[i - 1].sticky = sticky;
-		keymap_set_to(&result[i - 1], t);
+		int sticky = 0, unbind = 0;
+		lua_pair_at(L, (int)i, &f, &t, &sticky, &unbind); /* validated => succeeds */
+		char from = f[0];
+		size_t j;
+		int found = 0;
+		for (j = 0; j < n; ++j) {
+			if (result[j].from == from) { found = 1; break; }
+		}
+		if (unbind) {
+			if (found) {
+				free(result[j].to);
+				memmove(&result[j], &result[j + 1],
+				        (n - j - 1) * sizeof(keymap_t));
+				--n;
+			}
+		} else if (found) {
+			free(result[j].to);
+			result[j].sticky = sticky;
+			keymap_set_to(&result[j], t);
+		} else {
+			result[n].from = from;
+			result[n].sticky = sticky;
+			keymap_set_to(&result[n], t);
+			++n;
+		}
 		lua_pop(L, 1);                       /* pop the pair */
 	}
-	*out_n = n;
+	result[n] = (keymap_t){0, NULL};
 	return result;
 }
 
@@ -392,14 +438,13 @@ static hitbox_t *lua_create_hitbox(lua_State *L, const char *key, hitbox_t def) 
 static keymap_t *lua_create_keymap_array(lua_State *L, const char *key,
                                          size_t def_len, const keymap_t *def) {
 	if (lua_get_table(L, key)) {
-		size_t n;
-		keymap_t *result = lua_keymap_from_top(L, &n);
+		keymap_t *result = lua_keymap_merge(L, def, def_len);
 		lua_pop(L, 1);                       /* pop the global table */
 		if (result != NULL) {
 			return result;
 		}
+		fprintf(stderr, "invalid keymap list %s, using default\n", key);
 	}
-	fprintf(stderr, "invalid keymap list %s, using default\n", key);
 	return lua_keymap_defaults(def, def_len);
 }
 
@@ -420,14 +465,18 @@ typedef struct {
 	const char *label;
 } chord_def_t;
 
-/* Shipped defaults. The two bare-Q10 flagships only -- both live on
- * modifier *combinations* that are otherwise unused on-device, so they
- * shadow no plain key or TUI binding. External-keyboard chords (ctrl+key)
- * stay opt-in, emitted as commented examples by prefs_emit_lua. */
-#define DEFAULT_CHORD_BINDINGS_LEN 2
+/* Shipped defaults for the bare Q10 keyboard. Each lives on a modifier
+ * *combination* otherwise unused on-device, so they shadow no plain key or
+ * TUI binding: shift+alt and shift+sym give the missing Ctrl and an extra
+ * Meta, and alt+enter sends Tab. (Esc stays on metamode "e" -- backspace
+ * can't carry a chord because the OS remaps modifier+backspace to Delete.)
+ * External-keyboard chords (ctrl+key) stay opt-in, emitted as commented
+ * examples by prefs_emit_lua. */
+#define DEFAULT_CHORD_BINDINGS_LEN 3
 static const chord_def_t DEFAULT_CHORD_BINDINGS[] = {
 	{ KEYCODE_BB_ALT_KEY, KEYMOD_SHIFT, "ctrl_down",       "shift+alt = Ctrl" },
 	{ KEYCODE_BB_SYM_KEY, KEYMOD_SHIFT, "metamode_toggle", "shift+sym = Meta" },
+	{ KEYCODE_RETURN,     KEYMOD_ALT,   "\x09",            "alt+enter = Tab" },
 };
 
 /* spec string is owned by the chord (action fields point into it). */
@@ -472,8 +521,9 @@ static unsigned chord_mod_for(const char *name) {
  * out != NULL builds it (allocating spec/label); out == NULL validates
  * only. Returns 1 if the record is well-formed. STACK: net zero -- the
  * array stays at -1. */
-static int lua_chord_at(lua_State *L, int i, chord_t *out) {
+static int lua_chord_at(lua_State *L, int i, chord_t *out, int *unbind) {
 	int ok = 0;
+	if (unbind) { *unbind = 0; }
 	lua_rawgeti(L, -1, (lua_Integer)i);              /* record */
 	if (lua_type(L, -1) == LUA_TTABLE) {
 		lua_getfield(L, -1, "key");
@@ -482,6 +532,8 @@ static int lua_chord_at(lua_State *L, int i, chord_t *out) {
 		lua_pop(L, 1);                           /* key */
 
 		lua_getfield(L, -1, "action");           /* kept on stack */
+		int is_unbind = (lua_type(L, -1) == LUA_TBOOLEAN
+		                 && !lua_toboolean(L, -1));
 		const char *act = lua_type(L, -1) == LUA_TSTRING
 		                ? lua_tostring(L, -1) : NULL;
 
@@ -505,13 +557,19 @@ static int lua_chord_at(lua_State *L, int i, chord_t *out) {
 		const char *label = lua_type(L, -1) == LUA_TSTRING
 		                  ? lua_tostring(L, -1) : NULL;
 
-		if (keycode != 0 && act != NULL && act[0] && mods_ok) {
+		/* action = false unbinds the matching default; the (keycode,mods)
+		 * still identify which one, so they are required even to unbind. */
+		int act_ok = is_unbind || (act != NULL && act[0]);
+		if (keycode != 0 && act_ok && mods_ok) {
 			if (out != NULL) {
 				out->keycode = keycode;
 				out->mods = mods;
-				chord_set_action(out, act);
-				out->label = label ? strdup(label) : NULL;
+				if (!is_unbind) {
+					chord_set_action(out, act);
+					out->label = label ? strdup(label) : NULL;
+				}
 			}
+			if (unbind) { *unbind = is_unbind; }
 			ok = 1;
 		}
 		lua_pop(L, 3);                           /* label, mods, action */
@@ -532,20 +590,64 @@ static chord_t *chord_defaults(void) {
 	return result;                                   /* calloc => keycode==0 sentinel */
 }
 
+/* Merge the user's chord_bindings OVER DEFAULT_CHORD_BINDINGS, keyed by
+ * (keycode, mods): a record with a new trigger is appended, one matching
+ * a default overrides it in place, and `action = false` unbinds the
+ * matching default. Defaults the user never mentions survive (so new
+ * shipped chords reach an existing config). Validate-all-then-build:
+ * one malformed record rejects the whole table -> compiled defaults. */
 static chord_t *lua_create_chord_array(lua_State *L, const char *key) {
 	if (lua_get_table(L, key)) {
-		size_t n = (size_t)lua_rawlen(L, -1);
+		size_t un = (size_t)lua_rawlen(L, -1);
 		int valid = 1;
-		for (size_t i = 1; i <= n && valid; ++i) {
-			if (!lua_chord_at(L, (int)i, NULL)) {
+		for (size_t i = 1; i <= un && valid; ++i) {
+			if (!lua_chord_at(L, (int)i, NULL, NULL)) {
 				valid = 0;
 			}
 		}
 		if (valid) {
-			chord_t *result = calloc(n + 1, sizeof(chord_t));
-			for (size_t i = 1; i <= n; ++i) {
-				lua_chord_at(L, (int)i, &result[i - 1]);
+			/* worst case: every default kept plus every record appended. */
+			chord_t *result = calloc(DEFAULT_CHORD_BINDINGS_LEN + un + 1,
+			                         sizeof(chord_t));
+			size_t n = 0;
+			for (size_t i = 0; i < DEFAULT_CHORD_BINDINGS_LEN; ++i) {
+				const chord_def_t *d = &DEFAULT_CHORD_BINDINGS[i];
+				result[n].keycode = d->keycode;
+				result[n].mods = d->mods;
+				chord_set_action(&result[n], d->spec);
+				result[n].label = d->label ? strdup(d->label) : NULL;
+				++n;
 			}
+			for (size_t i = 1; i <= un; ++i) {
+				chord_t entry = {0};
+				int unbind = 0;
+				lua_chord_at(L, (int)i, &entry, &unbind);
+				size_t j;
+				int found = 0;
+				for (j = 0; j < n; ++j) {
+					if (result[j].keycode == entry.keycode
+					    && result[j].mods == entry.mods) {
+						found = 1;
+						break;
+					}
+				}
+				if (unbind) {
+					if (found) {
+						free(result[j].spec);
+						free(result[j].label);
+						memmove(&result[j], &result[j + 1],
+						        (n - j - 1) * sizeof(chord_t));
+						--n;
+					}
+				} else if (found) {
+					free(result[j].spec);
+					free(result[j].label);
+					result[j] = entry;   /* takes ownership of spec/label */
+				} else {
+					result[n++] = entry;
+				}
+			}
+			result[n] = (chord_t){0};
 			lua_pop(L, 1);                       /* pop the global table */
 			return result;
 		}
@@ -565,8 +667,8 @@ static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
 		int valid = 1;
 		for (int r = 1; r <= nrows && valid; ++r) {
 			lua_rawgeti(L, -1, r);               /* row */
-			if (lua_type(L, -1) != LUA_TTABLE || !lua_pairs_valid(L)) {
-				valid = 0;
+			if (lua_type(L, -1) != LUA_TTABLE || !lua_pairs_valid(L, 0)) {
+				valid = 0;                   /* 0: symmenu is replaced, no unbind */
 			}
 			lua_pop(L, 1);                        /* pop the row */
 		}
@@ -590,7 +692,7 @@ static symmenu_t *lua_create_symmenu(lua_State *L, const char *key,
 				menu->keys[r][col_len].map = NULL;
 				for (int c = 0; c < col_len; ++c) {
 					const char *f, *t;
-					lua_pair_at(L, c + 1, &f, &t, NULL); /* valid => succeeds */
+					lua_pair_at(L, c + 1, &f, &t, NULL, NULL); /* valid => succeeds */
 					menu->entries[entry_idx].from = f[0];
 					keymap_set_to(&menu->entries[entry_idx], t);
 					lua_pop(L, 1);           /* pop the pair */
@@ -767,6 +869,15 @@ static void lua_read_scalars(lua_State *L, pref_t *prefs) {
  * defaults of the old libconfig path exactly. */
 static void prefs_build_from_lua(lua_State *L, pref_t *prefs) {
 	lua_read_scalars(L, prefs);
+
+	/* The version the file declares (0 if absent/non-numeric), kept so
+	 * the startup path can detect a config that predates the current
+	 * defaults and surface the newly-added/changed bindings (see
+	 * prefs_config_outdated). NOT the running code version. */
+	lua_getglobal(L, "prefs_version");
+	prefs->prefs_version = lua_type(L, -1) == LUA_TNUMBER
+	                     ? (int)lua_tointeger(L, -1) : 0;
+	lua_pop(L, 1);
 
 	prefs->text_color = lua_create_color(L, "text_color", DEFAULT_TEXT_COLOR);
 	prefs->background_color = lua_create_color(L, "background_color", DEFAULT_BACKGROUND_COLOR);
@@ -993,8 +1104,7 @@ static pref_t *prefs_lua_try_build(const char *path, int build_on_parse_error,
 	if (prefs == NULL) {
 		return NULL;
 	}
-	prefs->prefs_version = PREFS_VERSION;
-	prefs_build_from_lua(L, prefs);
+	prefs_build_from_lua(L, prefs);   /* sets prefs_version from the file */
 	return prefs;
 }
 
@@ -1280,6 +1390,54 @@ static void lua_emit_chords(FILE *f, const char *key, const chord_t *cb) {
 	fputs("}\n\n", f);
 }
 
+/* True if the loaded config declares an older prefs_version than the
+ * running build -- i.e. it predates some current defaults. The startup
+ * path uses this to pop the help overlay once so newly-added or
+ * re-merged default bindings are visible. A first-run stub is written at
+ * the current version, so a fresh install is never "outdated". */
+int prefs_config_outdated(const pref_t *prefs) {
+	return prefs != NULL && prefs->prefs_version < PREFS_VERSION;
+}
+
+/* First-run config: a SPARSE stub, not a full snapshot. Keybinding
+ * tables merge over the compiled defaults, so a file that lists only the
+ * user's changes keeps receiving new defaults on upgrade. The live help
+ * overlay (metamode + '?') is the source of truth for what's bound. */
+void prefs_emit_lua_stub(const char *path) {
+	FILE *f = fopen(path, "w");
+	if (f == NULL) {
+		fprintf(stderr, APP_LOG_TAG ": cannot write %s: %s\n", path, strerror(errno));
+		return;
+	}
+	fputs("-- " APP_DISPLAY_NAME " configuration (Lua). Generated on first run;\n"
+	      "-- safe to edit. " APP_DISPLAY_NAME " never rewrites it.\n"
+	      "--\n"
+	      "-- SECURITY: this file is executed as a full Lua program at startup\n"
+	      "-- and on reload, with the full standard library (including os and\n"
+	      "-- io). Treat it like a shell rc -- only run a " APP_CONFIG_BASENAME " you wrote\n"
+	      "-- or trust.\n\n", f);
+	fprintf(f, "prefs_version = %d\n\n", PREFS_VERSION);
+	fputs("-- This file starts empty: every setting and keybinding uses its\n"
+	      "-- built-in default until you override it below.\n"
+	      "--\n"
+	      "-- To see every binding that is ACTIVE right now: tap the metamode\n"
+	      "-- key (right shift by default), then press '?'. That on-screen help\n"
+	      "-- overlay always lists the live, effective bindings -- it is the\n"
+	      "-- source of truth, not this file.\n"
+	      "--\n"
+	      "-- The keybinding tables (metamode_keys, chord_bindings,\n"
+	      "-- altsym_entries) MERGE over the defaults, so list only what you\n"
+	      "-- change. Rebind a key by listing it again; remove a default with\n"
+	      "-- false, e.g.\n"
+	      "--   metamode_keys = { { \"r\", false } }   -- unbind reload_config\n"
+	      "-- Because this file holds only your changes, default bindings added\n"
+	      "-- in future " APP_DISPLAY_NAME " releases reach you automatically.\n"
+	      "--\n"
+	      "-- The bundled share/term.lua.reference lists every default and\n"
+	      "-- documents the full configuration surface.\n", f);
+	fclose(f);
+}
+
 void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	FILE *f = fopen(path, "w");
 	if (f == NULL) {
@@ -1342,8 +1500,18 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	fputs("-- metamode_keys: tap the metamode key, then one of these. An entry\n"
 	      "-- exits metamode after firing unless it sets sticky = true (which\n"
 	      "-- keeps metamode armed, e.g. the arrow keys below). Targets accept\n"
-	      "-- raw bytes, terminfo names, builtins, or \"lua:<fn>\".\n", f);
+	      "-- raw bytes, terminfo names, builtins, or \"lua:<fn>\".\n"
+	      "--\n"
+	      "-- This table MERGES over the defaults below: in your own config you\n"
+	      "-- only need the entries you change. List a key again to rebind it,\n"
+	      "-- or set its target to false to unbind a default, e.g.\n"
+	      "--   metamode_keys = { { \"r\", false } }   -- drop reload_config\n", f);
 	lua_emit_keymap(f, "metamode_keys", prefs->metamode_keys);
+	fputs("-- altsym_entries: ALT layer symbols, merged over the defaults the\n"
+	      "-- same way (rebind by listing a key; { \"x\", false } unbinds it).\n", f);
+	lua_emit_keymap(f, "altsym_entries", prefs->altsym_entries);
+	fputs("-- main_symmenu: the SYM overlay grid. Unlike the keymap tables this\n"
+	      "-- is a positional layout and is REPLACED wholesale if you define it.\n", f);
 	lua_emit_symmenu(f, "main_symmenu", prefs->main_symmenu);
 
 	fputs("-- Modifier-aware chord bindings: a trigger key plus a set of\n"
@@ -1353,10 +1521,13 @@ void prefs_emit_lua(const pref_t *prefs, const char *path) {
 	      "-- \"sym\"; an empty/absent mods means no modifiers. label is shown\n"
 	      "-- in the help overlay (toggle a key bound to \"help_overlay\").\n"
 	      "--\n"
-	      "-- The two defaults below give the bare BlackBerry keyboard (no\n"
-	      "-- ctrl key) a Ctrl and an extra Meta: tap shift, then alt -> the\n"
-	      "-- next key is Ctrl+key; tap shift, then sym -> toggles metamode.\n"
-	      "-- Set chord_bindings = {} to disable them.\n", f);
+	      "-- The defaults below give the bare BlackBerry keyboard (no ctrl\n"
+	      "-- key) a Ctrl and an extra Meta, plus easy Tab: tap shift, then\n"
+	      "-- alt -> the next key is Ctrl+key; tap shift, then sym -> toggles\n"
+	      "-- metamode; alt+enter -> Tab.\n"
+	      "-- This table MERGES over the defaults too: unbind one with a record\n"
+	      "-- whose action is false, e.g. { key = \"alt\", mods = {\"shift\"},\n"
+	      "-- action = false }.\n", f);
 	lua_emit_chords(f, "chord_bindings", prefs->chord_bindings);
 	fputs("-- External-keyboard examples (a real Ctrl key); uncomment to use:\n"
 	      "--   { key = \"t\", mods = {\"ctrl\", \"shift\"}, action = \"tab_new\",   label = \"New tab\" },\n"

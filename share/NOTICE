@@ -343,7 +343,7 @@ OpenSSH contains no GPL code.
 	Gert Doering
 	Jakob Schlyter
 	Jason Downs
-	Juha Yrjölä
+	Juha Yrjï¿½lï¿½
 	Michael Stone
 	Networks Associates Technology, Inc.
 	Solar Designer
@@ -494,8 +494,8 @@ $OpenBSD: LICENCE,v 1.19 2004/08/30 09:18:08 markus Exp $
 Optional bbnix userland bundle
 ================================================================================
 
-The following third-party programs and libraries are present ONLY in BARs built
-with `make package-dev-bbnix` / `make package-release-bbnix`. They
+The following third-party programs and libraries are present in BARs built
+with `make package-dev` / `make package-release`. They
 are cross-compiled for BlackBerry 10 / QNX ARM by the bbnix project
 (https://github.com/acmiyaguchi/bbnix) and staged under app/native/bbnix. Each
 remains under its own upstream license; the canonical license text ships with,
@@ -518,6 +518,23 @@ or is available from, each respective project.
 Binaries compiled with the bbnix GCC cross-toolchain carry the GCC Runtime
 Library Exception and are not made GPL merely by being built with GCC; see the
 bbnix NOTICE for toolchain provenance.
+
+
+================================================================================
+Bundled Fen coding-agent CLI
+================================================================================
+
+BARs built with `make package-dev` / `make package-release` include the Fen CLI
+as app/native/root/bin/fen. The BB10 binary is produced from the pinned
+fen-blackberry flake input (https://github.com/acmiyaguchi/fen-blackberry),
+which cross-compiles Fen for BlackBerry 10 / QNX using bbnix.
+
+  - Fen             â€” coding-agent CLI.       MIT License.
+  - Lua runtime and Fen Lua/Fennel modules are linked/embedded by the
+    fen-blackberry build; upstream components remain under their respective
+    licenses.
+  - libcurl, OpenSSL, zlib, and libm are linked statically as part of the
+    fen-blackberry partial-static BB10 build; QNX libc/libsocket remain dynamic.
 
 
 ================================================================================

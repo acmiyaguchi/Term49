@@ -21,6 +21,9 @@ share/bbnix/*
 share/fonts/*
 !share/fonts/.keep
 
+# fen-blackberry source/result staged by `make stage-fen`.
+
 result
 result-bbnix
 result-fonts
+result-fen-blackberry-src

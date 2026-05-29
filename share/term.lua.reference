@@ -2,30 +2,43 @@
 -- Term50 reference configuration (.term.lua)
 -- ============================================================================
 --
--- This is a COMPLETE, annotated reference. It is NOT loaded by Term50 -- it
--- ships under share/ as documentation. To use it, copy it to your home dir:
+-- This is a COMPLETE, annotated reference listing every setting and its
+-- compiled-in DEFAULT. It is NOT loaded by Term50 -- it ships under share/ as
+-- documentation. Term50 writes a short, empty starter .term.lua on first run;
+-- this file shows every available knob and its default value.
 --
---     cp term.lua.reference $HOME/.term.lua
+-- HOW CONFIG MERGES (important):
+--   * Scalars (font_size, colors, ...) you omit keep their default.
+--   * The keybinding tables -- metamode_keys, chord_bindings, altsym_entries --
+--     MERGE over the defaults. In your own .term.lua you only list the entries
+--     you want to CHANGE: rebind a key by listing it again, ADD a key by
+--     listing a new one, and REMOVE a default by setting its target to false
+--     (see the unbind examples below). Defaults you never mention stay active,
+--     so new bindings shipped in a future Term50 release reach you
+--     automatically. Do NOT copy this whole file into your .term.lua unless you
+--     truly want to pin every binding -- that re-freezes them against upgrades.
+--   * main_symmenu and the *_accents grids are positional layouts and are
+--     REPLACED wholesale if you define them (no per-key merge, no false unbind).
 --
--- (Term50 also writes a short starter .term.lua on first run if none exists;
--- this file is the fully fleshed-out version showing every available knob.)
+-- WHAT IS BOUND RIGHT NOW: tap the metamode key (right shift by default), then
+-- press '?'. The on-screen help overlay always lists the live, effective
+-- bindings after merging -- it is the source of truth, not this file.
 --
--- Every value below is set to its compiled-in DEFAULT, so loading this file
--- as-is reproduces stock behaviour. Edit freely and reload with the
--- "reload_config" action (bound to metamode + r by default).
+-- Reload after editing with the "reload_config" action (metamode + r by
+-- default). When the loaded config predates the running build, Term50 pops the
+-- help overlay once on launch so newly-added defaults are visible.
 --
 -- SECURITY: this file is executed as a full Lua program at startup and on
 -- every reload, with the complete standard library (including os and io).
 -- Treat it like a shell rc -- only run a .term.lua you wrote or trust.
 --
--- A note on the scripting/control surface (issue #5): a Unix-domain control
--- socket is exposed to child shells via the $TERMCTL_SOCKET environment
--- variable, and the bundled `termctl` CLI (on $PATH; try `termctl help`)
--- speaks to it. See the "Scripting" section at the bottom for the Lua
--- `term.*` API.
+-- A note on the scripting/control surface: a Unix-domain control socket is
+-- exposed to child shells via the $TERMCTL_SOCKET environment variable, and the
+-- bundled `termctl` CLI (on $PATH; try `termctl help`) speaks to it. See the
+-- "Scripting" section at the bottom for the Lua `term.*` API.
 -- ============================================================================
 
-prefs_version = 9
+prefs_version = 10
 
 -- ----------------------------------------------------------------------------
 -- Scalars
@@ -38,7 +51,7 @@ prefs_version = 9
 --   SourceCodePro-Regular.otf, UbuntuMono-R.ttf
 font_path = "$SANDBOX/app/native/fonts/IosevkaTerm-Regular.ttf"
 
--- Font size in points. metamode + i / o / z adjust this live (see func keys).
+-- Font size in points. metamode + i / o / z adjust this live.
 font_size = 24
 
 -- Keep the screen awake (suppress the idle dim/lock) while Term50 is focused.
@@ -52,7 +65,7 @@ auto_show_vkb = true
 metamode_doubletap_key = 18
 metamode_doubletap_delay = 500000000
 
--- Allow key-HOLD to fire metamode_func actions / accent menus (see below).
+-- Allow key-HOLD to fire metamode actions / accent menus (see below).
 keyhold_actions = true
 
 -- Physical key that enters metamode while held down. Default is space.
@@ -76,6 +89,10 @@ rescreen_for_symmenu = true
 -- Holding a letter key opens its accent menu (see e_accents example below).
 keyhold_accents = true
 
+-- Show the help overlay automatically on startup (it can always be toggled
+-- with the "help_overlay" action, metamode + ? by default).
+show_help_on_startup = false
+
 -- ----------------------------------------------------------------------------
 -- Colors (RGB, 0-255)
 -- ----------------------------------------------------------------------------
@@ -98,49 +115,42 @@ metamode_hitbox = { 0, 0, 100, 100 }
 keyhold_actions_exempt = { 8, 13 }
 
 -- ----------------------------------------------------------------------------
--- metamode_keys: in metamode, these letters send a literal byte string.
--- Each entry is { "<letter>", "<bytes>" }. \x.. is a Lua hex escape.
--- ----------------------------------------------------------------------------
-
-metamode_keys = {
-  { "e", "\x1b" },  -- ESC
-  { "t", "\x09" },  -- TAB
-}
-
--- ----------------------------------------------------------------------------
--- metamode_sticky_keys: in metamode, these send a terminfo-named key (arrow
--- keys here) and KEEP metamode armed so you can chain movements.
--- ----------------------------------------------------------------------------
-
-metamode_sticky_keys = {
-  { "k", "kcuu1" },  -- up
-  { "j", "kcud1" },  -- down
-  { "l", "kcuf1" },  -- right
-  { "h", "kcub1" },  -- left
-}
-
--- ----------------------------------------------------------------------------
--- metamode_func_keys: in metamode, these run a named built-in ACTION.
+-- metamode_keys: tap the metamode key, then one of these letters. Each entry
+-- is { "<letter>", "<target>" } with an optional sticky = true. An entry exits
+-- metamode after firing unless sticky = true keeps it armed (the arrow keys
+-- below, so you can chain movements).
 --
--- Available built-ins:
+-- A <target> is one of:
+--   * raw bytes        e.g. "\x1b" (ESC), "\x09" (TAB); \x.. is a Lua escape
+--   * a terminfo name  kcuu1/kcud1/kcuf1/kcub1 (arrows), khome, kend, kf1..kf12
+--   * a built-in action (see list below)
+--   * "lua:<function>" call a global Lua function (see Scripting)
+--   * "toast:<msg>" / "open_url:<uri>"  argument-bearing actions (": " splits)
+--   * false            UNBIND: remove this default binding
+--
+-- Built-in actions:
 --   alt_down, ctrl_down            toggle a sticky modifier
 --   rescreen                       rebuild the screen
 --   paste_clipboard                paste the system clipboard
 --   font_size_increase/decrease/reset
 --   reload_config                  re-run this file live
+--   metamode_toggle                toggle metamode
+--   help_overlay                   toggle the on-screen keybinding cheat sheet
+--   url_pick                       pick a URL visible on screen and open it
 --   tab_new / tab_next / tab_prev / tab_close
---   keyboard_show / keyboard_hide  show/hide the virtual keyboard   (#5)
---   toast:<message>                transient auto-dismiss flash     (#5)
---                                  (the persistent, replaceable Hub notification
---                                  is term.notify / `termctl notify`; see the
---                                  "Notifications" section in README.md)
---   open_url:<uri>                 open a URI in its default handler (#5)
---   lua:<function>                 call a global Lua function (see Scripting)
+--   keyboard_show / keyboard_hide  show/hide the virtual keyboard
+--
+-- MERGE: in your own config, list only the keys you change. Examples:
+--   metamode_keys = {
+--     { "w", "lua:zoom_in" },   -- add a new binding
+--     { "r", false },           -- unbind the default reload_config
+--   }
+--
+-- The full set of compiled defaults (what you get with no override):
 -- ----------------------------------------------------------------------------
 
-metamode_func_keys = {
-  { "a", "alt_down" },
-  { "d", "ctrl_down" },
+metamode_keys = {
+  { "e", "\x1b" },              -- ESC
   { "s", "rescreen" },
   { "v", "paste_clipboard" },
   { "i", "font_size_increase" },
@@ -151,29 +161,47 @@ metamode_func_keys = {
   { "n", "tab_next" },
   { "p", "tab_prev" },
   { "x", "tab_close" },
-
-  -- New in #5 -- demonstrated on otherwise-unused metamode letters. The two
-  -- argument-bearing actions use a ":" to separate the action from its arg.
-  { "g", "keyboard_show" },
-  { "b", "keyboard_hide" },
-  { "m", "toast:Hello from Term50" },
-  { "u", "open_url:https://www.blackberry.com/" },
-
-  -- Posts a replaceable Hub entry that re-foregrounds Term50 when tapped
-  -- (#23/#35). Reuses the "return" slot, so repeated presses update one entry
-  -- rather than stacking. Defined as notify_return() below; keybindings reach
-  -- the rich notify through a lua: function.
-  { "k", "lua:notify_return" },
+  { "?", "help_overlay" },
+  { "u", "url_pick" },
+  { "k", "kcuu1", sticky = true },  -- up
+  { "j", "kcud1", sticky = true },  -- down
+  { "l", "kcuf1", sticky = true },  -- right
+  { "h", "kcub1", sticky = true },  -- left
 }
 
-function notify_return()
-  term.notify{ id = "return", body = "Tap to return to Term50",
-               uri = "term://focus" }
-end
+-- ----------------------------------------------------------------------------
+-- chord_bindings: a modifier-aware trigger (a key plus a set of held/stuck
+-- modifiers) dispatching to an action. Records are
+--   { key = "<name>", mods = { "<mod>", ... }, action = "<target>", label = "" }
+-- key may be a single character or a named key: sym, alt, shift, space, enter,
+-- tab, escape, backspace. mods may be "ctrl", "alt", "shift", "sym"; an
+-- empty/absent mods means no modifiers. action takes the same targets as
+-- metamode_keys; label is the text shown in the help overlay.
+--
+-- MERGE: keyed by (key, mods). Override by listing the same key+mods; unbind a
+-- default with action = false, e.g.
+--   chord_bindings = { { key = "alt", mods = {"shift"}, action = false } }
+--
+-- The defaults give the bare BlackBerry keyboard (no Ctrl key) a Ctrl and an
+-- extra Meta, plus easy Tab: tap shift then alt -> the next key is Ctrl+key;
+-- tap shift then sym -> toggles metamode; alt+enter -> Tab. (Esc lives on
+-- metamode "e": the backspace key can't carry a chord because the OS remaps
+-- modifier+backspace to forward-Delete.) External-keyboard chords (a real
+-- Ctrl) are opt-in:
+--   { key = "t", mods = {"ctrl", "shift"}, action = "tab_new",   label = "New tab" },
+--   { key = "w", mods = {"ctrl", "shift"}, action = "tab_close", label = "Close tab" },
+-- ----------------------------------------------------------------------------
+
+chord_bindings = {
+  { key = "alt",   mods = { "shift" }, action = "ctrl_down",       label = "shift+alt = Ctrl" },
+  { key = "sym",   mods = { "shift" }, action = "metamode_toggle", label = "shift+sym = Meta" },
+  { key = "enter", mods = { "alt" },   action = "\x09",            label = "alt+enter = Tab" },
+}
 
 -- ----------------------------------------------------------------------------
 -- main_symmenu: the SYM overlay. A list of ROWS; each row is a list of
--- { "<letter>", "<symbol>" } pairs laid out left-to-right.
+-- { "<letter>", "<symbol>" } pairs laid out left-to-right. This is a positional
+-- layout: if you define it, it REPLACES the default grid wholesale (no merge).
 -- ----------------------------------------------------------------------------
 
 main_symmenu = {
@@ -185,7 +213,9 @@ main_symmenu = {
 
 -- ----------------------------------------------------------------------------
 -- altsym_entries: the ALT-SYM layer (a flat { "<letter>", "<symbol>" } list,
--- not rows). These are the symbols reached via the alt modifier.
+-- not rows) -- the symbols reached via the alt modifier. MERGES over the
+-- defaults like metamode_keys: rebind a key by listing it, { "x", false }
+-- unbinds it.
 -- ----------------------------------------------------------------------------
 
 altsym_entries = {
@@ -201,8 +231,8 @@ altsym_entries = {
 -- ----------------------------------------------------------------------------
 -- Accent menus (optional; off by default). For any letter a-z, define
 -- "<letter>_accents" as a single-row SYM menu of { "<key>", "<glyph>" } pairs.
--- Holding the letter (with keyhold_accents = true) opens this overlay.
--- Example for "e":
+-- Holding the letter (with keyhold_accents = true) opens this overlay. Like the
+-- SYM grid these are positional layouts (defined, not merged). Example for "e":
 -- ----------------------------------------------------------------------------
 
 e_accents = {
@@ -221,14 +251,14 @@ e_accents = {
 --   term.font_size_set(n)       set the font size
 --   term.action("<name>")       run any built-in action string (returns bool),
 --                               e.g. term.action("reload_config")
---   term.toast("<message>")     transient auto-dismiss flash             (#5)
---   term.notify("<message>")    post/update a replaceable Hub entry; or  (#35)
+--   term.toast("<message>")     transient auto-dismiss flash
+--   term.notify("<message>")    post/update a replaceable Hub entry; or
 --     or term.notify{ id=, title=, body=, uri=, app_id=, alert= }
 --                               the table form names a reusable slot via `id`
 --                               (same id updates that entry in place).
---   term.open_url("<uri>")      open a URI in its default handler        (#5)
---   term.keyboard_show()        show the virtual keyboard                (#5)
---   term.keyboard_hide()        hide the virtual keyboard                (#5)
+--   term.open_url("<uri>")      open a URI in its default handler
+--   term.keyboard_show()        show the virtual keyboard
+--   term.keyboard_hide()        hide the virtual keyboard
 --
 -- Bind a key to a Lua function by using a "lua:<name>" action. The function
 -- takes no arguments and its return value is ignored.
@@ -241,6 +271,15 @@ function greet()
   term.toast("font size is " .. term.font_size_get())
 end
 
--- To wire these up, add bindings to metamode_func_keys above, e.g.:
---   { "w", "lua:zoom_in" },
---   { "f", "lua:greet" },
+-- To wire these up, add bindings to metamode_keys above, e.g.:
+--   metamode_keys = {
+--     { "w", "lua:zoom_in" },
+--     { "f", "lua:greet" },
+--   }
+
+-- Posts a replaceable Hub entry that re-foregrounds Term50 when tapped (reuses
+-- a fixed id, so repeated calls update one entry rather than stacking):
+function notify_return()
+  term.notify{ id = "return", body = "Tap to return to Term50",
+               uri = "term://focus" }
+end

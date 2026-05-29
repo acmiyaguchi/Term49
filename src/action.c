@@ -2,29 +2,32 @@
 
 #include "action.h"
 
-static int is_terminfo_name(const char *value) {
-	if (value == NULL || value[0] != 'k') {
-		return 0;
-	}
+/* The terminfo cursor/function-key capabilities Term50 understands, each
+ * paired with the label the help overlay shows. Single source of truth:
+ * is_terminfo_name (config validation, below) and keymap_to_display (help
+ * rendering, main.c) both read it, so a new cap is added in one place. */
+static const struct { const char *cap; const char *label; } terminfo_caps[] = {
+	{"kcuu1", "Up"},   {"kcud1", "Down"}, {"kcuf1", "Right"}, {"kcub1", "Left"},
+	{"khome", "Home"}, {"kend",  "End"},
+	{"kf1",  "F1"},  {"kf2",  "F2"},  {"kf3",  "F3"},  {"kf4",  "F4"},
+	{"kf5",  "F5"},  {"kf6",  "F6"},  {"kf7",  "F7"},  {"kf8",  "F8"},
+	{"kf9",  "F9"},  {"kf10", "F10"}, {"kf11", "F11"}, {"kf12", "F12"},
+};
 
-	return strcmp(value, "kcub1") == 0 ||
-	       strcmp(value, "kcud1") == 0 ||
-	       strcmp(value, "kcuf1") == 0 ||
-	       strcmp(value, "kcuu1") == 0 ||
-	       strcmp(value, "khome") == 0 ||
-	       strcmp(value, "kend") == 0 ||
-	       strcmp(value, "kf1") == 0 ||
-	       strcmp(value, "kf2") == 0 ||
-	       strcmp(value, "kf3") == 0 ||
-	       strcmp(value, "kf4") == 0 ||
-	       strcmp(value, "kf5") == 0 ||
-	       strcmp(value, "kf6") == 0 ||
-	       strcmp(value, "kf7") == 0 ||
-	       strcmp(value, "kf8") == 0 ||
-	       strcmp(value, "kf9") == 0 ||
-	       strcmp(value, "kf10") == 0 ||
-	       strcmp(value, "kf11") == 0 ||
-	       strcmp(value, "kf12") == 0;
+const char *terminfo_display_name(const char *value) {
+	if (value == NULL) {
+		return NULL;
+	}
+	for (size_t i = 0; i < sizeof(terminfo_caps) / sizeof(terminfo_caps[0]); ++i) {
+		if (strcmp(value, terminfo_caps[i].cap) == 0) {
+			return terminfo_caps[i].label;
+		}
+	}
+	return NULL;
+}
+
+static int is_terminfo_name(const char *value) {
+	return terminfo_display_name(value) != NULL;
 }
 
 static int parse_builtin(const char *value, builtin_action_t *out) {

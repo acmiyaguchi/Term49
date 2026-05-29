@@ -21,6 +21,8 @@ in `$TERMCTL_SOCKET`. The bundled `termctl` client (on `$PATH`) speaks to it;
 `termctl help` prints the live command surface straight from the server (the
 authoritative list — prefer it over this file if they ever disagree).
 
+The BB10 Fen coding-agent CLI is also bundled as `fen` on `$PATH`.
+
 This is the surface that can change the terminal: run actions, send input,
 evaluate Lua, read the clipboard, query geometry. Highlights:
 

@@ -85,9 +85,25 @@ CTL_LIBS := -lsocket -lm
 check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPASS in .env before deploying' >&2; exit 1; }
 
 .PHONY: all clean icons libghostty-vt package-dev package-release deploy connect \
-        bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts
+        bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts \
+        fen-source fen-bundle stage-fen clean-fen check-reference
 
-all: $(BINARY_PATH) $(CTL_PATH)
+all: check-reference $(BINARY_PATH) $(CTL_PATH)
+
+# Drift guard: share/term.lua.reference is the human-facing list of defaults;
+# its prefs_version must track PREFS_VERSION in src/preferences.c. After
+# changing defaults, regenerate it (on-device/emulator:
+# `Term50 --emit-reference share/term.lua.reference`) and/or bump the version.
+REFERENCE := share/term.lua.reference
+check-reference:
+	@code_ver=$$(sed -n 's/.*PREFS_VERSION[^0-9]*\([0-9][0-9]*\).*/\1/p' src/preferences.c | head -1); \
+	ref_ver=$$(sed -n 's/^prefs_version[^0-9]*\([0-9][0-9]*\).*/\1/p' $(REFERENCE) | head -1); \
+	if [ "$$code_ver" != "$$ref_ver" ]; then \
+	  echo "ERROR: $(REFERENCE) prefs_version ($$ref_ver) != code PREFS_VERSION ($$code_ver)." >&2; \
+	  echo "       Regenerate it (Term50 --emit-reference $(REFERENCE)) or bump the version line." >&2; \
+	  exit 1; \
+	fi; \
+	echo "check-reference: prefs_version $$ref_ver matches PREFS_VERSION"
 
 libghostty-vt: $(GHOSTTY_A) $(GHOSTTY_H)
 
@@ -139,7 +155,7 @@ clean:
 	@rm -rfv $(LUA_DIR)/build $(LUA_OBJS)
 	@rm -fv $(QR_OBJS)
 	@rm -rfv Device-Debug Device-Release
-	@rm -rfv result-fonts
+	@rm -rfv $(FEN_DIR) result-fonts result-fen-blackberry-src
 	@rm -fv $(BINARY).bar
 
 icons:
@@ -148,7 +164,7 @@ icons:
 package-dev: icons
 	$(MAKE) stage-bbnix
 	$(MAKE) stage-fonts
-	$(MAKE) ASSET=Device-Debug all
+	$(MAKE) ASSET=Device-Debug all stage-fen
 	blackberry-nativepackager -devMode -package $(BINARY).bar bar-descriptor.xml -configuration Device-Debug
 
 deploy: package-dev
@@ -167,7 +183,7 @@ connect:
 package-release: icons
 	$(MAKE) stage-bbnix
 	$(MAKE) stage-fonts
-	$(MAKE) ASSET=Device-Release all
+	$(MAKE) ASSET=Device-Release all stage-fen
 	blackberry-nativepackager -package $(BINARY).bar bar-descriptor.xml -configuration Device-Release
 
 # --- Required bbnix userland bundle ---------------------------------------
@@ -216,3 +232,34 @@ clean-bbnix:
 clean-fonts:
 	rm -rf share/fonts result-fonts
 	mkdir -p share/fonts && touch share/fonts/.keep
+
+# --- Bundled fen coding agent -----------------------------------------------
+# fen-blackberry builds the Fen CLI for BB10/QNX with bbnix's GCC toolchain and
+# static curl/OpenSSL/zlib/libm. It is pinned as a flake input instead of a git
+# submodule; `fen-source` copies that immutable source to a writable build dir
+# because fen-blackberry's Makefile writes build/ outputs beside its sources.
+# Its QNX argv[0] fallback resolves bare names via PATH, so Term50 packages the
+# Fen ELF directly as root/bin/fen.
+TMPDIR         ?= /tmp
+FEN_SRC_RESULT ?= result-fen-blackberry-src
+FEN_DIR        ?= $(TMPDIR)/term50-fen-blackberry
+FEN_BINARY     := $(FEN_DIR)/build/fen
+FEN_BAR_BIN    := $(ASSET)/fen
+
+fen-source:
+	nix build .#fen-blackberry-src -o $(FEN_SRC_RESULT)
+	rm -rf $(FEN_DIR)
+	mkdir -p $(FEN_DIR)
+	cp -RL $(FEN_SRC_RESULT)/. $(FEN_DIR)/
+	chmod -R u+w $(FEN_DIR)
+
+fen-bundle: fen-source
+	@test -n "$(BBNIX_SYSROOT)" || { echo 'Set BBNIX_SYSROOT to your bbndk-linux tree, e.g. BBNIX_SYSROOT=/mnt/data/fun/bbdev/sdk/bbndk-linux' >&2; exit 1; }
+	$(MAKE) -C $(FEN_DIR) BBNIX_SYSROOT="$(BBNIX_SYSROOT)" fen
+
+stage-fen: fen-bundle
+	mkdir -p $(ASSET)
+	install -m755 $(FEN_BINARY) $(FEN_BAR_BIN)
+
+clean-fen:
+	rm -rf Device-Debug/fen Device-Release/fen $(FEN_DIR) $(FEN_SRC_RESULT)
