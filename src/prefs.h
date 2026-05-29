@@ -59,9 +59,17 @@ void prefs_lua_destroy(pref_t *pref);
  * parse error / OOM WITHOUT disturbing the running config or Lua
  * state, so a broken edit can't wipe a working setup to defaults. */
 pref_t *prefs_lua_reload(void);
-/* Serialize pref_t to a .term.lua; used to persist a first-run
- * default config. */
+/* Serialize a full pref_t to a .term.lua. No longer the first-run path
+ * (see prefs_emit_lua_stub); used to (re)generate share/term.lua.reference
+ * from the compiled defaults via the --emit-reference dev mode. */
 void prefs_emit_lua(const pref_t *prefs, const char *path);
+/* Write the sparse first-run .term.lua stub (version + guidance only, no
+ * tables). Keybinding tables merge over the compiled defaults, so a file
+ * holding only the user's changes keeps receiving new defaults. */
+void prefs_emit_lua_stub(const char *path);
+/* True if the loaded config predates the running build's defaults
+ * (declared prefs_version < current). */
+int prefs_config_outdated(const pref_t *prefs);
 /* First-run README symlink (config-format independent). */
 void prefs_first_run_readme(void);
 

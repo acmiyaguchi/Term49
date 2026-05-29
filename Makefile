@@ -86,9 +86,24 @@ check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPAS
 
 .PHONY: all clean icons libghostty-vt package-dev package-release deploy connect \
         bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts \
-        fen-source fen-bundle stage-fen clean-fen
+        fen-source fen-bundle stage-fen clean-fen check-reference
 
-all: $(BINARY_PATH) $(CTL_PATH)
+all: check-reference $(BINARY_PATH) $(CTL_PATH)
+
+# Drift guard: share/term.lua.reference is the human-facing list of defaults;
+# its prefs_version must track PREFS_VERSION in src/preferences.c. After
+# changing defaults, regenerate it (on-device/emulator:
+# `Term50 --emit-reference share/term.lua.reference`) and/or bump the version.
+REFERENCE := share/term.lua.reference
+check-reference:
+	@code_ver=$$(sed -n 's/.*PREFS_VERSION[^0-9]*\([0-9][0-9]*\).*/\1/p' src/preferences.c | head -1); \
+	ref_ver=$$(sed -n 's/^prefs_version[^0-9]*\([0-9][0-9]*\).*/\1/p' $(REFERENCE) | head -1); \
+	if [ "$$code_ver" != "$$ref_ver" ]; then \
+	  echo "ERROR: $(REFERENCE) prefs_version ($$ref_ver) != code PREFS_VERSION ($$code_ver)." >&2; \
+	  echo "       Regenerate it (Term50 --emit-reference $(REFERENCE)) or bump the version line." >&2; \
+	  exit 1; \
+	fi; \
+	echo "check-reference: prefs_version $$ref_ver matches PREFS_VERSION"
 
 libghostty-vt: $(GHOSTTY_A) $(GHOSTTY_H)
 

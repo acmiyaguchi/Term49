@@ -3090,6 +3090,17 @@ int app_handle_event(app_t *app, const event_t *event) {
 int main(int argc, char **argv) {
 	int rc;
 
+	/* Dev/build mode: regenerate the bundled term.lua.reference from the
+	 * compiled defaults so its binding tables can't drift. Loading a
+	 * path that does not exist yields an all-defaults pref_t. Runs before
+	 * any HOME redirection so it writes to the path exactly as given.
+	 * Usage: Term50 --emit-reference share/term.lua.reference */
+	if (argc >= 3 && strcmp(argv[1], "--emit-reference") == 0) {
+		pref_t *defs = prefs_lua_load("/nonexistent-term50-defaults");
+		prefs_emit_lua(defs, argv[2]);
+		return 0;
+	}
+
 	/* Redirect HOME to a persistent, externally-visible dir before
 	 * anything reads it (this function, the chdir below, the shell
 	 * we later fork, and preferences.c all inherit the new value). */
@@ -3106,7 +3117,11 @@ int main(int argc, char **argv) {
 	prefs = prefs_lua_load(PREFS_LUA_FILE_PATH);
 	if (!lua_cfg_existed) {
 		prefs_first_run_readme();
-		prefs_emit_lua(prefs, PREFS_LUA_FILE_PATH);
+		prefs_emit_lua_stub(PREFS_LUA_FILE_PATH);
+	} else if (prefs_config_outdated(prefs)) {
+		/* Config predates the current defaults; pop the help overlay once
+		 * so newly-added (and merge-restored) default bindings are seen. */
+		current_help_overlay = 1;
 	}
 	if (!prefs->screen_idle_awake) {
 		setenv("SCREEN_IDLE_NORMAL", "1", 0);
