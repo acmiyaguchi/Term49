@@ -59,11 +59,8 @@ static const int PREFS_VERSION = 10;
 #define DEFAULT_TTY_ENCODING "UTF-8"
 /* One metamode table; `sticky` entries keep metamode armed after firing (the
  * former metamode_sticky_keys), the rest exit it (former keys + func_keys). */
-#define DEFAULT_METAMODE_KEYS_LEN 20
+#define DEFAULT_METAMODE_KEYS_LEN 17
 #define DEFAULT_METAMODE_KEYS (keymap_t[]){{'e', "\x1b"}, \
-                                           {'t', "\x09"}, \
-                                           {'a', "alt_down"}, \
-                                           {'d', "ctrl_down"}, \
                                            {'s', "rescreen"}, \
                                            {'v', "paste_clipboard"}, \
                                            {'i', "font_size_increase"}, \
@@ -468,14 +465,18 @@ typedef struct {
 	const char *label;
 } chord_def_t;
 
-/* Shipped defaults. The two bare-Q10 flagships only -- both live on
- * modifier *combinations* that are otherwise unused on-device, so they
- * shadow no plain key or TUI binding. External-keyboard chords (ctrl+key)
- * stay opt-in, emitted as commented examples by prefs_emit_lua. */
-#define DEFAULT_CHORD_BINDINGS_LEN 2
+/* Shipped defaults for the bare Q10 keyboard. Each lives on a modifier
+ * *combination* otherwise unused on-device, so they shadow no plain key or
+ * TUI binding: shift+alt and shift+sym give the missing Ctrl and an extra
+ * Meta, and alt+enter sends Tab. (Esc stays on metamode "e" -- backspace
+ * can't carry a chord because the OS remaps modifier+backspace to Delete.)
+ * External-keyboard chords (ctrl+key) stay opt-in, emitted as commented
+ * examples by prefs_emit_lua. */
+#define DEFAULT_CHORD_BINDINGS_LEN 3
 static const chord_def_t DEFAULT_CHORD_BINDINGS[] = {
 	{ KEYCODE_BB_ALT_KEY, KEYMOD_SHIFT, "ctrl_down",       "shift+alt = Ctrl" },
 	{ KEYCODE_BB_SYM_KEY, KEYMOD_SHIFT, "metamode_toggle", "shift+sym = Meta" },
+	{ KEYCODE_RETURN,     KEYMOD_ALT,   "\x09",            "alt+enter = Tab" },
 };
 
 /* spec string is owned by the chord (action fields point into it). */

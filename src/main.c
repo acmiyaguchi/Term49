@@ -582,9 +582,25 @@ static void help_overlay_draw_line(bitmap_t *dst, font_t *f, int adv,
 	}
 }
 
-/* Render a keymap target for display: control chars become ESC/TAB/^X so
- * the metamode bindings (e.g. "\x1b", "kcuu1") read cleanly. */
+/* Render a keymap target for display: terminfo capability names become
+ * human labels (kcuu1 -> Up), and control chars become ESC/TAB/^X, so the
+ * metamode bindings read cleanly. */
 static void keymap_to_display(const char *to, char *buf, size_t cap){
+	static const struct { const char *cap; const char *name; } tinames[] = {
+		{"kcuu1","Up"},   {"kcud1","Down"}, {"kcuf1","Right"}, {"kcub1","Left"},
+		{"khome","Home"}, {"kend","End"},
+		{"kf1","F1"},   {"kf2","F2"},   {"kf3","F3"},   {"kf4","F4"},
+		{"kf5","F5"},   {"kf6","F6"},   {"kf7","F7"},   {"kf8","F8"},
+		{"kf9","F9"},   {"kf10","F10"}, {"kf11","F11"}, {"kf12","F12"},
+	};
+	if (to) {
+		for (size_t i = 0; i < sizeof(tinames)/sizeof(tinames[0]); ++i) {
+			if (strcmp(to, tinames[i].cap) == 0) {
+				snprintf(buf, cap, "%s", tinames[i].name);
+				return;
+			}
+		}
+	}
 	size_t o = 0;
 	for (const char *p = to; p && *p && o + 4 < cap; ++p){
 		unsigned char ch = (unsigned char)*p;
@@ -596,10 +612,26 @@ static void keymap_to_display(const char *to, char *buf, size_t cap){
 	buf[o] = '\0';
 }
 
-/* (Re)compose the help-overlay cheat sheet: the chord_bindings plus the
- * metamode key tables, with section headers. Drawn in a smaller font than
- * the terminal so the full list fits on screen. NULL when there is nothing
- * to show, so the render gate skips it. Requires a live `font`. */
+/* Friendly name for a single trigger keycode, for the Gestures help lines
+ * (mirrors preferences.c's chord_keyname for the keys metamode entry uses). */
+static const char *help_keyname(int keycode){
+	switch (keycode) {
+	case KEYCODE_LEFT_SHIFT:
+	case KEYCODE_RIGHT_SHIFT: return "Shift";
+	case KEYCODE_SPACE:       return "Space";
+	case KEYCODE_RETURN:      return "Enter";
+	case KEYCODE_BACKSPACE:   return "Backspace";
+	case KEYCODE_BB_SYM_KEY:  return "Sym";
+	case KEYCODE_BB_ALT_KEY:  return "Alt";
+	default:                  return "key";
+	}
+}
+
+/* (Re)compose the help-overlay cheat sheet: the chord_bindings, the
+ * metamode-entry gestures, plus the metamode key tables, with section
+ * headers. Drawn in a smaller font than the terminal so the full list fits
+ * on screen. NULL when there is nothing to show, so the render gate skips
+ * it. Requires a live `font`. */
 static void help_overlay_build(void){
 	bitmap_free(help_overlay_surface);
 	help_overlay_surface = NULL;
@@ -623,6 +655,15 @@ static void help_overlay_build(void){
 			HELP_PUSH("  %s", c->label ? c->label
 			                           : (c->spec ? c->spec : ""));
 		}
+	}
+
+	HELP_PUSH("%s", "");
+	HELP_PUSH("%s", "Gestures:");
+	HELP_PUSH("  double-tap %s = Meta",
+	          help_keyname(prefs->metamode_doubletap_key));
+	if (prefs->keyhold_actions) {
+		HELP_PUSH("  hold %s = Meta",
+		          help_keyname(prefs->metamode_hold_key));
 	}
 
 	int meta_header = 0;

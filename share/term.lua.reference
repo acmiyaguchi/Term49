@@ -151,9 +151,6 @@ keyhold_actions_exempt = { 8, 13 }
 
 metamode_keys = {
   { "e", "\x1b" },              -- ESC
-  { "t", "\x09" },              -- TAB
-  { "a", "alt_down" },
-  { "d", "ctrl_down" },
   { "s", "rescreen" },
   { "v", "paste_clipboard" },
   { "i", "font_size_increase" },
@@ -185,16 +182,20 @@ metamode_keys = {
 -- default with action = false, e.g.
 --   chord_bindings = { { key = "alt", mods = {"shift"}, action = false } }
 --
--- The two defaults give the bare BlackBerry keyboard (no Ctrl key) a Ctrl and
--- an extra Meta: tap shift then alt -> the next key is Ctrl+key; tap shift then
--- sym -> toggles metamode. External-keyboard chords (a real Ctrl) are opt-in:
+-- The defaults give the bare BlackBerry keyboard (no Ctrl key) a Ctrl and an
+-- extra Meta, plus easy Tab: tap shift then alt -> the next key is Ctrl+key;
+-- tap shift then sym -> toggles metamode; alt+enter -> Tab. (Esc lives on
+-- metamode "e": the backspace key can't carry a chord because the OS remaps
+-- modifier+backspace to forward-Delete.) External-keyboard chords (a real
+-- Ctrl) are opt-in:
 --   { key = "t", mods = {"ctrl", "shift"}, action = "tab_new",   label = "New tab" },
 --   { key = "w", mods = {"ctrl", "shift"}, action = "tab_close", label = "Close tab" },
 -- ----------------------------------------------------------------------------
 
 chord_bindings = {
-  { key = "alt", mods = { "shift" }, action = "ctrl_down",       label = "shift+alt = Ctrl" },
-  { key = "sym", mods = { "shift" }, action = "metamode_toggle", label = "shift+sym = Meta" },
+  { key = "alt",   mods = { "shift" }, action = "ctrl_down",       label = "shift+alt = Ctrl" },
+  { key = "sym",   mods = { "shift" }, action = "metamode_toggle", label = "shift+sym = Meta" },
+  { key = "enter", mods = { "alt" },   action = "\x09",            label = "alt+enter = Tab" },
 }
 
 -- ----------------------------------------------------------------------------
