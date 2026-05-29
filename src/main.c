@@ -2757,6 +2757,25 @@ static int pty_init(session_t *session) {
 	// turn off blocking on the master pty
 	fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL) | O_NONBLOCK);
 
+	// Mark BOTH pty ends close-on-exec so they do not leak into child
+	// processes and pin one of the device's 8 ttyp pairs. (A pair is freed
+	// only when neither side has any open fd -- see docs/bb10-qnx-pty-usage.)
+	//
+	// master: without CLOEXEC every new tab's shell inherits a dup of all
+	// earlier tabs' masters, so the pty is never released until every later
+	// process also exits -- a daemonized tmux server pins them for its whole
+	// lifetime. The child uses the slave, never the master.
+	//
+	// slave: the child dup2's it onto 0/1/2 (those copies survive exec, since
+	// dup2 clears close-on-exec) but the ORIGINAL slave_fd would otherwise be
+	// inherited as an extra handle by every grandchild. A long-lived daemon
+	// spawned from the shell (ssh-agent, fen) then keeps that handle open and
+	// pins the slave even after the tab and its master are gone -- observed as
+	// ssh-agent holding /dev/ttyp0 on a stray fd. CLOEXEC auto-closes the
+	// original at exec; the parent closes its own slave_fd right after fork.
+	fcntl(master_fd, F_SETFD, fcntl(master_fd, F_GETFD) | FD_CLOEXEC);
+	fcntl(slave_fd, F_SETFD, fcntl(slave_fd, F_GETFD) | FD_CLOEXEC);
+
 	// store the master_fd on the session (#4 step 1.5)
 	session_set_master_fd(session, master_fd);
 
