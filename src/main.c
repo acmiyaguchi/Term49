@@ -900,8 +900,12 @@ void handle_mousedown(uint16_t x, uint16_t y){
  *   SCROLL = primary screen, move libghostty's viewport into history.
  *   WHEEL  = alt-screen with SGR mouse reporting enabled, forward each
  *            row of drag as an xterm wheel event to the running TUI.
+ *   ALT_SCROLL = alt-screen, no mouse reporting, but alternate-scroll (?1007)
+ *            is set: translate each row of drag into a cursor Up/Down key so
+ *            apps that never request the mouse (claude, fen, less) still scroll.
  *   LOCKED = gesture started while a symmenu was open, or in alt-screen
- *            without mouse reporting; consume the touch without action.
+ *            without mouse reporting and with alternate-scroll reset; consume
+ *            the touch without action.
  *   ARROW  = press-and-hold (no symmenu) promoted a still, uncommitted
  *            gesture into a 4-way directional pad: drag toward a direction
  *            to send that arrow key to the latched session, auto-repeating
@@ -910,6 +914,7 @@ enum drag_mode {
 	DRAG_IDLE = 0,
 	DRAG_SCROLL,
 	DRAG_WHEEL,
+	DRAG_ALT_SCROLL,
 	DRAG_LOCKED,
 	DRAG_ARROW,
 };
@@ -1015,8 +1020,9 @@ static void gesture_tick(app_t *app) {
 	}
 	/* Arm a still, uncommitted, non-symmenu gesture into the pad — regardless
 	 * of the latched scroll mode, so it works on a primary-screen shell
-	 * (SCROLL), a mouse-reporting TUI (WHEEL), and a plain alt-screen app with
-	 * no reporting (LOCKED, e.g. default vi/less). A fast swipe sets `committed`
+	 * (SCROLL), a mouse-reporting TUI (WHEEL), an alt-screen app scrolling via
+	 * cursor keys (ALT_SCROLL, e.g. default less), and one that opts out
+	 * (LOCKED). A fast swipe sets `committed`
 	 * first on the scroll paths and so never arms; symmenu gestures are excluded
 	 * outright. */
 	if (!g_drag.arrow_eligible || g_drag.committed ||
@@ -1062,6 +1068,29 @@ static void emit_wheels(session_t *session, int col, int row, int up, int ticks)
 	}
 	if (ticks > 0) {
 		emit_wheels(session, col, row, up, ticks);
+	}
+}
+
+/* Alternate-scroll (?1007): translate `count` rows of drag on the alt screen
+ * into cursor Up/Down keypresses, the way desktop terminals scroll apps that
+ * never request mouse tracking (claude, fen, less). The byte form follows the
+ * app's DECCKM state — SS3 (ESC O x) under application cursor keys, CSI
+ * (ESC [ x) otherwise — so the app sees exactly what a physical arrow sends.
+ * Batched into one write like emit_wheels; a long drag flushes in chunks. */
+static void emit_alt_scroll(session_t *session, int up, int count) {
+	UChar buf[CHARACTER_BUFFER];
+	UChar mid   = ghostty_bridge_app_cursor_keys(session_bridge(session)) ? 'O' : '[';
+	UChar final = up ? 'A' : 'B';
+	while (count > 0) {
+		size_t off = 0;
+		while (count > 0 && off + 3 <= CHARACTER_BUFFER) {
+			buf[off++] = 033;
+			buf[off++] = mid;
+			buf[off++] = final;
+			--count;
+		}
+		if (off == 0) { break; }
+		session_write_text(session, buf, off);
 	}
 }
 
@@ -2998,7 +3027,10 @@ int app_handle_event(app_t *app, const event_t *event) {
 		} else if (ghostty_bridge_mouse_wheel_ready(bridge)) {
 			g_drag.mode = DRAG_WHEEL;
 		} else if (ghostty_bridge_is_alt_screen(bridge)) {
-			g_drag.mode = DRAG_LOCKED;
+			/* Alt-screen app with no mouse tracking: drive cursor keys if it
+			 * left alternate-scroll (?1007) on, else swallow the gesture. */
+			g_drag.mode = ghostty_bridge_alt_scroll_ready(bridge)
+			                  ? DRAG_ALT_SCROLL : DRAG_LOCKED;
 		} else {
 			g_drag.mode = DRAG_SCROLL;
 		}
@@ -3034,7 +3066,8 @@ int app_handle_event(app_t *app, const event_t *event) {
 			}
 			return 1;
 		}
-		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL) {
+		if (g_drag.mode != DRAG_SCROLL && g_drag.mode != DRAG_WHEEL &&
+		    g_drag.mode != DRAG_ALT_SCROLL) {
 			return 1;
 		}
 		/* Guard against the latched session having been closed mid-stroke
@@ -3066,6 +3099,8 @@ int app_handle_event(app_t *app, const event_t *event) {
 			if (yrel < 0) { yrel = 0; }
 			int rrow = (text_height > 0) ? (yrel / text_height) + 1 : 1;
 			emit_wheels(g_drag.origin, col, rrow, rows > 0, abs(rows));
+		} else if (g_drag.mode == DRAG_ALT_SCROLL) {
+			emit_alt_scroll(g_drag.origin, rows > 0, abs(rows));
 		} else {
 			/* libghostty delta: up is negative, so negate to scroll into history on finger-down. */
 			ghostty_bridge_scroll_view(session_bridge(g_drag.origin), -rows);

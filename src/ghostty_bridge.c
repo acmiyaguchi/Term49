@@ -458,3 +458,19 @@ int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b) {
          gb_mode_on(b, GHOSTTY_MODE_BUTTON_MOUSE) ||
          gb_mode_on(b, GHOSTTY_MODE_ANY_MOUSE);
 }
+
+int ghostty_bridge_alt_scroll_ready(ghostty_bridge_t *b) {
+  /* DEC private mode 1007 (alternate scroll): when an app is on the alt screen
+   * and has not reset it, the wheel/swipe should drive cursor keys rather than
+   * a no-op. Defaults on in libghostty, so apps that never touch it (claude,
+   * fen, less) get scrolling for free; an app may DECRST 1007 to opt out. */
+  if (b == NULL) { return 0; }
+  return gb_mode_on(b, GHOSTTY_MODE_ALT_SCROLL);
+}
+
+int ghostty_bridge_app_cursor_keys(ghostty_bridge_t *b) {
+  /* DEC private mode 1 (DECCKM): application cursor keys send SS3 (ESC O x)
+   * instead of CSI (ESC [ x). Lets emitted scroll keys match a real arrow. */
+  if (b == NULL) { return 0; }
+  return gb_mode_on(b, GHOSTTY_MODE_DECCKM);
+}
