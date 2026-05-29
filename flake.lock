@@ -6,11 +6,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1779950733,
-        "narHash": "sha256-tv3MWgirnF84Eslbwa5g4eTntT3D8jKcShCVYetMhBY=",
+        "lastModified": 1780041995,
+        "narHash": "sha256-RQO1KOoAY/XTBNmr9dkMcVLvfdHtmczFXZpDpUxwn2Q=",
         "owner": "acmiyaguchi",
         "repo": "bbnix",
-        "rev": "d1a6c4459e5fc370cc39ea6ef7a5235031d1b7f0",
+        "rev": "32d19f377a35851bce1a9fd937b53de23b22d2f7",
         "type": "github"
       },
       "original": {
@@ -22,11 +22,11 @@
     "fen-blackberry": {
       "flake": false,
       "locked": {
-        "lastModified": 1779959522,
-        "narHash": "sha256-QqcuSJV/ZBfoL36Fd3iukaMjoVlRwR/pkjRFel2q0ms=",
+        "lastModified": 1780041098,
+        "narHash": "sha256-wDiF+yw1CCgxD1gp6DAG2slbt9Ud7OV1x30LmtWsy2s=",
         "owner": "acmiyaguchi",
         "repo": "fen-blackberry",
-        "rev": "2bd3c9bcea1cb9fd307806f41fce70a9e082fa0f",
+        "rev": "940e1cbebdf8710d34ebf4ea23baf2346765a0fb",
         "type": "github"
       },
       "original": {
