@@ -1728,16 +1728,20 @@ static void modkey_shift_default(const key_event_t *k){
 
 /* Shared chord dispatch for both chord sites (#30 PR3). clears_prefix is set
  * only for Site A (a modifier key consuming the modifiers already stuck as its
- * prefix), where the matched prefix bits are torn down via chord_clear_prefix
- * -- which avoids the symmenu repaint flash. Site B's modifiers were already
+ * prefix): it matches by SUBSET and tears down just the matched chord's own
+ * mods via chord_clear_prefix -- which avoids the symmenu repaint flash and
+ * leaves any extra latched bit live, so e.g. shift+alt toggles a stuck Ctrl
+ * back off symmetrically. Site B matches exactly; its modifiers were already
  * merged + cleared by rung 12, so it passes 0. Returns 1 on a matched chord. */
 static int try_chord(app_t *app, int keycode, unsigned mask, int clears_prefix){
-	chord_t *chord = chord_lookup(keycode, mask, prefs->chord_bindings);
+	chord_t *chord = clears_prefix
+		? chord_lookup_subset(keycode, mask, prefs->chord_bindings)
+		: chord_lookup(keycode, mask, prefs->chord_bindings);
 	if (chord == NULL) {
 		return 0;
 	}
 	if (clears_prefix) {
-		chord_clear_prefix(mask);
+		chord_clear_prefix(chord->mods);
 	}
 	app_dispatch_action(app, &chord->action);
 	return 1;

@@ -107,8 +107,7 @@ int is_int_member(int const* list, int target);
  * internal only and never passed to terminal_key_sequence. */
 #define CHORD_MOD_SYM (1u << 16)
 
-/* Find the chord whose trigger keycode and modifier mask match exactly.
- * Returns NULL if none. `chord_head` is a keycode==0-terminated array. */
-chord_t* chord_lookup(int keycode, unsigned mods, chord_t *chord_head);
+/* chord_t and chord_lookup / chord_lookup_subset are declared in chord.h,
+ * included transitively via types.h. */
 
 #endif /* PREFS_H_ */

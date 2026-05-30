@@ -923,19 +923,6 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 	return entry != NULL ? entry->to : NULL;
 }
 
-chord_t* chord_lookup(int keycode, unsigned mods, chord_t *chord_head) {
-	if (chord_head == NULL) {
-		return NULL;
-	}
-	while (chord_head->keycode != 0) {
-		if (chord_head->keycode == keycode && chord_head->mods == mods) {
-			return chord_head;
-		}
-		++chord_head;
-	}
-	return NULL;
-}
-
 /* ====================================================================
  * Lua loader + scripting. The lua_State is created here, kept for the
  * process lifetime so config-defined functions remain callable from
