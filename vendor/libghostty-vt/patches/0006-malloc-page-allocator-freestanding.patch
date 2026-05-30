@@ -1,0 +1,61 @@
+diff --git a/src/terminal/PageList.zig b/src/terminal/PageList.zig
+index 17eea73d0..b8876363a 100644
+--- a/src/terminal/PageList.zig
++++ b/src/terminal/PageList.zig
+@@ -31,7 +31,11 @@ const log = std.log.scoped(.page_list);
+ /// too small will cause the pool to have to allocate more memory later.
+ /// This should be set to some reasonable minimum that we expect a terminal
+ /// window to scroll into quickly.
+-const page_preheat = 4;
++///
++/// Term50: lowered 4 -> 2 for the memory-constrained BB10 app. Each preheated
++/// page is a full std_capacity buffer, so fewer preheated pages = less upfront
++/// memory per tab, which directly raises the achievable tab count.
++const page_preheat = 2;
+ 
+ /// The list of pages in the screen. These are expected to be in order
+ /// where the first page is the topmost page (scrollback) and the last is
+@@ -323,6 +327,43 @@ inline fn pageAllocator() Allocator {
+     // In tests we use our testing allocator so we can detect leaks.
+     if (builtin.is_test) return std.testing.allocator;
+ 
++    // Freestanding targets (BB10/QNX ARMv7) have no OS page allocator
++    // (std.heap.page_allocator -> posix mmap, absent on freestanding).
++    // Back terminal page buffers with the embedder's libc allocator so they
++    // reclaim on tab close and are bounded only by device RAM -- NOT a fixed
++    // arena. The previous static FixedBufferAllocator capped the whole
++    // process at ~3 terminals and never reclaimed (it is a bump allocator).
++    // PageList requires zeroed, page-aligned buffers, so we align to >= 4 KiB
++    // and zero on alloc; posix_memalign/free resolve against the libc that
++    // Term50 already links.
++    if (builtin.target.os.tag == .freestanding) {
++        const M = struct {
++            extern fn posix_memalign(memptr: *?*anyopaque, alignment: usize, size: usize) c_int;
++            extern fn free(ptr: ?*anyopaque) void;
++
++            fn alloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
++                const a = @max(alignment.toByteUnits(), @as(usize, 4096));
++                var p: ?*anyopaque = null;
++                if (posix_memalign(&p, a, len) != 0) return null;
++                const out: [*]u8 = @ptrCast(p orelse return null);
++                @memset(out[0..len], 0);
++                return out;
++            }
++
++            fn freeFn(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
++                free(@ptrCast(memory.ptr));
++            }
++
++            const vtable: std.mem.Allocator.VTable = .{
++                .alloc = alloc,
++                .resize = std.mem.Allocator.noResize,
++                .remap = std.mem.Allocator.noRemap,
++                .free = freeFn,
++            };
++        };
++        return .{ .ptr = undefined, .vtable = &M.vtable };
++    }
++
+     // On non-macOS we use our standard Zig page allocator.
+     if (!builtin.target.os.tag.isDarwin()) return std.heap.page_allocator;
+ 
