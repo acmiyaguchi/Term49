@@ -82,4 +82,15 @@ int ghostty_bridge_is_alt_screen(ghostty_bridge_t *b);
  * mouse encoding. Returns 0 if b is NULL. */
 int ghostty_bridge_mouse_wheel_ready(ghostty_bridge_t *b);
 
+/* 1 iff DEC private mode ?1007 (alternate scroll) is set. Gates whether a touch
+ * drag on the alt screen (with no mouse tracking) is translated into cursor-key
+ * scrolling. Defaults on in libghostty; an app may DECRST 1007 to opt out.
+ * Returns 0 if b is NULL. */
+int ghostty_bridge_alt_scroll_ready(ghostty_bridge_t *b);
+
+/* 1 iff DEC private mode ?1 (DECCKM, application cursor keys) is set, meaning
+ * cursor keys should be encoded as SS3 (ESC O x) rather than CSI (ESC [ x).
+ * Returns 0 if b is NULL. */
+int ghostty_bridge_app_cursor_keys(ghostty_bridge_t *b);
+
 #endif /* GHOSTTY_BRIDGE_H_ */
