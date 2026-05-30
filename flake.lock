@@ -6,11 +6,11 @@
         "nixpkgs": "nixpkgs"
       },
       "locked": {
-        "lastModified": 1780041995,
-        "narHash": "sha256-RQO1KOoAY/XTBNmr9dkMcVLvfdHtmczFXZpDpUxwn2Q=",
+        "lastModified": 1780105892,
+        "narHash": "sha256-79D9TZT0B6qztLFkS2qilYpqtUaiSYnFE8HS8HSwkZM=",
         "owner": "acmiyaguchi",
         "repo": "bbnix",
-        "rev": "32d19f377a35851bce1a9fd937b53de23b22d2f7",
+        "rev": "c30ba00f1543409615682c73fb6943035e0e2dfb",
         "type": "github"
       },
       "original": {
