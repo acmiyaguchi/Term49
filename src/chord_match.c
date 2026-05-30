@@ -24,10 +24,10 @@ chord_t* chord_lookup(int keycode, unsigned mods, chord_t *chord_head) {
 
 /* Site-A variant: a chord matches when its (nonzero) mods are a SUBSET of the
  * stuck prefix, so a latched output modifier (e.g. Ctrl) carried in the prefix
- * doesn't break re-triggering the chord that produced it. Most-specific match
- * wins (most mod bits set); first-in-array breaks ties. The caller clears only
- * the matched chord's own mods, leaving extra prefix bits live -- which is what
- * lets `shift+alt` toggle the latched Ctrl back off symmetrically. */
+ * doesn't block re-triggering the chord that produced it. Most-specific match
+ * wins (most mod bits set); first-in-array breaks ties. (How the caller spends
+ * the match -- clearing only these mods so shift+alt toggles Ctrl off -- lives
+ * with try_chord in main.c.) */
 chord_t* chord_lookup_subset(int keycode, unsigned prefix, chord_t *chord_head) {
 	chord_t *best = NULL;
 	int best_bits = -1;
