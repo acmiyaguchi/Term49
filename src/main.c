@@ -1182,9 +1182,20 @@ int app_post_notification(const notification_spec_t *spec){
 	return platform_notify(g_platform, spec) == 0;
 }
 
+/* Reason string for the most recent control-socket action failure, surfaced in
+ * the `action` reply so a headless termctl caller learns *why* (e.g. exactly
+ * which limit tab_new hit -- registry cap vs session alloc vs pty errno).
+ * Written by the failing builtin; cleared at each control action entry so a
+ * stale reason is never reported. */
+static char g_action_err[160];
+/* NULL when no reason was recorded (mirrors prefs_lua_last_error), so the
+ * caller can pass the result straight through to ctl_reply. */
+const char *ctl_action_error(void) { return g_action_err[0] ? g_action_err : NULL; }
+
 /* Glue for the control socket (src/control.c). Kept here so control.c stays a
  * leaf TU with no view of g_app / cols / rows / the BPS wake domain. */
 int ctl_run_action_string(const char *s) {
+	g_action_err[0] = '\0';
 	return app_run_action_string(s);
 }
 int ctl_notify(const char *app_id, const char *item_id, const char *title,
@@ -1449,10 +1460,20 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_TAB_NEW: {
 			session_t *new_s = NULL;
 			if (app_session_open(app, (uint16_t)cols, (uint16_t)rows, 1000, &new_s) != 0) {
-				PRINT(stderr, "tab_new: registry full or alloc failed\n");
-				char msg[64];
-				snprintf(msg, sizeof(msg), "Can't open tab (max %d)",
-				         APP_MAX_SESSIONS);
+				/* app_session_open returns -1 for BOTH the registry cap and a
+				 * session_create() alloc failure -- distinguish them so the
+				 * "max" message isn't reported when we're nowhere near the cap. */
+				int at_cap = (app_session_count(app) >= APP_MAX_SESSIONS);
+				char msg[80];
+				if (at_cap) {
+					snprintf(msg, sizeof(msg), "Can't open tab (max %d)",
+					         APP_MAX_SESSIONS);
+				} else {
+					snprintf(msg, sizeof(msg),
+					         "Can't open tab: session alloc failed");
+				}
+				PRINT(stderr, "tab_new: %s\n", msg);
+				snprintf(g_action_err, sizeof(g_action_err), "tab_new: %s", msg);
 				platform_toast(g_platform, msg);
 				return 0;
 			}
@@ -1468,6 +1489,8 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 				snprintf(msg, sizeof(msg), "New tab failed: %s%s",
 				         strerror(e),
 				         (e == ENOENT) ? " (no free pseudo-terminal)" : "");
+				snprintf(g_action_err, sizeof(g_action_err),
+				         "tab_new: pty_init: %s (errno=%d)", strerror(e), e);
 				platform_toast(g_platform, msg);
 				return 0;
 			}
@@ -2756,6 +2779,25 @@ static int pty_init(session_t *session) {
 
 	// turn off blocking on the master pty
 	fcntl(master_fd, F_SETFL, fcntl(master_fd, F_GETFL) | O_NONBLOCK);
+
+	// Mark BOTH pty ends close-on-exec so they do not leak into child
+	// processes and pin one of the device's 8 ttyp pairs. (A pair is freed
+	// only when neither side has any open fd -- see docs/bb10-qnx-pty-usage.)
+	//
+	// master: without CLOEXEC every new tab's shell inherits a dup of all
+	// earlier tabs' masters, so the pty is never released until every later
+	// process also exits -- a daemonized tmux server pins them for its whole
+	// lifetime. The child uses the slave, never the master.
+	//
+	// slave: the child dup2's it onto 0/1/2 (those copies survive exec, since
+	// dup2 clears close-on-exec) but the ORIGINAL slave_fd would otherwise be
+	// inherited as an extra handle by every grandchild. A long-lived daemon
+	// spawned from the shell (ssh-agent, fen) then keeps that handle open and
+	// pins the slave even after the tab and its master are gone -- observed as
+	// ssh-agent holding /dev/ttyp0 on a stray fd. CLOEXEC auto-closes the
+	// original at exec; the parent closes its own slave_fd right after fork.
+	fcntl(master_fd, F_SETFD, fcntl(master_fd, F_GETFD) | FD_CLOEXEC);
+	fcntl(slave_fd, F_SETFD, fcntl(slave_fd, F_GETFD) | FD_CLOEXEC);
 
 	// store the master_fd on the session (#4 step 1.5)
 	session_set_master_fd(session, master_fd);

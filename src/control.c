@@ -3,6 +3,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <grp.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -279,7 +280,7 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 	}
 	if (strcmp(argv[0], "action") == 0 && argc >= 2) {
 		int ok = ctl_run_action_string(argv[1]);
-		ctl_reply(c, id, ok ? 0 : 1, NULL);
+		ctl_reply(c, id, ok ? 0 : 1, ok ? NULL : ctl_action_error());
 		return;
 	}
 	if (strcmp(argv[0], "notify") == 0) {
@@ -466,6 +467,48 @@ static int control_accept_handler(int fd, int io_events, void *data) {
 
 /* ---------------------------------------------------------------------- */
 
+/* Default control socket is private to the app's own uid (0600 in a 0700 dir):
+ * only child processes Term50 forks can drive it. The TERM50_CONTROL_SHARED
+ * opt-in widens the socket and its dir to the CTL_SHARED_GROUP group so an
+ * out-of-sandbox peer in that group -- notably a dev-mode ssh session running
+ * as devuser -- can connect() and drive the terminal headlessly. SECURITY: this
+ * lets any CTL_SHARED_GROUP process drive the terminal, so it stays OFF unless
+ * explicitly opted in (see bar-descriptor.xml for the dev-build env). Returns 1
+ * and sets *gid when sharing is enabled and the group resolves; 0 otherwise
+ * (caller keeps the private perms). */
+#define CTL_SHARED_GROUP "1000_shared"
+
+static int ctl_shared_gid(gid_t *gid) {
+	const char *opt = getenv("TERM50_CONTROL_SHARED");
+	if (opt == NULL || opt[0] == '\0') {
+		return 0;
+	}
+	struct group *gr = getgrnam(CTL_SHARED_GROUP);
+	if (gr == NULL) {
+		fprintf(stderr, "control: TERM50_CONTROL_SHARED set but group %s not "
+		        "found; keeping private socket\n", CTL_SHARED_GROUP);
+		return 0;
+	}
+	*gid = gr->gr_gid;
+	return 1;
+}
+
+/* Apply the socket/dir permissions. With the TERM50_CONTROL_SHARED opt-in,
+ * widen to `shared` mode + the shared group; otherwise apply `priv` (0 = leave
+ * the existing mode untouched, e.g. a dir already created 0700). */
+static void ctl_share_path(const char *path, mode_t shared, mode_t priv) {
+	gid_t sgid;
+	if (ctl_shared_gid(&sgid)) {
+		chmod(path, shared);
+		if (chown(path, (uid_t)-1, sgid) != 0) {
+			fprintf(stderr, "control: chown(%s) shared: %s\n",
+			        path, strerror(errno));
+		}
+	} else if (priv != 0) {
+		chmod(path, priv);
+	}
+}
+
 static int build_sock_path(char *out, size_t cap) {
 	const char *home = getenv("HOME");
 	if (home != NULL) {
@@ -473,6 +516,9 @@ static int build_sock_path(char *out, size_t cap) {
 		int n = snprintf(dir, sizeof(dir), "%s/" APP_STATE_DIRNAME, home);
 		if (n > 0 && n < (int)sizeof(dir)) {
 			mkdir(dir, 0700); /* ignore EEXIST */
+			/* Opt-in: +x for the shared group so it can traverse to the
+			 * socket (needs dir search, not read). */
+			ctl_share_path(dir, 0710, 0);
 			n = snprintf(out, cap, "%s/control.sock", dir);
 			if (n > 0 && n < (int)cap) {
 				return 0;
@@ -528,7 +574,10 @@ int control_init(void) {
 		g_listen_fd = -1;
 		return -1;
 	}
-	chmod(g_sock_path, 0600);
+	/* Private 0600 by default; the TERM50_CONTROL_SHARED opt-in widens it to
+	 * 0660 + the shared group so a same-group peer (dev-mode ssh) can connect.
+	 * build_sock_path already relaxed the containing dir. */
+	ctl_share_path(g_sock_path, 0660, 0600);
 	if (listen(g_listen_fd, 4) != 0) {
 		fprintf(stderr, "control: listen(): %s\n", strerror(errno));
 		close(g_listen_fd);

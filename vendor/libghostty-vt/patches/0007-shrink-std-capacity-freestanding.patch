@@ -1,0 +1,21 @@
+diff --git a/src/terminal/page.zig b/src/terminal/page.zig
+index 0942e260c..55307ee17 100644
+--- a/src/terminal/page.zig
++++ b/src/terminal/page.zig
+@@ -1781,8 +1781,14 @@ pub const Page = struct {
+ /// pages of standard capacity use a pooled allocator instead of single-use
+ /// mmaps.
+ pub const std_capacity: Capacity = .{
+-    .cols = 215,
+-    .rows = 215,
++    // Term50: reduced from 215x215 for the 32-bit BB10 app. A standard page is
++    // sized for this capacity regardless of the real (<=60 col) grid, so 215x215
++    // wasted ~5x memory per page. 100x100 still covers every real Term50 grid via
++    // Capacity.adjust() (which reshapes within the same std_size for any column
++    // count), keeping the pooled fast-path, while cutting each page from ~512 KiB
++    // to ~110 KiB.
++    .cols = 100,
++    .rows = 100,
+     .styles = 128,
+     .grapheme_bytes = if (builtin.is_test) 512 else 8192,
+ };
