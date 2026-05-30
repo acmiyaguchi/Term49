@@ -923,8 +923,6 @@ const char* keystroke_lookup(char keystroke, keymap_t *keymap_head) {
 	return entry != NULL ? entry->to : NULL;
 }
 
-/* chord_lookup / chord_lookup_subset live in chord_match.c (pure, host-testable). */
-
 /* ====================================================================
  * Lua loader + scripting. The lua_State is created here, kept for the
  * process lifetime so config-defined functions remain callable from

@@ -1734,22 +1734,14 @@ static void modkey_shift_default(const key_event_t *k){
  * back off symmetrically. Site B matches exactly; its modifiers were already
  * merged + cleared by rung 12, so it passes 0. Returns 1 on a matched chord. */
 static int try_chord(app_t *app, int keycode, unsigned mask, int clears_prefix){
-	chord_t *chord;
+	chord_t *chord = clears_prefix
+		? chord_lookup_subset(keycode, mask, prefs->chord_bindings)
+		: chord_lookup(keycode, mask, prefs->chord_bindings);
+	if (chord == NULL) {
+		return 0;
+	}
 	if (clears_prefix) {
-		/* Site A: subset match against the stuck prefix, and clear only the
-		 * matched chord's own mods. Any extra latched bit (e.g. a Ctrl the
-		 * user is toggling back off) is left live for the action to consume. */
-		chord = chord_lookup_subset(keycode, mask, prefs->chord_bindings);
-		if (chord == NULL) {
-			return 0;
-		}
 		chord_clear_prefix(chord->mods);
-	} else {
-		/* Site B: exact match -- an extra held modifier changes intent there. */
-		chord = chord_lookup(keycode, mask, prefs->chord_bindings);
-		if (chord == NULL) {
-			return 0;
-		}
 	}
 	app_dispatch_action(app, &chord->action);
 	return 1;
