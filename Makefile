@@ -86,9 +86,20 @@ check-creds = test -n '$(strip $(filter-out "",$(BBPASS)))' || { echo 'Set BBPAS
 
 .PHONY: all clean icons libghostty-vt package-dev package-release deploy connect \
         bbnix-bundle stage-bbnix clean-bbnix fonts-bundle stage-fonts clean-fonts \
-        fen-source fen-bundle stage-fen clean-fen check-reference
+        fen-source fen-bundle stage-fen clean-fen check-reference test
 
 all: check-reference $(BINARY_PATH) $(CTL_PATH)
+
+# Host-run unit tests. src/chord_match.c is intentionally ICU/QNX-free, so the
+# native compiler builds and runs it directly -- no qcc, emulator, or device.
+TEST_CC  ?= cc
+TEST_BIN := Device-Debug/test_chord_match
+test: $(TEST_BIN)
+	./$(TEST_BIN)
+
+$(TEST_BIN): tests/test_chord_match.c src/chord_match.c src/chord.h src/action.h src/term_types.h
+	@mkdir -p $(dir $@)
+	$(TEST_CC) -std=gnu99 -Wall -Wextra -Isrc tests/test_chord_match.c src/chord_match.c -o $@
 
 # Drift guard: share/term.lua.reference is the human-facing list of defaults;
 # its prefs_version must track PREFS_VERSION in src/preferences.c. After

@@ -5,6 +5,7 @@
 
 #include "action.h"
 #include "term_types.h"
+#include "chord.h"
 
 typedef struct keymap {
 	char from;
@@ -13,20 +14,8 @@ typedef struct keymap {
 	int sticky;          /* metamode: keep metamode armed after firing (else exit) */
 } keymap_t;
 
-/* A modifier-aware chord: a trigger keycode plus an exact modifier mask
- * dispatch to an action. Distinct from keymap_t because the trigger is a
- * full keycode (not a char -- it may be KEYCODE_BB_SYM_KEY/ALT_KEY), the
- * match is mod-aware, and the action is primary (no `to` write string).
- * `spec` owns the parsed action source string that `action` points into
- * (mirrors keymap_set_to); `label` is display text for the help overlay.
- * Arrays are terminated by a keycode==0 sentinel. */
-typedef struct chord {
-	int keycode;
-	unsigned mods;
-	char *spec;
-	char *label;
-	action_t action;
-} chord_t;
+/* chord_t lives in chord.h (included above) so the pure chord-matching
+ * functions stay free of this header's ICU dependency and host-testable. */
 
 typedef rect_t hitbox_t;
 
