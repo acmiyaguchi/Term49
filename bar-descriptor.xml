@@ -50,10 +50,10 @@
     <buildId>1</buildId>
 
     <!-- May have multiple values for each language. See samples or xsd schema file. -->
-    <description>The Term50 application</description>
+    <description>Term50 — a terminal emulator for BlackBerry 10</description>
 
     <!--  Must match the developer name of your developer certificate. -->
-    <author>Anthony Miyaguchi</author>
+    <author>Term50 Developers</author>
     <!--  Unique author ID assigned by signing authority. Required if using debug tokens.
           Left commented so -devMode self-signing auto-derives a valid dev author-id. -->
     <!-- <authorId>Package-Author-Id</authorId> -->
