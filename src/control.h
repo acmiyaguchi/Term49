@@ -33,7 +33,7 @@ void control_drain_deferred(void);
 
 /* ---- glue implemented in main.c (keeps control.c free of app internals) ---- */
 int      ctl_run_action_string(const char *s); /* parse+dispatch one action */
-const char *ctl_action_error(void);             /* reason for last action failure, or "" */
+const char *ctl_action_error(void);             /* reason for last action failure, or NULL */
 /* Post/update a replaceable Hub notification. Any field may be NULL for a
  * default (app_id => own identity, item_id => shared slot, title => "Term50").
  * alert!=0 uses notification_alert (sound/vibrate). 1 ok, 0 fail. */

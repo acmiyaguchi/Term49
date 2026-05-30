@@ -280,8 +280,7 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 	}
 	if (strcmp(argv[0], "action") == 0 && argc >= 2) {
 		int ok = ctl_run_action_string(argv[1]);
-		const char *err = ok ? NULL : ctl_action_error();
-		ctl_reply(c, id, ok ? 0 : 1, (err && err[0]) ? err : NULL);
+		ctl_reply(c, id, ok ? 0 : 1, ok ? NULL : ctl_action_error());
 		return;
 	}
 	if (strcmp(argv[0], "notify") == 0) {
@@ -494,23 +493,32 @@ static int ctl_shared_gid(gid_t *gid) {
 	return 1;
 }
 
+/* Apply the socket/dir permissions. With the TERM50_CONTROL_SHARED opt-in,
+ * widen to `shared` mode + the shared group; otherwise apply `priv` (0 = leave
+ * the existing mode untouched, e.g. a dir already created 0700). */
+static void ctl_share_path(const char *path, mode_t shared, mode_t priv) {
+	gid_t sgid;
+	if (ctl_shared_gid(&sgid)) {
+		chmod(path, shared);
+		if (chown(path, (uid_t)-1, sgid) != 0) {
+			fprintf(stderr, "control: chown(%s) shared: %s\n",
+			        path, strerror(errno));
+		}
+	} else if (priv != 0) {
+		chmod(path, priv);
+	}
+}
+
 static int build_sock_path(char *out, size_t cap) {
 	const char *home = getenv("HOME");
 	if (home != NULL) {
 		char dir[96];
 		int n = snprintf(dir, sizeof(dir), "%s/" APP_STATE_DIRNAME, home);
 		if (n > 0 && n < (int)sizeof(dir)) {
-			gid_t sgid;
 			mkdir(dir, 0700); /* ignore EEXIST */
 			/* Opt-in: +x for the shared group so it can traverse to the
 			 * socket (needs dir search, not read). */
-			if (ctl_shared_gid(&sgid)) {
-				chmod(dir, 0710);
-				if (chown(dir, (uid_t)-1, sgid) != 0) {
-					fprintf(stderr, "control: chown(%s) shared: %s\n",
-					        dir, strerror(errno));
-				}
-			}
+			ctl_share_path(dir, 0710, 0);
 			n = snprintf(out, cap, "%s/control.sock", dir);
 			if (n > 0 && n < (int)cap) {
 				return 0;
@@ -566,21 +574,10 @@ int control_init(void) {
 		g_listen_fd = -1;
 		return -1;
 	}
-	{
-		/* Private 0600 by default; the TERM50_CONTROL_SHARED opt-in widens it
-		 * to 0660 + the shared group so a same-group peer (dev-mode ssh) can
-		 * connect. build_sock_path already relaxed the containing dir. */
-		gid_t sgid;
-		if (ctl_shared_gid(&sgid)) {
-			chmod(g_sock_path, 0660);
-			if (chown(g_sock_path, (uid_t)-1, sgid) != 0) {
-				fprintf(stderr, "control: chown(%s) shared: %s\n",
-				        g_sock_path, strerror(errno));
-			}
-		} else {
-			chmod(g_sock_path, 0600);
-		}
-	}
+	/* Private 0600 by default; the TERM50_CONTROL_SHARED opt-in widens it to
+	 * 0660 + the shared group so a same-group peer (dev-mode ssh) can connect.
+	 * build_sock_path already relaxed the containing dir. */
+	ctl_share_path(g_sock_path, 0660, 0600);
 	if (listen(g_listen_fd, 4) != 0) {
 		fprintf(stderr, "control: listen(): %s\n", strerror(errno));
 		close(g_listen_fd);

@@ -1188,7 +1188,9 @@ int app_post_notification(const notification_spec_t *spec){
  * Written by the failing builtin; cleared at each control action entry so a
  * stale reason is never reported. */
 static char g_action_err[160];
-const char *ctl_action_error(void) { return g_action_err; }
+/* NULL when no reason was recorded (mirrors prefs_lua_last_error), so the
+ * caller can pass the result straight through to ctl_reply. */
+const char *ctl_action_error(void) { return g_action_err[0] ? g_action_err : NULL; }
 
 /* Glue for the control socket (src/control.c). Kept here so control.c stays a
  * leaf TU with no view of g_app / cols / rows / the BPS wake domain. */

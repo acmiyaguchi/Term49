@@ -32,10 +32,17 @@ field() {
 session_count() { field "$(tc sessions 2>/dev/null)" count; }
 
 # --- pty pool inspection (device-only; needs pidin) -----------------------
-pty_busy() {  # arg: pair number 0..7  ->  number of open fd refs (0 == free)
-	pidin fd 2>/dev/null | grep -c -E "/dev/[pt]typ$1( |\$)"
+# `pidin fd` walks every process's fd table -- expensive on the device -- so we
+# snapshot it ONCE into $_PTY_SNAP and tally all 8 pairs against that capture,
+# instead of re-forking pidin per pair (was 8 scans per call).
+pty_snapshot() { _PTY_SNAP=$(pidin fd 2>/dev/null); }
+
+pty_busy() {  # arg: pair number 0..7  ->  open fd refs in $_PTY_SNAP (0 == free)
+	# echo (not printf: this device sh has no printf) the captured snapshot.
+	echo "$_PTY_SNAP" | grep -c -E "/dev/[pt]typ$1( |\$)"
 }
-pty_free_count() {
+pty_free_count() {  # refreshes the snapshot
+	pty_snapshot
 	_f=0; _n=0
 	while [ "$_n" -le 7 ]; do
 		[ "$(pty_busy "$_n")" -eq 0 ] && _f=$((_f + 1))
@@ -43,7 +50,8 @@ pty_free_count() {
 	done
 	echo "$_f"
 }
-pty_scan() {
+pty_scan() {  # refreshes the snapshot
+	pty_snapshot
 	_n=0
 	while [ "$_n" -le 7 ]; do
 		_r=$(pty_busy "$_n")
@@ -109,12 +117,7 @@ cmd_probe() {
 	echo "tab_new failed with: ${_reason:-<no reason returned>}"
 	echo "ptys at ceiling:"
 	pty_scan
-	_allbusy=1; _n=0
-	while [ "$_n" -le 7 ]; do
-		[ "$(pty_busy "$_n")" -eq 0 ] && _allbusy=0
-		_n=$((_n + 1))
-	done
-	if [ "$_final" -ge 8 ] && [ "$_allbusy" -eq 1 ]; then
+	if [ "$_final" -ge 8 ] && [ "$(pty_free_count)" -eq 0 ]; then
 		echo "verdict: ceiling=$_final, all 8 ptys busy -> registry cap (8) == pty pool."
 	else
 		echo "verdict: ceiling=$_final (registry cap APP_MAX_SESSIONS=8 / pty pool)."
