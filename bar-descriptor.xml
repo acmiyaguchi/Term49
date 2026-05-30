@@ -46,8 +46,8 @@
     </configuration>
 
     <name>Term50</name>
-    <versionNumber>1.0.0</versionNumber>
-    <buildId>1</buildId>
+    <versionNumber>1.1.0</versionNumber>
+    <buildId>2</buildId>
 
     <!-- May have multiple values for each language. See samples or xsd schema file. -->
     <description>Term50 — a terminal emulator for BlackBerry 10</description>
