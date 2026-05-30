@@ -280,7 +280,8 @@ static void dispatch(ctl_client_t *c, int argc, char **argv) {
 	}
 	if (strcmp(argv[0], "action") == 0 && argc >= 2) {
 		int ok = ctl_run_action_string(argv[1]);
-		ctl_reply(c, id, ok ? 0 : 1, NULL);
+		const char *err = ok ? NULL : ctl_action_error();
+		ctl_reply(c, id, ok ? 0 : 1, (err && err[0]) ? err : NULL);
 		return;
 	}
 	if (strcmp(argv[0], "notify") == 0) {

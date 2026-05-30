@@ -94,12 +94,19 @@ cmd_probe() {
 	[ "$1" = "--keep" ] && _keep=1
 	_base=$(session_count)
 	_made=0
-	while tc action tab_new >/dev/null 2>&1; do
+	_reason=
+	while :; do
+		_out=$(tc action tab_new 2>&1)
+		if [ $? -ne 0 ]; then
+			_reason=$_out
+			break
+		fi
 		_made=$((_made + 1))
-		[ "$_made" -ge 64 ] && break   # safety stop well past any real cap
+		[ "$_made" -ge 64 ] && { _reason="(safety stop at 64)"; break; }
 	done
 	_final=$(session_count)
 	echo "baseline=$_base created=$_made final_count=$_final ceiling=$_final"
+	echo "tab_new failed with: ${_reason:-<no reason returned>}"
 	echo "ptys at ceiling:"
 	pty_scan
 	_allbusy=1; _n=0
@@ -128,8 +135,9 @@ cmd_spawn() {
 	_want=${1:-1}
 	_i=0
 	while [ "$_i" -lt "$_want" ]; do
-		if ! tc action tab_new >/dev/null 2>&1; then
-			echo "tab_new failed after $_i (ceiling hit); count=$(session_count)" >&2
+		_out=$(tc action tab_new 2>&1)
+		if [ $? -ne 0 ]; then
+			echo "tab_new failed after $_i: ${_out:-<no reason>}; count=$(session_count)" >&2
 			return 1
 		fi
 		_i=$((_i + 1))

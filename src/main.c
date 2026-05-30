@@ -1182,9 +1182,18 @@ int app_post_notification(const notification_spec_t *spec){
 	return platform_notify(g_platform, spec) == 0;
 }
 
+/* Reason string for the most recent control-socket action failure, surfaced in
+ * the `action` reply so a headless termctl caller learns *why* (e.g. exactly
+ * which limit tab_new hit -- registry cap vs session alloc vs pty errno).
+ * Written by the failing builtin; cleared at each control action entry so a
+ * stale reason is never reported. */
+static char g_action_err[160];
+const char *ctl_action_error(void) { return g_action_err; }
+
 /* Glue for the control socket (src/control.c). Kept here so control.c stays a
  * leaf TU with no view of g_app / cols / rows / the BPS wake domain. */
 int ctl_run_action_string(const char *s) {
+	g_action_err[0] = '\0';
 	return app_run_action_string(s);
 }
 int ctl_notify(const char *app_id, const char *item_id, const char *title,
@@ -1449,10 +1458,20 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 		case TERM_BUILTIN_TAB_NEW: {
 			session_t *new_s = NULL;
 			if (app_session_open(app, (uint16_t)cols, (uint16_t)rows, 1000, &new_s) != 0) {
-				PRINT(stderr, "tab_new: registry full or alloc failed\n");
-				char msg[64];
-				snprintf(msg, sizeof(msg), "Can't open tab (max %d)",
-				         APP_MAX_SESSIONS);
+				/* app_session_open returns -1 for BOTH the registry cap and a
+				 * session_create() alloc failure -- distinguish them so the
+				 * "max" message isn't reported when we're nowhere near the cap. */
+				int at_cap = (app_session_count(app) >= APP_MAX_SESSIONS);
+				char msg[80];
+				if (at_cap) {
+					snprintf(msg, sizeof(msg), "Can't open tab (max %d)",
+					         APP_MAX_SESSIONS);
+				} else {
+					snprintf(msg, sizeof(msg),
+					         "Can't open tab: session alloc failed");
+				}
+				PRINT(stderr, "tab_new: %s\n", msg);
+				snprintf(g_action_err, sizeof(g_action_err), "tab_new: %s", msg);
 				platform_toast(g_platform, msg);
 				return 0;
 			}
@@ -1468,6 +1487,8 @@ int app_dispatch_action(app_t *app, const action_t *action) {
 				snprintf(msg, sizeof(msg), "New tab failed: %s%s",
 				         strerror(e),
 				         (e == ENOENT) ? " (no free pseudo-terminal)" : "");
+				snprintf(g_action_err, sizeof(g_action_err),
+				         "tab_new: pty_init: %s (errno=%d)", strerror(e), e);
 				platform_toast(g_platform, msg);
 				return 0;
 			}
