@@ -104,6 +104,14 @@
     <!-- Ensure that shared libraries in the package are found at run-time. -->
     <env var="LD_LIBRARY_PATH" value="app/native/lib"/>
 
+    <!-- Opt-in: widen the control socket (~/.term/control.sock) from its private
+         0600 default to the 1000_shared group so an out-of-sandbox peer in that
+         group (a dev-mode ssh session) can drive Term50 headlessly via termctl.
+         See src/control.c (ctl_shared_gid). SECURITY: any 1000_shared process can
+         then drive the terminal; this is a dev/automation convenience. Remove
+         this env for a locked-down build. -->
+    <env var="TERM50_CONTROL_SHARED" value="1"/>
+
     <!-- Cross-app entry point (#23). Registers the term:// URI scheme so a
          tapped link, a homescreen shortcut, another app, or one of our own
          notifications can ask the navigator to open Term50. Navigation-only
