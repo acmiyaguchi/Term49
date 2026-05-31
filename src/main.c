@@ -2725,6 +2725,73 @@ static void setup_bbnix_env(char *shell, size_t shell_cap) {
 	}
 }
 
+/* Recreate the bbnix busybox applets as real symlinks in a writable PATH dir.
+ * The bar ships ONE busybox plus an applet-name list at <root>/etc/busybox.applets
+ * (the build dedups ~131 byte-identical copies -- ~23 MB -- via
+ * tools/stage-dedup-busybox.py). We materialize "<applet> -> <root>/bin/busybox"
+ * under $HOME/.term/bin so every applet name still resolves on PATH. Idempotent
+ * and self-healing: a link left by a prior install whose sandbox path differs is
+ * refreshed. Best-effort -- failures are logged, never fatal; a bundle without
+ * the list (still carrying the full copies in bin/) is a clean no-op. Called once
+ * at startup after HOME is repointed; the child prepends $HOME/.term/bin to PATH. */
+static void bbnix_install_applets(void) {
+	char root[1024];
+	char listpath[1024];
+	char bindir[1024];
+	char target[1024];
+	const char *home = getenv("HOME");
+	FILE *f;
+	char line[256];
+	int made = 0;
+
+	if(!resolve_bbnix_root(root, sizeof(root))){ return; }
+	if(home == NULL || home[0] == '\0'){ return; }
+
+	if(snprintf(target, sizeof(target), "%s/bin/busybox", root) >= (int)sizeof(target)){ return; }
+	if(snprintf(listpath, sizeof(listpath), "%s/etc/busybox.applets", root) >= (int)sizeof(listpath)){ return; }
+	if(snprintf(bindir, sizeof(bindir), "%s/%s/bin", home, APP_STATE_DIRNAME) >= (int)sizeof(bindir)){ return; }
+
+	f = fopen(listpath, "r");
+	if(f == NULL){ return; }
+
+	/* $HOME/.term is normally already created by control_init(); make both
+	 * levels defensively (ignore EEXIST). */
+	{
+		char dir[1024];
+		if(snprintf(dir, sizeof(dir), "%s/%s", home, APP_STATE_DIRNAME) < (int)sizeof(dir)){
+			mkdir(dir, 0700);
+		}
+	}
+	mkdir(bindir, 0700);
+
+	while(fgets(line, sizeof(line), f) != NULL){
+		char link[1024];
+		size_t n = strlen(line);
+		while(n > 0 && (line[n-1] == '\n' || line[n-1] == '\r')){ line[--n] = '\0'; }
+		/* basenames only: ignore blanks and anything with a path separator. */
+		if(n == 0 || strchr(line, '/') != NULL){ continue; }
+		if(snprintf(link, sizeof(link), "%s/%s", bindir, line) >= (int)sizeof(link)){ continue; }
+
+		if(symlink(target, link) == 0){ made++; continue; }
+		if(errno != EEXIST){ continue; }
+
+		/* Self-heal a stale link pointing at a prior install's sandbox. */
+		{
+			char cur[1024];
+			ssize_t k = readlink(link, cur, sizeof(cur) - 1);
+			if(k >= 0){
+				cur[k] = '\0';
+				if(strcmp(cur, target) != 0){
+					unlink(link);
+					if(symlink(target, link) == 0){ made++; }
+				}
+			}
+		}
+	}
+	fclose(f);
+	fprintf(stderr, "bbnix: installed %d busybox applet symlinks in %s\n", made, bindir);
+}
+
 /* Set $SHELL to the shell we're about to become, then exec it as a login
  * shell. login(1) normally seeds $SHELL from /etc/passwd; the navigator
  * doesn't, so without this tmux's default-shell, vim's :sh/:terminal, and
@@ -2858,6 +2925,16 @@ static int pty_init(session_t *session) {
 		char bbnix_shell[1024];
 		bbnix_shell[0] = '\0';
 		setup_bbnix_env(bbnix_shell, sizeof(bbnix_shell));
+
+		/* Make the runtime-materialized busybox applets reachable: prepend
+		 * $HOME/.term/bin, where bbnix_install_applets() symlinked them. The
+		 * applet names and the surviving bbnix/bin names are disjoint, so this
+		 * never shadows a real binary. */
+		{
+			char* home = getenv("HOME");
+			if(home != NULL){ env_prepend_subdir("PATH", home, APP_STATE_DIRNAME "/bin"); }
+		}
+
 		if(bbnix_shell[0] != '\0'){
 			try_shell(bbnix_shell, "zsh");
 			fprintf(stderr, "bbnix zsh exec failed: %s - falling back to /bin/sh\n",
@@ -3226,6 +3303,11 @@ int main(int argc, char **argv) {
 	/* Switch to our home directory */
 	char* home = getenv("HOME");
 	if(home != NULL){ chdir(home); }
+
+	/* Recreate the deduplicated busybox applets as symlinks under $HOME/.term/bin
+	 * (the bar ships one busybox + an applet list, not ~131 copies). Needs HOME
+	 * in its final, repointed form, so it runs after set_persistent_home(). */
+	bbnix_install_applets();
 
 	/* Load prefs FIRST so the screen-idle decision is in hand before we
 	 * create the native window (platform_screen_create reads

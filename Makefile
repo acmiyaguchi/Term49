@@ -218,6 +218,11 @@ stage-bbnix: bbnix-bundle
 	mkdir -p share/bbnix
 	cp -RL result-bbnix/. share/bbnix/
 	chmod -R u+w share/bbnix
+	# bbnix ships one busybox + ~131 applet symlinks, but cp -RL dereferenced
+	# them into full copies (~23 MB of byte-identical dups). Collapse to one
+	# busybox + an applet-name list; Term50 recreates the symlinks at runtime
+	# (bbnix_install_applets() in src/main.c). See tools/stage-dedup-busybox.py.
+	python3 tools/stage-dedup-busybox.py share/bbnix/bin share/bbnix/etc/busybox.applets
 	touch share/bbnix/.keep
 
 # --- Optional bundled terminal fonts ----------------------------------------
